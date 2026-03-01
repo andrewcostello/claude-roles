@@ -36,11 +36,11 @@ Before anything else, check: **is this a first review or a re-review?**
 **Targeted re-review (post-iteration):**
 - You will receive a list of previous findings and changed files
 - Your PRIMARY job is to verify those fixes are correct
-- Your SECONDARY job is to check for regressions in changed files only
-- Do NOT audit unchanged files for new issues
+- Your SECONDARY job is to check for regressions in **changed files and their direct callers** — a changed function signature can break a caller without touching the caller's file
+- Do NOT audit files that neither changed nor directly call changed code
 - For each previous finding, report: **RESOLVED** / **STILL OPEN** / **REGRESSED**
-- New findings in changed files: categorize normally (Critical/High/Medium/Low)
-- Only new CRITICAL/HIGH findings in changed files matter — do not surface new MEDIUM/LOW
+- New findings in scope: categorize normally (Critical/High/Medium/Low)
+- Only new CRITICAL/HIGH findings trigger another iteration — do not surface new MEDIUM/LOW
 
 ### Step 1: Understand the Spec (2 min)
 
@@ -48,12 +48,13 @@ Before looking at code:
 - What is the core requirement?
 - What are the stated edge cases?
 - What is the risk level (High/Medium/Low)?
+- Does this include a schema migration? If yes, apply the Migration Checklist in Compliance.
 
 ### Step 2: Trace the Happy Path (5 min)
 
 - Follow the main success scenario through the code
 - Does it accomplish the stated objective?
-- Are the interfaces as specified?
+- Are the interfaces as specified? (Check `⚠️ Interface Deviations` section in Completion Report)
 
 ### Step 3: Hunt for Defects (10 min)
 
@@ -62,7 +63,7 @@ Work through each dimension systematically. For each, ask the key questions and 
 ### Step 4: Evaluate and Categorize (5 min)
 
 - **Critical dimensions**: PASS or FAIL (no middle ground)
-- **Quality dimensions**: Score 1-5
+- **Quality dimensions**: Score 1-5 using the anchors provided in each section
 - Categorize every finding as Critical/High/Medium/Low
 - Write summary verdict
 
@@ -74,27 +75,29 @@ Work through each dimension systematically. For each, ask the key questions and 
 
 These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regardless of other scores.
 
-For financial/wallet code, there is no "4/5 Correctness" — it either handles all spec'd requirements or it doesn't.
-
 ---
 
 ### 1. Correctness — PASS / FAIL
 
-> Does the logic match the spec? Are ALL edge cases handled?
+> Does the logic match the spec? Are ALL edge cases handled? Do the tests prove it?
 
 **PASS requires ALL of:**
 - [ ] Happy path works exactly as specified
-- [ ] Every documented edge case has handling code AND tests
+- [ ] Every documented edge case has handling code AND a test
 - [ ] Boundary conditions (zero, max, negative) explicitly handled
 - [ ] Error returns match expected error types exactly
-- [ ] State transitions follow documented lifecycle
+- [ ] State transitions follow documented lifecycle — every valid transition tested, every invalid transition rejected
+- [ ] Tests assert **observable behavior**, not implementation details (mocks/stubs do not outnumber real assertions)
+- [ ] Test names are descriptive enough to diagnose a failure without reading the code
 
 **Automatic FAIL:**
-- Any edge case from spec not handled in code
-- Any edge case from spec not covered by tests
+- Any spec'd edge case not handled in code
+- Any spec'd edge case not covered by a test
 - Logic that contradicts spec
 - Off-by-one errors in financial calculations
 - Unchecked type assertions on critical paths
+- State machine with untested transitions (valid or invalid)
+- Tests that exist but assert nothing meaningful (mock-everything, assert-nothing pattern)
 
 ---
 
@@ -104,18 +107,18 @@ For financial/wallet code, there is no "4/5 Correctness" — it either handles a
 
 **PASS requires ALL of:**
 - [ ] All external input validated at boundary
-- [ ] SQL uses parameterized queries only (no string concat ever)
+- [ ] Queries use parameterized inputs only (no string concat ever)
 - [ ] No secrets, credentials, or PII in code or logs
 - [ ] Authorization checked before every sensitive operation
-- [ ] Integer overflow impossible for financial amounts (int64 + validation)
+- [ ] Numeric overflow impossible for financial amounts (use int64/bigint, validate bounds)
 
 **Automatic FAIL:**
-- Any SQL built with fmt.Sprintf or string concatenation
-- PII logged (passwords, full card numbers, SSN)
+- Any query built with string concatenation or template interpolation
+- PII logged (passwords, tokens, card numbers, SSN, phone numbers)
 - Missing authorization check on mutation
-- Unchecked array/slice index access
-- `int` instead of `int64` for money amounts
-- Potential integer overflow in calculations
+- Unchecked array/slice index access on user-controlled input
+- Native integer types used for money amounts without overflow protection
+- Potential overflow in financial calculations
 
 ---
 
@@ -130,12 +133,21 @@ For financial/wallet code, there is no "4/5 Correctness" — it either handles a
 - [ ] Sensitive operations have appropriate auth level
 - [ ] No hard deletes of auditable data (soft-delete only)
 
+**If this task includes a schema migration, ALL of these must also pass:**
+- [ ] Up migration is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`)
+- [ ] Down migration exactly reverses the up
+- [ ] No full-table rewrite on a large table without documentation of the lock window
+- [ ] Every new foreign key column has a corresponding index
+- [ ] New `NOT NULL` columns have a DEFAULT or the migration is split (add nullable → backfill → constrain)
+
 **Automatic FAIL:**
 - Balance/money changes without ledger entry
 - Missing user ID on financial audit entries
 - Hard DELETE on financial records
 - State changes without timestamp
 - Missing audit trail for compliance-sensitive operations
+- Migration without idempotency guard
+- Missing FK index on a new foreign key column
 
 ---
 
@@ -147,9 +159,9 @@ These dimensions are scored. They contribute to overall quality but don't automa
 |-------|---------|
 | 1 | Broken — does not work |
 | 2 | Deficient — major gaps |
-| 3 | Acceptable — meets requirements with minor issues |
-| 4 | Good — solid implementation, minor improvements possible |
-| 5 | Excellent — exemplary, could be reference implementation |
+| 3 | Acceptable — meets minimum requirements, notable gaps |
+| 4 | Good — solid, minor improvements possible |
+| 5 | Excellent — exemplary, could be a reference implementation |
 
 ---
 
@@ -158,17 +170,21 @@ These dimensions are scored. They contribute to overall quality but don't automa
 > What happens when things go wrong?
 
 **Check:**
-- [ ] Timeouts configured for external calls
-- [ ] Context cancellation respected
-- [ ] Retry logic with backoff (where appropriate)
-- [ ] Circuit breakers for external dependencies
-- [ ] Graceful degradation paths
+- [ ] Timeouts configured for all external calls
+- [ ] Context cancellation respected throughout the call chain
+- [ ] Retry logic with backoff (where appropriate, not everywhere)
+- [ ] Graceful degradation when non-critical dependencies fail
 
 **Red flags:**
-- Infinite loops on retry
-- No timeout on network calls
-- Panics instead of error returns
-- Context.Background() instead of passed context
+- Infinite retry loops
+- No timeout on network or database calls
+- Panics instead of error returns on recoverable conditions
+- `context.Background()` used instead of the passed context
+
+**Score anchors:**
+- **3** — Timeouts on DB calls; no retry logic; context cancellation not checked on all paths
+- **4** — Timeouts + retry with backoff on transient errors + context cancellation respected everywhere
+- **5** — All of 4, plus graceful degradation paths, circuit breaking on flaky dependencies, and tested failure scenarios
 
 ---
 
@@ -177,16 +193,21 @@ These dimensions are scored. They contribute to overall quality but don't automa
 > Is it safe to replay this operation?
 
 **Check:**
-- [ ] Idempotency keys used for mutations
-- [ ] Duplicate requests return original result (not error)
-- [ ] Database operations use appropriate constraints
+- [ ] Idempotency keys used for all mutations
+- [ ] Duplicate requests return original result (not an error, not a duplicate write)
+- [ ] DB operations use appropriate uniqueness constraints
 - [ ] No side effects on read operations
 
 **Red flags:**
-- INSERT without ON CONFLICT handling
+- INSERT without ON CONFLICT / upsert handling
 - Missing idempotency key validation
-- Side effects in GET handlers
-- Counters incremented without dedup check
+- Side effects triggered in GET/read handlers
+- Counters or balances incremented without dedup check
+
+**Score anchors:**
+- **3** — Idempotency key present but checked outside the transaction; duplicate could theoretically slip through under concurrency
+- **4** — Idempotency key checked inside the transaction with a uniqueness constraint; duplicate returns original result
+- **5** — All of 4, plus tested with concurrent duplicate requests that prove only one write occurs
 
 ---
 
@@ -195,17 +216,22 @@ These dimensions are scored. They contribute to overall quality but don't automa
 > Can we debug this in production?
 
 **Check:**
-- [ ] Context flows through all calls
-- [ ] Structured logging with correlation IDs
-- [ ] Errors include context for debugging
-- [ ] Critical operations have timing metrics
-- [ ] State transitions logged
+- [ ] Context (request ID, user ID, operation) flows through all calls
+- [ ] Structured logging at entry, exit, and error paths
+- [ ] Errors include sufficient context for a developer to diagnose without source code
+- [ ] Critical operations have timing/duration metrics
+- [ ] State transitions logged with before/after state
 
 **Red flags:**
-- `log.Println` instead of structured logger
-- Errors without context: `return err`
-- Missing request ID in logs
-- Silent error swallowing: `_ = err`
+- Unstructured logging (`log.Println`, `console.log` in production paths)
+- Bare error returns with no added context: `return err`
+- Missing correlation ID in logs
+- Silent error swallowing (`_ = err`, swallowed promise rejection)
+
+**Score anchors:**
+- **3** — Structured logging present; errors returned with context; request ID not consistently threaded
+- **4** — Correlation ID flows through all calls; entry/exit/error logs at all critical paths; errors have actionable context
+- **5** — All of 4, plus timing metrics on critical operations, state transitions logged with before/after values, log output is sufficient for a cold-start production debug
 
 ---
 
@@ -215,17 +241,22 @@ These dimensions are scored. They contribute to overall quality but don't automa
 
 **Check:**
 - [ ] No N+1 query patterns
-- [ ] Appropriate indexes assumed/documented
-- [ ] Connection pooling used
-- [ ] No unbounded memory growth
+- [ ] Indexes required by new queries are documented or added
+- [ ] No unbounded result sets (pagination or explicit limit on all list queries)
 - [ ] Locks held for minimum duration
+- [ ] No unnecessary allocations in hot paths
 
 **Red flags:**
 - Query inside a loop
-- `SELECT *` without limit
-- Unbounded slice append in loop
-- Mutex held across I/O operations
+- `SELECT *` or equivalent without a LIMIT
+- Unbounded slice/array growth in a loop
+- Mutex or lock held across an I/O operation
 - No pagination on list endpoints
+
+**Score anchors:**
+- **3** — No N+1 queries; some unbounded queries possible on low-traffic paths; locks scoped appropriately
+- **4** — All queries bounded; indexes documented or added; locks held for minimum duration; no unnecessary allocations
+- **5** — All of 4, plus query plans verified for large-table scans, hot paths benchmarked, and memory allocations profiled
 
 ---
 
@@ -234,20 +265,25 @@ These dimensions are scored. They contribute to overall quality but don't automa
 > Can the next developer understand and modify this?
 
 **Check:**
-- [ ] Code follows project conventions
-- [ ] Functions are focused (single responsibility)
-- [ ] Names are clear and consistent
-- [ ] Complex logic has explanatory comments
-- [ ] Tests document expected behavior
+- [ ] Code follows project conventions (check CLAUDE.md)
+- [ ] Functions are focused — single clear responsibility
+- [ ] Names are clear, unambiguous, and consistent with the domain
+- [ ] Complex logic has explanatory comments (the "why", not the "what")
+- [ ] Tests document expected behavior, not implementation steps
 
 **Red flags:**
 - Functions > 50 lines
-- Any red violation from `go-complexity-lint` (cyclomatic ≥ 15, nesting ≥ 7, params ≥ 7, fan-out ≥ 10)
-- Magic numbers without constants
-- Copy-pasted code blocks
-- Tests that test implementation, not behavior
+- Any red violation from the complexity linter (cyclomatic ≥ 15, nesting ≥ 7, params ≥ 7, fan-out ≥ 10)
+- Magic numbers or strings without named constants
+- Copy-pasted code blocks (two or more near-identical blocks)
+- Tests that verify which mocks were called rather than what outcome resulted
 
-> If the Completion Report does not include `go-complexity-lint` output, request it before scoring this dimension.
+> **Note:** If the Completion Report does not include complexity linter output, request it before scoring this dimension. Do not assume it passed.
+
+**Score anchors:**
+- **3** — Follows conventions; functions occasionally exceed 50 lines; complexity within yellow zone; tests present but some test implementation details
+- **4** — All functions ≤ 50 lines; no complexity red violations; tests assert behavior; names are unambiguous
+- **5** — All of 4, plus functions could individually serve as reference implementations; tests read as executable documentation; complexity metrics all in green zone
 
 ---
 
@@ -322,7 +358,7 @@ These dimensions are scored. They contribute to overall quality but don't automa
 - Any Critical or High finding exists
 - Quality Score below 20/25
 
-MEDIUM and LOW findings do NOT block approval. Report them in the **Future Work** section of your output.
+MEDIUM and LOW findings do NOT block approval. Report them in the **Future Work** section.
 
 ### REJECT
 **Any of these:**
@@ -334,35 +370,34 @@ MEDIUM and LOW findings do NOT block approval. Report them in the **Future Work*
 
 ## Critical Dimension Judgment Calls
 
-Sometimes edge cases aren't black and white. Use these guidelines:
-
 **Correctness — when to PASS despite imperfection:**
-- Spec was ambiguous AND implementation is reasonable AND behavior is documented
-- Edge case wasn't in spec (note as Important finding, not FAIL)
-- Test exists but could be more thorough (note as Important, not FAIL)
+- Spec was ambiguous AND implementation is reasonable AND behavior is documented in `Ambiguities Resolved`
+- Edge case wasn't in spec (note as High finding, not FAIL)
+- Test exists but could be more thorough (note as Medium, not FAIL)
 
 **Correctness — when to FAIL despite "mostly working":**
 - Any spec'd edge case not handled
 - Any spec'd edge case not tested
 - Financial calculation could produce wrong result under any valid input
+- State machine has untested transitions
 
 **Security — when to PASS despite concerns:**
-- Theoretical attack requires unrealistic preconditions
-- Defense in depth exists elsewhere (document assumption)
-- Issue is in non-sensitive code path
+- Theoretical attack requires unrealistic preconditions (document the assumption)
+- Defense in depth exists at a higher layer (document where)
+- Issue is in a non-sensitive code path with no user-controlled input
 
 **Security — when to FAIL despite "low risk":**
-- Any SQL injection possibility, however unlikely
-- Any PII in logs, however obscure
-- Any missing auth check on money movement
+- Any injection possibility, however unlikely
+- Any PII in logs, however obscure the field name
+- Any missing auth check on a mutation
 
 **Compliance — when to PASS despite gaps:**
-- Audit requirement applies to different operation
-- Existing audit trail elsewhere covers this case (document)
+- Audit requirement applies to a different layer
+- Existing audit trail elsewhere provably covers this case (cite it)
 
 **Compliance — when to FAIL despite "we'll add it later":**
 - Money moved without ledger entry
-- User action not attributable
+- User action not attributable to a user ID
 - Regulatory requirement not met
 
 ---
@@ -370,11 +405,12 @@ Sometimes edge cases aren't black and white. Use these guidelines:
 ## Common Review Mistakes to Avoid
 
 1. **Grading on a curve** — Don't give PASS because "it's pretty close"
-2. **Style wars** — Don't FAIL for formatting if linter passes
+2. **Style wars** — Don't FAIL for formatting if the linter passes
 3. **Architecture astronauting** — Review what's there, not what you'd build
 4. **Rubber stamping** — "LGTM" without checking critical dimensions is negligent
 5. **Scope creep** — Review against the spec, not your wishlist
 6. **Kindness theater** — Honest FAIL helps more than false PASS
+7. **Skipping test quality** — Tests that exist but prove nothing are worse than no tests; they give false confidence
 
 ---
 
@@ -383,7 +419,8 @@ Sometimes edge cases aren't black and white. Use these guidelines:
 - You have **20 minutes** maximum for a review
 - You must produce the full output format
 - You must evaluate all 3 critical dimensions as PASS/FAIL
-- You must score all 5 quality dimensions
+- You must score all 5 quality dimensions using the anchors
 - You must categorize every finding
 - You must not see or reference the author's self-assessment
+- You must request complexity linter output if not present before scoring Maintainability
 - **Any FAIL on critical dimensions = REQUEST CHANGES, no exceptions**

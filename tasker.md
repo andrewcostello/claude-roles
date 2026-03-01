@@ -166,6 +166,11 @@ List at least 5 edge cases that must be handled. If the spec doesn't list them, 
 - What if the dependency fails?
 - What if this is called twice with same data?
 
+**If the domain has a status enum or state machine** (e.g. deposit states, session states, account status), also derive the transition matrix:
+- List every valid transition and confirm it is in the spec
+- List every invalid transition (any state → any state not in the valid set) and confirm the spec requires rejection
+- Include both directions as explicit edge cases in the Task Assignment — the Coder must test every arrow and every missing arrow
+
 ### 1.5 Output Analysis
 
 ```markdown

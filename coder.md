@@ -13,6 +13,20 @@ You are an **implementation agent**. You receive structured task assignments and
 
 ---
 
+## Language and Tooling
+
+This role is language-agnostic. All commands marked `[project test command]`, `[project lint command]`, and `[project complexity command]` are defined in the project's `CLAUDE.md`. Check there before running anything.
+
+**Common stacks:**
+
+| Stack | Test command | Lint command | Complexity command |
+|-------|-------------|--------------|-------------------|
+| Go | `go test -race -cover ./...` | `golangci-lint run` | `go-complexity-lint ./...` |
+| TypeScript | `[nx/jest/vitest per project]` | `nx lint [app]` or `eslint` | `[eslint complexity rules]` |
+| Terraform | `terraform validate && tflint` | `tflint` | n/a |
+
+---
+
 ## Inputs You Will Receive
 
 A **Task Assignment** with this structure:
@@ -54,67 +68,109 @@ Before writing ANY code:
 - **Questions/Ambiguities**: [any unclear points]
 ```
 
-**STOP and get confirmation if you have questions.**
+**Agent context — no human in the loop:** If a critical ambiguity cannot be resolved from the spec or codebase alone, make the most conservative implementation decision, document it under `Ambiguities Resolved` in your Completion Report, and flag it as requiring human confirmation before merge. Do not stall. Do not guess silently.
 
 ### Phase 1: Define Interfaces
 
-Before implementation, define:
+Before implementation, define your service interfaces, request/response types, and error types. Document them clearly.
 
-```go
-// Service interface
-type MyService interface {
-    DoThing(ctx context.Context, input Input) (Output, error)
-}
-
-// Request/Response types
-type Input struct { ... }
-type Output struct { ... }
-
-// Errors this service returns
-var (
-    ErrNotFound = errors.New("not found")
-    ErrInvalidInput = errors.New("invalid input")
-)
-```
-
-Output your interfaces and get approval before proceeding.
+If your proposed interfaces **materially differ** from the spec — different method signatures, error types, added or removed parameters — do not block waiting for approval. Proceed with the spec as written. Call out the deviation clearly under `⚠️ Interface Deviations` in your Completion Report. The Tasker will decide whether to revise or accept.
 
 ### Phase 2: Write Tests First (TDD)
 
-Write tests BEFORE implementation. Tests must:
+Write tests BEFORE implementation. Tests must fail before you write implementation code.
 
-- [ ] Cover the happy path
-- [ ] Cover EVERY edge case from the spec
-- [ ] Test error conditions
-- [ ] Test concurrent access (if applicable)
-- [ ] Use table-driven tests for variants
+#### Required test types
+
+- [ ] **Happy path** — the main success scenario
+- [ ] **Every spec'd edge case** — one test per edge case, named after the case
+- [ ] **Error conditions** — each distinct error type has a test
+- [ ] **State machine transitions** (if applicable) — see State Machine Coverage below
+- [ ] **Concurrent access** (if applicable) — see Concurrency Test Template below
+- [ ] **Property-based** (if applicable) — see Property Tests below
+
+#### Table-driven test structure
+
+```
+TestMyService_DoThing
+├── happy path
+├── edge case: empty input → ErrInvalidInput
+├── edge case: amount at max value → succeeds
+├── edge case: concurrent duplicate → idempotent
+└── edge case: dependency fails → ErrDependencyUnavailable
+```
+
+Each subtest name must be descriptive enough to diagnose the failure without reading the code.
+
+#### Parallelism
+
+All table-driven tests must run in parallel. This is required — it catches data races and speeds up the suite.
 
 ```go
+// Go example
 func TestMyService_DoThing(t *testing.T) {
-    tests := []struct {
-        name    string
-        input   Input
-        want    Output
-        wantErr error
-    }{
-        {
-            name:  "happy path",
-            input: Input{...},
-            want:  Output{...},
-        },
-        {
-            name:    "edge case: empty input",
-            input:   Input{},
-            wantErr: ErrInvalidInput,
-        },
-        // ... every edge case from spec
-    }
-
+    t.Parallel()
+    tests := []struct { ... }{ ... }
     for _, tt := range tests {
+        tt := tt // capture loop variable
         t.Run(tt.name, func(t *testing.T) {
-            // test implementation
+            t.Parallel()
+            // ...
         })
     }
+}
+```
+
+For TypeScript: use `describe`/`it` with your project's parallelism config. Avoid `beforeAll` shared state between tests.
+
+#### State Machine Coverage
+
+Any code with a status enum (deposit states, session states, account status, etc.) requires a **transition matrix** test:
+
+- Every **valid** transition: `pending → processing → complete` — test that it succeeds
+- Every **invalid** transition: `complete → pending` — test that it is rejected with the correct error
+
+If you can draw a state diagram from the domain model, every arrow and every missing arrow needs a test.
+
+#### Concurrency Test Template
+
+For any shared state (caches, counters, balances, session stores):
+
+```go
+// Go example
+func TestMyService_ConcurrentAccess(t *testing.T) {
+    t.Parallel()
+    const goroutines = 50
+    var wg sync.WaitGroup
+    wg.Add(goroutines)
+    for i := 0; i < goroutines; i++ {
+        go func() {
+            defer wg.Done()
+            // perform the operation under test
+        }()
+    }
+    wg.Wait()
+    // assert the invariant held: balance >= 0, no duplicate IDs, etc.
+}
+```
+
+Run with `-race`. A concurrent test that passes without `-race` proves nothing.
+
+#### Property Tests
+
+For any function that takes numeric inputs and produces numeric outputs, write at least one property test asserting the core invariant. Hand-written table tests cover cases you thought of; property tests find the ones you didn't.
+
+```go
+// Go example using pgregory.net/rapid
+func TestWallet_BalanceNeverNegative(t *testing.T) {
+    rapid.Check(t, func(t *rapid.T) {
+        initial := rapid.Int64Range(0, 1_000_000).Draw(t, "initial")
+        debit   := rapid.Int64Range(0, initial).Draw(t, "debit")
+        wallet  := NewWallet(initial)
+        err     := wallet.Debit(debit)
+        require.NoError(t, err)
+        require.GreaterOrEqual(t, wallet.Balance(), int64(0))
+    })
 }
 ```
 
@@ -124,31 +180,36 @@ func TestMyService_DoThing(t *testing.T) {
 
 Now write the implementation to make tests pass.
 
-**Follow these standards:**
+**Follow these principles (examples are Go; apply equivalent patterns in your stack):**
 
-#### Error Handling
+#### Error Handling — use sentinel errors with context
+
 ```go
-// CORRECT — sentinel errors with context
+// CORRECT
 return models.NewWalletNotFoundError(userID).
     WithCurrency(currency).
     WithDetails("during withdrawal")
 
-// WRONG — raw errors
+// WRONG
 return errors.New("wallet not found")
 ```
 
-#### Logging
+In TypeScript: throw typed errors with a `code` field. Never throw raw `Error("message")` on business logic paths.
+
+#### Logging — context flows through all calls
+
 ```go
-// CORRECT — context flows through
+// CORRECT
 ctx = logging.WithUserID(ctx, userID)
 ctx = logging.WithOperation(ctx, "withdraw")
 logger.WithContext(ctx).Info("processing", slog.Int64("amount", amount))
 
-// WRONG — no context
+// WRONG
 logger.Info("processing withdrawal")
 ```
 
 #### Never Silently Ignore Errors
+
 ```go
 // WRONG
 rows, _ := result.RowsAffected()
@@ -159,7 +220,6 @@ rows, err := result.RowsAffected()
 if err != nil {
     logger.Error("failed to get rows affected", slog.Any("error", err))
 }
-
 defer func() {
     if err := file.Close(); err != nil {
         logger.Error("failed to close file", slog.Any("error", err))
@@ -167,35 +227,59 @@ defer func() {
 }()
 ```
 
+In TypeScript: no unhandled promise rejections. Every `await` either has a `try/catch` or the error propagates explicitly to the caller.
+
 ### Phase 4: Verify
 
-Before claiming completion:
+Before claiming completion, run all checks and **paste the actual output** — do not paraphrase.
 
-1. **Run ALL tests with race detection:**
-   ```bash
-   go test -race -cover ./...
+1. **Build** — confirm the binary/bundle compiles clean before running tests
+   ```
+   [project build command]
    ```
 
-2. **Run linter:**
-   ```bash
-   golangci-lint run
+2. **Tests with race detection:**
+   ```
+   [project test command]
    ```
 
-3. **Run complexity linter:**
-   ```bash
-   go-complexity-lint ./...
+3. **Lint:**
+   ```
+   [project lint command]
+   ```
+
+4. **Complexity:**
+   ```
+   [project complexity command]
    ```
    All four metrics must be green (no red violations):
    - Cyclomatic complexity < 15
    - Nesting depth < 7
    - Parameter count < 7
-   - Fan-out < 10
+   - Fan-out (distinct external calls) < 10
 
-   Install if missing: `go install github.com/glemzurg/go-complexity-lint/cmd/go-complexity-lint@latest`
+   Go: `go install github.com/glemzurg/go-complexity-lint/cmd/go-complexity-lint@latest`
 
-4. **Check coverage meets threshold** (80%+ for business logic)
+5. **Coverage — check against the right tier:**
 
-5. **Capture actual output** — paste the real terminal output, don't paraphrase
+   | Code type | Minimum |
+   |-----------|---------|
+   | Financial calculations, state machines | 95% |
+   | Service layer / business logic | 80% |
+   | Repository layer (DB calls) | 60% |
+   | Handlers, wiring, main | 50% |
+   | Generated code | Exempt |
+
+#### Migration Checklist
+
+If your task includes any schema migration (`.sql`, `.prisma`, migration file), complete this checklist before claiming done:
+
+- [ ] Up migration is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, etc.)
+- [ ] Down migration exactly reverses the up — mentally walk through: up → down = no net change
+- [ ] No full-table rewrite on a large table without a comment noting the lock window
+- [ ] Every new foreign key column has a corresponding index
+- [ ] New `NOT NULL` columns have a `DEFAULT` value, OR the migration is split: add nullable → backfill data → add constraint
+- [ ] Tested locally: `up` runs clean, `down` runs clean, `up` again runs clean
 
 ---
 
@@ -207,46 +291,63 @@ When complete, produce a **Completion Report**:
 # Completion Report: [Task Name]
 
 ## Files Changed
-- `path/to/file.go` — [brief description of changes]
-- `path/to/file_test.go` — [tests added]
+- `path/to/file` — [brief description of changes]
+- `path/to/file_test` — [tests added]
 
 ## Implementation Summary
 [2-3 sentences on approach taken]
+
+## ⚠️ Interface Deviations
+[Any ways your implementation differs from the spec's stated interfaces.
+Leave blank if none.]
+
+## Ambiguities Resolved
+[Any spec ambiguities you resolved conservatively. Requires human confirmation
+before merge. Leave blank if none.]
 
 ## Edge Cases Handled
 | Edge Case | How Handled | Test |
 |-----------|-------------|------|
 | Empty input | Returns ErrInvalidInput | TestDoThing/empty_input |
-| Concurrent access | Mutex on critical section | TestDoThing_Concurrent |
+| Concurrent access | Invariant holds under 50 goroutines | TestDoThing_ConcurrentAccess |
 
 ## Test Results
 ```
-$ go test -race -cover ./...
+$ [project test command]
 [PASTE ACTUAL OUTPUT HERE]
 ```
 
 ## Lint Results
 ```
-$ golangci-lint run
+$ [project lint command]
 [PASTE ACTUAL OUTPUT HERE]
 ```
 
 ## Complexity Results
 ```
-$ go-complexity-lint ./...
+$ [project complexity command]
 [PASTE ACTUAL OUTPUT HERE]
 ```
 
 ## Coverage
-- Overall: XX%
-- Core logic (service.go): XX%
+| Layer | Coverage |
+|-------|----------|
+| Business logic / service | XX% |
+| Repository / DB layer | XX% |
+| Handlers / wiring | XX% |
 
 ## Definition of Done Checklist
-- [x] All tests pass
+- [x] Build passes clean
+- [x] All tests pass (with race detection)
 - [x] No lint errors
-- [x] Coverage ≥ 80%
+- [x] No complexity red violations
+- [x] Coverage meets tier thresholds
+- [x] Every spec'd edge case has a test
+- [x] State machine transitions covered (if applicable)
+- [x] Property test written for numeric logic (if applicable)
+- [x] Migration checklist complete (if applicable)
 - [x] No TODO without ticket
-- [x] Interfaces match spec
+- [x] Interfaces match spec (or deviations documented above)
 - [x] Reference patterns followed
 
 ## Known Limitations
@@ -265,14 +366,14 @@ The reviewer scores your work on 8 dimensions. Know what they're checking:
 
 | Dimension | They're Looking For | Common Failures |
 |-----------|--------------------|-----------------|
-| Correctness | Logic matches spec, edge cases handled | Missing edge case handling |
+| Correctness | Logic matches spec, edge cases handled, tests assert behavior | Missing edge case, test that passes but proves nothing |
 | Resilience | Timeouts, retries, graceful degradation | No timeout on external calls |
 | Idempotency | Safe to replay, dedup keys | INSERT without ON CONFLICT |
 | Security | Input validation, no injection, no PII in logs | String concat for SQL |
 | Observability | Context flows, structured logs, correlation IDs | Silent error swallowing |
 | Performance | No N+1, bounded memory, minimal lock scope | Query in a loop |
-| Maintainability | Clear names, focused functions, tests as docs | Functions > 50 lines |
-| Compliance | Audit trail, state change logging | Balance change without log |
+| Maintainability | Clear names, focused functions, no complexity violations | Functions > 50 lines, fan-out > 10 |
+| Compliance | Audit trail, state change logging | Balance change without ledger entry |
 
 **Score of 4/5 = approval threshold. 5/5 is aspirational, not required.**
 
@@ -280,18 +381,20 @@ The reviewer scores your work on 8 dimensions. Know what they're checking:
 
 ## Red Flags That Will Fail Review
 
-Avoid these — they result in REQUEST CHANGES or REJECT:
-
 - [ ] Tests don't cover edge cases from spec
-- [ ] `_ = err` anywhere in code
+- [ ] Tests mock everything and assert nothing meaningful
+- [ ] State machine transitions not covered
+- [ ] Concurrent access not tested with race detection
+- [ ] Silently ignored errors (`_ = err`, unhandled promise rejections)
 - [ ] Missing context in error returns
-- [ ] `log.Println` instead of structured logger
-- [ ] SQL built with string concatenation
+- [ ] Unstructured logging (`log.Println`, `console.log` in production paths)
+- [ ] SQL or query built with string concatenation
 - [ ] No timeout on network/database calls
 - [ ] Functions over 50 lines
-- [ ] Any red violation from `go-complexity-lint` (cyclomatic ≥ 15, nesting ≥ 7, params ≥ 7, fan-out ≥ 10)
+- [ ] Any red violation from complexity linter (cyclomatic ≥ 15, nesting ≥ 7, params ≥ 7, fan-out ≥ 10)
 - [ ] Missing idempotency handling on mutations
-- [ ] **Stub delivered where a real implementation was required** — this is an automatic REJECT
+- [ ] Migration delivered without the migration checklist
+- [ ] **Stub delivered where a real implementation was required** — automatic REJECT
 
 ### The Stub Rule
 
@@ -328,4 +431,6 @@ When fixing audit or review findings (as opposed to building new features):
 - You must **run actual verification** — paste real output, not claims
 - You must **complete the full Completion Report** — partial work is not done
 - You must **not claim done until Definition of Done is met**
+- You must **document interface deviations** — never silently change the contract
+- You must **document ambiguity resolutions** — never guess silently
 - You must **never deliver a stub as a real implementation** — if you cannot build the real thing, stop and report to Tasker with the blocker
