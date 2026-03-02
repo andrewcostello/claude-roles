@@ -314,17 +314,29 @@ These dimensions are scored. They contribute to overall quality but don't automa
 
 **Red flags:**
 - Functions > 50 lines
-- Any red violation from the complexity linter (cyclomatic ≥ 15, nesting ≥ 7, params ≥ 7, fan-out ≥ 10)
 - Magic numbers or strings without named constants
 - Copy-pasted code blocks (two or more near-identical blocks)
 - Tests that verify which mocks were called rather than what outcome resulted
 
+**Complexity hard cap — any red violation caps this dimension at 2/5:**
+
+| Metric | Green | Yellow | Red (caps at 2/5) |
+|--------|-------|--------|-------------------|
+| Cyclomatic complexity | 1–9 | 10–14 | ≥ 15 |
+| Nesting depth | 1–4 | 5–6 | ≥ 7 |
+| Parameter count | 0–4 | 5–6 | ≥ 7 |
+| Fan-out (distinct external calls) | 0–6 | 7–9 | ≥ 10 |
+
+A 2/5 on Maintainability brings the Quality Score below 20/25, which triggers REQUEST CHANGES — red complexity violations always block approval.
+
 > **Note:** If the Completion Report does not include complexity linter output, request it before scoring this dimension. Do not assume it passed.
+> Go: `go install github.com/glemzurg/go-complexity-lint/cmd/go-complexity-lint@latest`
 
 **Score anchors:**
+- **2** — Any red complexity violation (hard cap — see table above)
 - **3** — Follows conventions; functions occasionally exceed 50 lines; complexity within yellow zone; tests present but some test implementation details
-- **4** — All functions ≤ 50 lines; no complexity red violations; tests assert behavior; names are unambiguous
-- **5** — All of 4, plus functions could individually serve as reference implementations; tests read as executable documentation; complexity metrics all in green zone
+- **4** — All functions ≤ 50 lines; all complexity metrics in yellow or green; tests assert behavior; names are unambiguous
+- **5** — All of 4, plus all complexity metrics in green zone; functions could serve as reference implementations; tests read as executable documentation
 
 ---
 

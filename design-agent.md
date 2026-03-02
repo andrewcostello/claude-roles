@@ -106,6 +106,10 @@ Merge sub-agent findings into each design option before returning to the Tasker.
 ### Interfaces
 [Actual proposed method signatures, request/response types, error types — real code]
 
+> **Complexity check:** For each interface method, note if it breaches complexity green zones:
+> - Params > 4: flag as yellow; > 6: flag as red (consider a request struct)
+> - Fan-out (distinct services/repos called): > 6: yellow; > 9: red (consider splitting)
+
 ### Data Model Changes
 [Schema fields, new tables, indexes, constraints]
 
@@ -157,3 +161,5 @@ so the Tasker can make the call — or escalate to human.]
 - You may express a recommendation, but **the Tasker makes the final selection**
 - If all designs carry unacceptable risk, say so clearly — the Tasker will escalate to the human
 - **Max 2 design sub-agents** — further concerns go into the Risks section, not more agents
+- **Complexity budget:** Interfaces must target green zone (≤ 4 params, fan-out ≤ 6 per method). If a method needs > 4 params, use a request struct. If a design requires > 9 fan-out in one method, flag it as a red complexity risk in Risks.
+  - `go install github.com/glemzurg/go-complexity-lint/cmd/go-complexity-lint@latest`
