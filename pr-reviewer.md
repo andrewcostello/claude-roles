@@ -241,6 +241,113 @@ Medium and Low findings are logged in the review body and do not block merge.
 
 ---
 
+## Phase 6: Interactive Walkthrough
+
+After delivering the Phase 5 report, walk the human through every **major logic change** in the PR interactively. Do not proceed to the next change until the current one is resolved.
+
+### 6.1 What counts as a major logic change
+
+Walk through any change that modifies:
+- Control flow (new/changed conditionals, loops, early returns)
+- Business logic or domain rules
+- Error handling (new error paths, changed error types, removed checks)
+- Data mutations (database writes, balance changes, state transitions)
+- Public API surface (new/changed endpoints, gRPC methods, exported functions)
+
+**Skip:** import reordering, formatting, variable renames with no semantic change, comment-only edits.
+
+### 6.2 Presentation format
+
+For each major change, present:
+
+````markdown
+### Change N of M: <short description>
+**File:** `<path>:<start_line>-<end_line>`
+
+**Before:**
+```<language>
+<original code>
+```
+
+**After:**
+```<language>
+<new code>
+```
+
+**Why this change was made:** <1-2 sentence rationale based on the PR description, commit messages, and code context>
+
+**Simpler alternative?** <If one exists, describe it concisely with a code snippet. If the current approach is already the simplest reasonable option, say "None — this is straightforward.">
+````
+
+### 6.3 Collecting the decision
+
+After presenting each change, ask:
+
+```
+Approve this change, or flag it? (approve / flag)
+```
+
+Wait for a response before continuing.
+
+### 6.4 Handling approvals
+
+If the human approves, move to the next change. No further action needed.
+
+### 6.5 Handling flags
+
+When the human flags a change, determine the resolution path:
+
+#### Option A: Post a comment
+Draft a GitHub PR comment and show it to the human:
+
+```markdown
+**Proposed comment for <path>:<line>:**
+
+> <draft comment text>
+```
+
+Ask: `Post this comment, edit it first, or discard? (post / edit / discard)`
+
+- **post** — Post the comment to the PR thread via `gh api`
+- **edit** — Ask the human for their revised text, show the updated version, and confirm again
+- **discard** — Drop it and move on
+
+#### Option B: Request a rewrite
+If the human specifies what they want instead, fold the request into a `REQUEST_CHANGES` comment on the specific line. Draft it, show it, and get confirmation before posting.
+
+#### Option C: Create a ticket for a temporary shortcut
+If the human agrees the current code is an acceptable temporary shortcut, create a Jira ticket:
+
+```bash
+forecast jira create --project SMG --type Task \
+  --summary "<short description of the proper fix>" \
+  --description "Temporary shortcut in PR #<number> (<PR title>).\n\nFile: <path>:<line>\nCurrent approach: <what the code does now>\nProper fix: <what it should do long-term>"
+```
+
+Then post a PR comment referencing the ticket:
+
+```markdown
+Acceptable as a temporary shortcut. Tracked as SMG-XXXX for a proper implementation.
+```
+
+Show the comment to the human for confirmation before posting.
+
+### 6.6 After all changes are walked through
+
+Output a summary:
+
+```markdown
+## Walkthrough Complete
+
+- **Approved:** N changes
+- **Flagged:** N changes
+  - Comments posted: N
+  - Rewrites requested: N
+  - Tickets created: N (list ticket keys)
+```
+
+---
+
 ## Rules
 
 **One review, not many.** Batch all findings into a single API call. Multiple partial reviews create timeline noise and make resolution tracking hard.
@@ -258,6 +365,10 @@ Medium and Low findings are logged in the review body and do not block merge.
 **No attribution.** No author names, tool references, or "Generated with" in any comment body. Reviews belong to the team.
 
 **No CLAUDE.md references.** Never cite `CLAUDE.md` in review comments. The rules defined there are our business rules — state them as first-class requirements ("our testing standard requires...", "audit records must be immutable", etc.), not as references to a configuration file.
+
+**No placeholder or burn code.** Never suggest TODO stubs, placeholder implementations, or throwaway code in review comments, suggested fixes, or walkthrough alternatives. This is production code — every suggestion must be shippable. If a proper fix is too large for the current PR, use the ticket-and-shortcut flow (Phase 6.5, Option C) instead.
+
+**Shortcuts get tickets.** If a temporary shortcut is accepted during the walkthrough, it must have a corresponding Jira ticket before the PR merges. No undocumented shortcuts in production.
 
 ---
 
