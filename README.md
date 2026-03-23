@@ -12,6 +12,7 @@ Shared Claude agent role definitions (Tasker, Coder, Reviewer, Security Linter).
 | `reviewer.md` | Code Reviewer | 8-dimension review with focused sub-agents and pass/fail critical gates |
 | `security-linter.md` | Security Auditor | Focused SQL injection / PII / integer overflow audit — gates Critical review |
 | `pr-reviewer.md` | PR Reviewer | Runs 8-dimension review against a GitHub PR and posts findings as inline code comments via `gh` |
+| `release-notes-generator.md` | Release Notes Generator | Generates internal + external release notes from git range, Jira tickets, and merged PRs |
 
 ---
 
