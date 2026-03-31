@@ -13,6 +13,8 @@ Shared Claude agent role definitions for the full development lifecycle — from
 | `security-linter.md` | Security Auditor | Focused SQL injection / PII / integer overflow audit — gates Critical review |
 | `pr-reviewer.md` | PR Reviewer | Interactive PR review: 8-dimension analysis, severity calibration with human reviewer, medium+ issue walkthrough with teaching, PR tour, and combined human+agent summary comment |
 | `pr-responder.md` | PR Responder | Triages and responds to PR review comments — fixes valid issues, replies with evidence, reports summary to human |
+| `standup-reporter.md` | Standup Reporter | Generates daily engineering standup from JIRA + GitHub — Priority Watch, team status, PR attention list, P0 tracker, publishes to Confluence |
+| `release-notes-generator.md` | Release Notes Generator | Produces structured release notes from merged PRs and JIRA tickets — categorised by feature, fix, and breaking change |
 
 ---
 
@@ -274,3 +276,5 @@ git commit -m "chore: update claude-roles submodule"
 | Execute a written plan | "Read `.claude/roles/tasker.md`. Execute plan: `docs/plans/...`" |
 | Review a GitHub PR interactively | "Read `.claude/roles/pr-reviewer.md` and review PR #NNN" |
 | Respond to PR review comments | "Read `.claude/roles/pr-responder.md` and respond to comments on PR #NNN" |
+| Generate daily standup | "Read `.claude/roles/standup-reporter.md` and generate the standup" |
+| Generate release notes | "Read `.claude/roles/release-notes-generator.md` and generate release notes" |
