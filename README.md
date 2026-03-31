@@ -10,7 +10,8 @@ Shared Claude agent role definitions for the full development lifecycle — from
 | `design-agent.md` | Design Agent | Produces 2-3 competing designs for Tasker to select — mandatory for Critical/High risk |
 | `coder.md` | Implementation Agent | Writes tested code against an approved design spec |
 | `reviewer.md` | Code Reviewer | 8-dimension review with data flow tracing, dedicated test quality audit, design coherence checks, and focused sub-agents |
-| `security-linter.md` | Security Auditor | Focused SQL injection / PII / integer overflow audit — gates Critical review |
+| `security-linter.md` | Security Auditor | Focused SQL injection, PII exposure, integer overflow, and auth bypass audit with severity grading — gates Critical review |
+| `config/team-config.yaml` | Shared Configuration | Team roster, JIRA/GitHub settings, tracked epics, P0 tickets, known binaries — single source of truth for project-specific config |
 | `pr-reviewer.md` | PR Reviewer | Interactive PR review: 8-dimension analysis, severity calibration with human reviewer, medium+ issue walkthrough with teaching, PR tour, and combined human+agent summary comment |
 | `pr-responder.md` | PR Responder | Triages and responds to PR review comments — fixes valid issues, replies with evidence, reports summary to human |
 | `standup-reporter.md` | Standup Reporter | Generates daily engineering standup from JIRA + GitHub — Priority Watch, team status, PR attention list, P0 tracker, publishes to Confluence |
@@ -22,22 +23,15 @@ Shared Claude agent role definitions for the full development lifecycle — from
 
 ### Three-model review panel
 
-The Tasker dispatches three independent reviewers in parallel. Install both CLIs:
+The Tasker dispatches three independent reviewers in parallel using Claude Code plugins:
 
-**Codex CLI (Reviewer B):**
-```bash
-npm install -g @openai/codex
-export OPENAI_API_KEY=sk-...
-```
+**Codex Plugin (Reviewer B):**
+Install the Codex plugin for Claude Code. Requires an OpenAI API key.
 
-**Gemini CLI (Reviewer C):**
-```bash
-npm install -g @google/gemini-cli
-export GEMINI_API_KEY=...
-```
+**Gemini Plugin (Reviewer C):**
+Install [cc-gemini-plugin](https://github.com/thepushkarp/cc-gemini-plugin) for Claude Code. Requires a Gemini API key.
 
-**Without the CLIs:** The Tasker falls back to additional Claude subagent reviewers.
-All three reviewers are required for Critical and High risk consensus.
+**Fallback:** If either plugin is unavailable, the Tasker dispatches additional Claude subagent reviewers. Two-reviewer consensus is the minimum for High risk; three is required for Critical.
 
 ---
 
@@ -82,11 +76,11 @@ Create a general-purpose subagent with this prompt:
 Create a general-purpose subagent with this prompt:
 "Read `.claude/roles/reviewer.md` for your role instructions, then review: [Review Request]"
 
-**To dispatch Reviewer B (Codex CLI via Bash):**
-```bash
-npx @openai/codex --quiet --approval-mode full-auto \
-  "Read .claude/roles/reviewer.md for your role. Review: [Review Request]"
-```
+**To dispatch Reviewer B (Codex plugin):**
+Dispatch via the Codex Claude Code plugin with the reviewer.md prompt.
+
+**To dispatch Reviewer C (Gemini plugin):**
+Dispatch via the cc-gemini-plugin with the reviewer.md prompt.
 
 **To dispatch the Design Agent (subagent — Critical/High risk):**
 Create a general-purpose subagent with this prompt:
@@ -115,7 +109,19 @@ The Coder role uses placeholders — replace these here so subagents know the ac
 When in doubt, go one level higher.
 ```
 
-### 3. Configure project commands
+### 3. Configure team settings
+
+Edit `config/team-config.yaml` with your project-specific values:
+- **Team roster** — add/remove team members with their GitHub and JIRA usernames
+- **JIRA** — your instance URL, email, project keys
+- **GitHub repos** — repos to scan for commits and PRs
+- **Binaries** — known binaries with source paths (used by release notes)
+- **Tracked epics** — epic keys for the weekly project health report
+- **P0 tickets** — security/critical tickets to track in standups
+
+This is the single source of truth for project-specific config. The standup reporter and release notes generator read from this file — update it here, not in the role files.
+
+### 4. Configure project commands
 
 The Coder role references `[project test command]`, `[project lint command]`, and
 `[project complexity command]`. Common stacks:
@@ -160,15 +166,18 @@ Human Request
      ↓
 [Tasker] reads tasker.md — classifies risk, breaks down, finds references
      ↓
+(Critical/High) → [Design Agent] → 2-3 designs → Tasker selects one
+     ↓
 [Coder subagent] reads coder.md — TDD: tests first, then implement, then verify
      ↓
 Completion Report → Tasker strips self-assessment
      ↓
-[Reviewer A subagent]  +  [Reviewer B Codex]   ← dispatched in parallel
-reads reviewer.md          reads reviewer.md
-     ↓                          ↓
-         Merged dual-review verdict
-              ↓
+(Critical only) → [Security Linter] → PASS / FLAG / FAIL
+     ↓
+[Reviewer A: Claude]  +  [Reviewer B: Codex plugin]  +  [Reviewer C: Gemini plugin]
+     ↓                          ↓                              ↓
+                    Three-model merged verdict
+                           ↓
     APPROVED ✅  |  ITERATE → fix CRITICAL/HIGH only → targeted re-review
                  |  REJECT → escalate to human
 ```
@@ -243,7 +252,7 @@ Respond to comments on PR #NNN in [owner/repo].
 
 ```
 Read the file `.claude/roles/security-linter.md` for your complete role instructions.
-Audit only SQL injection, PII exposure, and integer overflow.
+Audit SQL injection, PII exposure, integer overflow, and auth/permission bypass.
 
 Risk context: [what this code touches — SQL, auth, money, etc.]
 

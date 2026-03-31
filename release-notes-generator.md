@@ -17,27 +17,14 @@ Modes A and B are the target steady-state workflow (SMG-2239).
 
 ## Configuration
 
-- **JIRA:** smgames.atlassian.net, projects: SMG, BO, KIOS
-- **JIRA credentials:** `~/.config/jira/credentials` (email: andrew@evenplay.com)
-- **GitHub repo:** `EvenPlay/evenplay-mono`
-- **Output directory:** `output/release-notes/{binary}/{version}.md`
-- **Confluence space:** `Documentat`
+**Read `.claude/roles/config/team-config.yaml` before starting.** This file contains:
+- JIRA connection details and project keys
+- GitHub repos
+- Known binaries with their types and source paths
+- Confluence space and page hierarchy
+- Output directories
 
-### Known binaries and their types
-
-| Binary | Type | Source path |
-|--------|------|-------------|
-| `wallet` | Go | `apps/finance-domain/wallet/` |
-| `platform-core` | Go | `apps/platform-domain/core/` |
-| `game-engine` | Go | `apps/game-domain/engine/` |
-| `station-state-computer` | Go | `apps/platform-domain/station-state-computer/` |
-| `partner-service` | Go | `apps/platform-domain/partner-service/` |
-| `paygate-auth` | Go | `apps/paygate/auth/` |
-| `paygate-transactor` | Go | `apps/paygate/transactor/` |
-| `paylines` | Python | `apps/paylines/` |
-| `client` | TypeScript/Nx | `apps/client/` |
-| `admin` | TypeScript/Nx | `apps/admin/` |
-| `backoffice-web` | TypeScript/Nx | `apps/backoffice-web/` |
+All hardcoded values (binary names, source paths, JIRA config) live in that config file. If a new binary is added or a path changes, update the config — not this role file.
 
 ---
 

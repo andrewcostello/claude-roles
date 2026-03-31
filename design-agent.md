@@ -32,6 +32,30 @@ A Task Assignment from the Tasker containing:
 Read the Task Assignment in full. If any part of the objective or edge cases is ambiguous,
 note it — do not guess. Document ambiguities in your output for the Tasker to resolve.
 
+**If ambiguities make it impossible to produce concrete designs** — e.g., the core behavior
+is undefined, the data model depends on an unresolved decision, or the edge cases contradict
+each other — do NOT produce speculative designs. Instead, return early with:
+
+```markdown
+# Design Options: [Task Name]
+
+## Cannot Produce Designs — Clarification Required
+
+The following ambiguities prevent concrete design work:
+
+1. [Ambiguity] — why it blocks: [which design decision depends on the answer]
+2. [Ambiguity] — why it blocks: [which design decision depends on the answer]
+
+### What I need to proceed
+- [Specific question 1]
+- [Specific question 2]
+
+### What I can say now
+[Any partial analysis that IS possible — e.g., "regardless of the answer, the data model will need X"]
+```
+
+The Tasker will resolve the ambiguities with the human and re-dispatch you.
+
 ### Phase 1: Research the Codebase
 
 Before proposing anything, search the codebase for:
@@ -82,6 +106,25 @@ For each design, check:
 
 For each concern across each design: SAFE or RISK — with the specific reasoning.
 Designs: [paste all designs]
+```
+
+**Sub-agent finding format.** Each sub-agent must return findings in this structure:
+
+```markdown
+## [Sub-Agent Name] Findings
+
+### Design A: [name]
+| Concern | Verdict | Evidence |
+|---------|---------|----------|
+| [specific check] | SAFE / RISK | [file:line or interface reference + reasoning] |
+
+**Summary:** SAFE / RISK — [one sentence]
+
+### Design B: [name]
+[same table]
+
+### Cross-Design Notes
+[Any concern that applies to ALL designs — e.g., "none of the designs address X"]
 ```
 
 Merge sub-agent findings into each design option before returning to the Tasker.

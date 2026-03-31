@@ -1,0 +1,166 @@
+# Team & Project Configuration
+# Used by: standup-reporter.md, release-notes-generator.md
+#
+# This file lives in the roles repo but contains project-specific config.
+# Update this file when team members, projects, binaries, or tracked items change.
+
+# ─── Organization ────────────────────────────────────────────────────────────
+
+organization:
+  name: "EvenPlay"
+  product: "Skill Money Games"
+
+# ─── JIRA ────────────────────────────────────────────────────────────────────
+
+jira:
+  url: https://smgames.atlassian.net
+  email: andrew@evenplay.com
+  credentials_path: "~/.config/jira/credentials"
+  projects:
+    - SMG
+    - BO
+    - KIOS
+
+# ─── GitHub ──────────────────────────────────────────────────────────────────
+
+github:
+  repos:
+    - EvenPlay/evenplay-mono
+    - EvenPlay/ep2.0
+
+# ─── Confluence ──────────────────────────────────────────────────────────────
+
+confluence:
+  space: "Documentat"
+  standup_parent_id: null  # auto-discovered
+  weekly_parent_id: 334200836  # "Engineering Weekly Reports"
+
+# ─── Team Roster ─────────────────────────────────────────────────────────────
+# github: GitHub username (null if not confirmed)
+# jira: JIRA display name used for matching
+# notes: any special handling
+
+team:
+  - name: Andrew Costello
+    github: andrewcostello
+    jira: Andrew Costello
+
+  - name: Boris
+    github: borisevenplay
+    jira: Boris
+
+  - name: Justin Scott
+    github: justin-workeven
+    jira: Justin Scott
+    notes: "ep2.0 commits are AI experimentation — do not flag as work without tickets"
+
+  - name: Suren Martirosyan
+    github: surenevenplay
+    jira: Suren Martirosyan
+
+  - name: Taleh Ibrahimli
+    github: tislib
+    jira: Taleh Ibrahimli
+
+  - name: Nafeem Haque
+    github: nafeemhaque
+    jira: Nafeem Haque
+
+  - name: Eashan
+    github: null  # not confirmed
+    jira: Eashan
+
+  - name: Fahim
+    github: null  # TBC
+    jira: Fahim
+
+  - name: Roman Gonzales-Valdes
+    github: roman-2kgroup
+    jira: Roman Gonzales-Valdes
+    notes: "External contractor"
+
+# ─── Tracked Epics (for weekly project health report) ────────────────────────
+
+tracked_epics:
+  - SMG-2101
+  - SMG-2063
+  - SMG-1745
+  - SMG-1948
+  - SMG-1662
+  - SMG-2182
+  - SMG-2183
+
+# ─── P0 Security Tickets ─────────────────────────────────────────────────────
+# Update this list when P0 security tickets are added or resolved.
+
+p0_security_tickets:
+  - SMG-1652
+  - SMG-1653
+  - SMG-1654
+  - SMG-1655
+  - SMG-1657
+  - SMG-1659
+  - SMG-1660
+
+# ─── Forecast Tool ───────────────────────────────────────────────────────────
+
+forecast:
+  binary_path: "~/Project/forecast/forecast"
+  projects:
+    - tech-debt
+    - backoffice
+    - infrastructure
+
+# ─── Known Binaries (for release notes) ──────────────────────────────────────
+
+binaries:
+  - name: wallet
+    type: Go
+    source_path: "apps/finance-domain/wallet/"
+
+  - name: platform-core
+    type: Go
+    source_path: "apps/platform-domain/core/"
+
+  - name: game-engine
+    type: Go
+    source_path: "apps/game-domain/engine/"
+
+  - name: station-state-computer
+    type: Go
+    source_path: "apps/platform-domain/station-state-computer/"
+
+  - name: partner-service
+    type: Go
+    source_path: "apps/platform-domain/partner-service/"
+
+  - name: paygate-auth
+    type: Go
+    source_path: "apps/paygate/auth/"
+
+  - name: paygate-transactor
+    type: Go
+    source_path: "apps/paygate/transactor/"
+
+  - name: paylines
+    type: Python
+    source_path: "apps/paylines/"
+
+  - name: client
+    type: TypeScript/Nx
+    source_path: "apps/client/"
+
+  - name: admin
+    type: TypeScript/Nx
+    source_path: "apps/admin/"
+
+  - name: backoffice-web
+    type: TypeScript/Nx
+    source_path: "apps/backoffice-web/"
+
+# ─── Output Directories ─────────────────────────────────────────────────────
+
+output:
+  standup: "output/standup/"
+  weekly: "output/weekly/"
+  release_notes: "output/release-notes/{binary}/{version}.md"

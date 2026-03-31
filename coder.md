@@ -74,7 +74,11 @@ Before writing ANY code:
 
 Before implementation, define your service interfaces, request/response types, and error types. Document them clearly.
 
-If your proposed interfaces **materially differ** from the spec — different method signatures, error types, added or removed parameters — do not block waiting for approval. Proceed with the spec as written. Call out the deviation clearly under `⚠️ Interface Deviations` in your Completion Report. The Tasker will decide whether to revise or accept.
+If an **Approved Design Spec** is attached, it takes precedence over the original spec (the design is a refinement). If you encounter a **meaningful conflict** between the two — different approach, data model, or behavior — do NOT pick a side. Stop and report the divergence to the Tasker with: (1) what the spec says, (2) what the approved design says, (3) where and why they conflict, (4) your recommendation. The Tasker will escalate to the human.
+
+For **minor deviations** (naming, parameter order, implementation details that don't change behavior), follow the approved design and document the deviation under `⚠️ Interface Deviations` in your Completion Report.
+
+If there is **no Approved Design Spec** and your proposed interfaces materially differ from the spec, proceed with the spec as written and call out the deviation under `⚠️ Interface Deviations`. The Tasker will decide whether to revise or accept.
 
 ### Phase 2: Write Tests First (TDD)
 
@@ -353,7 +357,8 @@ $ [project complexity command]
 ## Known Limitations
 - [Any shortcuts taken or future work needed]
 
-## Self-Assessment (will NOT be shared with reviewer)
+## Self-Assessment (for YOUR use only — the Tasker strips this before review)
+This section exists so you catch your own gaps before submitting. The reviewer never sees it.
 - Confidence level: High/Medium/Low
 - Areas I'm uncertain about: [list]
 ```

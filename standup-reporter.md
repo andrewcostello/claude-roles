@@ -8,19 +8,16 @@ Invoke this role each morning with: `Use the standup-reporter role`
 
 ## Configuration
 
-- **JIRA:** smgames.atlassian.net, projects: SMG, BO, KIOS
-- **JIRA credentials:** `~/.config/jira/credentials` (email: andrew@evenplay.com)
-- **GitHub repos:** `EvenPlay/evenplay-mono`, `EvenPlay/ep2.0`
-- **Team roster:**
-  - Andrew Costello → `andrewcostello`
-  - Boris → `borisevenplay`
-  - Justin Scott → `justin-workeven`
-  - Suren Martirosyan → `surenevenplay`
-  - Taleh Ibrahimli → `tislib`
-  - Nafeem Haque → `nafeemhaque`
-  - Eashan → (JIRA only — no GitHub login confirmed)
-  - Fahim → (GitHub login TBC)
-  - Roman Gonzales-Valdes → `roman-2kgroup` (external contractor)
+**Read `.claude/roles/config/team-config.yaml` before starting.** This file contains:
+- JIRA connection details and project keys
+- GitHub repos to scan
+- Team roster with GitHub/JIRA mappings and per-person notes (e.g., exclusions from "work without tickets")
+- Tracked epics for the weekly project health report
+- P0 security ticket list
+- Forecast tool paths and projects
+- Output directories
+
+All hardcoded values (team members, ticket lists, epic IDs) live in that config file. If something changes, update the config — not this role file.
 
 ## Blocker Label System (managed in JIRA)
 
@@ -95,8 +92,8 @@ jql: project in (SMG,BO,KIOS) AND status changed to "In Dev QA" ON "REPORT_DATE"
 # All active tickets
 jql: project in (SMG,BO,KIOS) AND status in ("In Development","Is Blocked","In Dev QA","In Internal QA") ORDER BY updated DESC
 
-# P0 security tickets
-jql: issueKey in (SMG-1652,SMG-1653,SMG-1654,SMG-1655,SMG-1657,SMG-1659,SMG-1660)
+# P0 security tickets (read ticket list from config/team-config.yaml → p0_security_tickets)
+jql: issueKey in ({comma-separated p0_security_tickets from config})
 
 # Each person's open assigned tickets (for Up Next)
 jql: project in (SMG,BO,KIOS) AND assignee = "{person}" AND status not in ("Done","Canceled") ORDER BY priority DESC, updated ASC
@@ -138,7 +135,7 @@ gh api "repos/EvenPlay/evenplay-mono/commits?since=${MONDAY}&per_page=100" \
 **Work without ticket:** commit >5 lines with no `SMG-\d+`, `BO-\d+`, or `KIOS-\d+` reference
 
 **Exclusions — never flag as "work without ticket":**
-- Justin Scott's commits to `ep2.0` — AI experimentation tracked separately
+- Check each team member's `notes` field in config/team-config.yaml for exclusions
 
 **Ticket stall thresholds by state:**
 | Display State | JIRA Status | Stall Threshold | Flag |
@@ -226,8 +223,7 @@ Run `forecast sync` first, then fetch current status for all 7 tracked epics:
 ```bash
 ~/Project/forecast/forecast sync
 
-# For each epic, fetch children with status breakdown
-# Epics: SMG-2101, SMG-2063, SMG-1745, SMG-1948, SMG-1662, SMG-2182, SMG-2183
+# For each epic in config/team-config.yaml → tracked_epics, fetch children with status breakdown
 curl -s "https://smgames.atlassian.net/rest/api/3/search/jql" \
   -u "${EMAIL}:${TOKEN}" \
   -G \
@@ -495,5 +491,5 @@ Documentation space
 
 - Pre-publish flags (Step 6) are terminal only — not saved to the report file or Confluence
 - `ep-watch` is required to appear in Priority Watch; impact labels are optional but recommended
-- Justin Scott's ep2.0 commits are AI experimentation — never flag as work without tickets
+- Per-person exclusions (e.g., "work without tickets") are defined in config/team-config.yaml under each team member's `notes` field
 - Confluence page title must be `YYYY-MM-DD - DayOfWeek - Standup` for correct sidebar ordering

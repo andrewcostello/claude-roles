@@ -50,7 +50,7 @@ Does a docs/plans/*.md exist?
                        ↓
 [You: Tasker] ← Strip self-assessment
      ↓
-Review Request → [Reviewer A: Claude subagent] + [Reviewer B: Codex CLI] + [Reviewer C: Gemini CLI]  (parallel)
+Review Request → [Reviewer A: Claude subagent] + [Reviewer B: Codex plugin] + [Reviewer C: Gemini plugin]  (parallel)
                        ↓
                  All Three Review Results
                        ↓
@@ -405,9 +405,20 @@ Append the selected Design Spec to the Task Assignment before dispatching to Cod
 ### Approved Design Spec
 [paste the chosen design from the Design Agent output — interfaces, data model, key decisions]
 
-**Note:** Implement against this approved design. Any deviation must be documented
-in your Completion Report under `⚠️ Interface Deviations`. Do not silently change
-the approved interface.
+**Priority:** The approved design takes precedence over the original spec (the design
+is a refinement of the spec). If you encounter a meaningful conflict between the two —
+not a minor clarification, but a difference in approach, data model, or behavior — do
+NOT pick a side. Stop and present the divergence to the Tasker with:
+1. What the spec says
+2. What the approved design says
+3. Where and why they conflict
+4. Your recommendation for which to follow and why
+
+The Tasker will escalate to the human for a decision.
+
+For minor deviations (naming, parameter order, implementation details that don't change
+behavior), follow the approved design and document the deviation in your Completion
+Report under `⚠️ Interface Deviations`.
 ```
 
 ---
@@ -511,7 +522,10 @@ The Reviewer forms their own opinion.
 #### Critical risk: Security Linter gates review
 
 For Critical risk tasks, dispatch the Security Linter **before** the review panel.
-Any FAIL blocks the panel entirely — do not review code with a confirmed vulnerability.
+Verdicts:
+- **PASS** — proceed to review panel
+- **FAIL** (Critical/High findings) — blocks the panel entirely. Follow the remediation path below.
+- **FLAG** (Medium findings, no Critical/High) — present flagged items to the human for a judgment call. If the human accepts the risk, proceed to review panel. If not, send to Coder for fixes.
 
 ```
 Read the file `.claude/roles/security-linter.md` for your complete role instructions.
@@ -522,7 +536,37 @@ Files to audit:
 [list files from Completion Report]
 ```
 
-Only proceed to the review panel when the Security Linter returns PASS.
+Only proceed to the review panel when the Security Linter returns PASS (or FLAG with human approval).
+
+#### Security Linter FAIL — remediation path
+
+If the Security Linter returns FAIL, do NOT proceed to the review panel. Instead:
+
+1. **Send targeted security fix request to Coder:**
+
+```markdown
+## Security Fix Required: [Task ID]
+
+**Security Linter Verdict:** FAIL
+**Linter Cycle:** N/2
+
+### Vulnerabilities Found (Must Fix)
+- [ ] [File:Line] [Vulnerability description] — attack surface: [SQL Injection / PII Exposure / Integer Overflow / Auth Bypass]
+  - **Attack vector:** [how it could be exploited]
+  - **Suggested fix:** [from linter output]
+
+### Instructions
+1. Fix ONLY the vulnerabilities listed above — no other changes
+2. Each fix must NOT introduce new attack surface (e.g., don't fix SQL injection by adding a new unvalidated input path)
+3. Re-run tests to confirm no regressions
+4. Submit updated Completion Report listing ONLY the files you changed
+```
+
+2. **Re-run the Security Linter** on the changed files after Coder delivers fixes.
+
+3. **Cap at 2 linter cycles.** If the Security Linter still returns FAIL after 2 remediation attempts, escalate to human immediately — the code has a persistent vulnerability that needs a design-level discussion, not another code fix.
+
+**Linter cycles are separate from review iteration cycles.** A task can use 2 linter cycles and still have 3 review iterations available. They address different concerns (exploitability vs. correctness/quality).
 
 #### Dispatch all three reviewers in parallel
 
@@ -540,31 +584,35 @@ You did NOT write this code. Your job is to find defects, not confirm correctnes
 [paste full Review Request — spec, file list, actual test output]
 ```
 
-#### Reviewer B — Codex CLI
+#### Reviewer B — Codex Plugin
 
-Dispatch via the Bash tool (background):
+Dispatch via the Codex Claude Code plugin. The plugin runs Codex as an independent reviewer within Claude Code — it has its own context and produces its own findings.
 
-```bash
-npx @openai/codex --quiet --approval-mode full-auto \
-  "Read the file .claude/roles/reviewer.md for your role instructions. \
-   You did NOT write this code. Find defects, not confirmation. \
-   [PASTE REVIEW REQUEST HERE — spec, file list, test output]. \
-   Produce the full review output format from reviewer.md."
+```
+Read the file .claude/roles/reviewer.md for your complete role instructions.
+You did NOT write this code. Your job is to find defects, teach principles, and raise the bar.
+
+[PASTE REVIEW REQUEST HERE — spec, file list, test output]
+
+Produce the full review output format from reviewer.md.
 ```
 
-#### Reviewer C — Gemini CLI
+#### Reviewer C — Gemini Plugin (cc-gemini-plugin)
 
-Dispatch via the Bash tool (background):
+Dispatch via the cc-gemini-plugin (thepushkarp). This plugin integrates Gemini CLI into Claude Code, providing "satellite view" analysis — particularly strong for large codebase understanding and cross-cutting concerns.
 
-```bash
-gemini --yolo \
-  "Read the file .claude/roles/reviewer.md for your role instructions. \
-   You did NOT write this code. Find defects, not confirmation. \
-   [PASTE REVIEW REQUEST HERE — spec, file list, test output]. \
-   Produce the full review output format from reviewer.md."
+```
+Read the file .claude/roles/reviewer.md for your complete role instructions.
+You did NOT write this code. Your job is to find defects, teach principles, and raise the bar.
+
+[PASTE REVIEW REQUEST HERE — spec, file list, test output]
+
+Produce the full review output format from reviewer.md.
 ```
 
-**All three run in parallel** — dispatch Reviewer A (Task tool), Reviewer B (Bash), and Reviewer C (Bash) in the same message.
+**All three run in parallel** — dispatch Reviewer A (Claude subagent), Reviewer B (Codex plugin), and Reviewer C (Gemini plugin) in the same message.
+
+**Fallback:** If either plugin is unavailable, dispatch an additional Claude subagent as a replacement reviewer. Two-reviewer consensus is the minimum for High risk; three is required for Critical.
 
 ---
 
