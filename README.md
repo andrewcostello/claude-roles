@@ -1,6 +1,6 @@
 # claude-roles
 
-Shared Claude agent role definitions (Tasker, Coder, Reviewer, Security Linter).
+Shared Claude agent role definitions for the full development lifecycle — from task breakdown through implementation, review, and PR feedback.
 
 ## Roles
 
@@ -9,10 +9,10 @@ Shared Claude agent role definitions (Tasker, Coder, Reviewer, Security Linter).
 | `tasker.md` | Orchestrator | Breaks down work, dispatches agents, manages review cycles |
 | `design-agent.md` | Design Agent | Produces 2-3 competing designs for Tasker to select — mandatory for Critical/High risk |
 | `coder.md` | Implementation Agent | Writes tested code against an approved design spec |
-| `reviewer.md` | Code Reviewer | 8-dimension review with focused sub-agents and pass/fail critical gates |
+| `reviewer.md` | Code Reviewer | 8-dimension review with data flow tracing, dedicated test quality audit, design coherence checks, and focused sub-agents |
 | `security-linter.md` | Security Auditor | Focused SQL injection / PII / integer overflow audit — gates Critical review |
-| `pr-reviewer.md` | PR Reviewer | Runs 8-dimension review against a GitHub PR and posts findings as inline code comments via `gh` |
-| `release-notes-generator.md` | Release Notes Generator | Generates internal + external release notes from git range, Jira tickets, and merged PRs |
+| `pr-reviewer.md` | PR Reviewer | Interactive PR review: 8-dimension analysis, severity calibration with human reviewer, medium+ issue walkthrough with teaching, PR tour, and combined human+agent summary comment |
+| `pr-responder.md` | PR Responder | Triages and responds to PR review comments — fixes valid issues, replies with evidence, reports summary to human |
 
 ---
 
@@ -151,6 +151,8 @@ Read .claude/roles/tasker.md. Execute the plan at docs/plans/2025-01-01-feature-
 
 ### Workflow overview
 
+**Implementation workflow (Tasker-driven):**
+
 ```
 Human Request
      ↓
@@ -167,6 +169,30 @@ reads reviewer.md          reads reviewer.md
               ↓
     APPROVED ✅  |  ITERATE → fix CRITICAL/HIGH only → targeted re-review
                  |  REJECT → escalate to human
+```
+
+**PR review workflow (human-partnered):**
+
+```
+Human: "Review PR #NNN"
+     ↓
+[PR Reviewer] reads pr-reviewer.md
+     ↓
+Phase 1-4: Fetch PR → Understand intent → Risk-classify files → 8-dimension review
+           + data flow tracing + dedicated test quality audit → Post inline comments
+     ↓
+Phase 5: Severity calibration with human (30-second alignment)
+     ↓
+Phase 6: Interactive walkthrough of all medium+ findings
+         (code in context → problem → principle → fix → human decision)
+     ↓
+Phase 7: PR tour — walk through important non-flagged parts
+     ↓
+Phase 8: Combined summary — merge human + agent feedback into one authoritative comment
+     ↓
+Human: "Respond to review comments on PR #NNN"
+     ↓
+[PR Responder] reads pr-responder.md — triage, fix, reply, report
 ```
 
 ### Invoking roles as subagents
@@ -192,9 +218,23 @@ Then implement this task:
 
 ```
 Read the file `.claude/roles/reviewer.md` for your complete role instructions.
-You did NOT write this code. Your job is to find defects, not confirm correctness.
+You did NOT write this code. Your job is to find defects, teach principles, and raise the bar.
 
 [paste Review Request here — spec, file list, actual test output]
+```
+
+**PR Reviewer prompt (human-partnered, interactive):**
+
+```
+Read the file `.claude/roles/pr-reviewer.md` for your complete role instructions.
+Review PR #NNN in [owner/repo].
+```
+
+**PR Responder prompt (after review comments are posted):**
+
+```
+Read the file `.claude/roles/pr-responder.md` for your complete role instructions.
+Respond to comments on PR #NNN in [owner/repo].
 ```
 
 **Security linter subagent prompt template:**
@@ -232,4 +272,5 @@ git commit -m "chore: update claude-roles submodule"
 | Review existing code | "Read `.claude/roles/reviewer.md` and review: ..." |
 | Security audit only | "Read `.claude/roles/security-linter.md` and audit: ..." |
 | Execute a written plan | "Read `.claude/roles/tasker.md`. Execute plan: `docs/plans/...`" |
-| Review a GitHub PR with inline comments | "Read `.claude/roles/pr-reviewer.md` and review PR #NNN" |
+| Review a GitHub PR interactively | "Read `.claude/roles/pr-reviewer.md` and review PR #NNN" |
+| Respond to PR review comments | "Read `.claude/roles/pr-responder.md` and respond to comments on PR #NNN" |

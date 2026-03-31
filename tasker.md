@@ -162,6 +162,26 @@ Before any Coder is dispatched, create an isolated git worktree using `superpowe
 
 **Never commit Jira ticket content, task management YAMLs, or investigation notes to the repository.**
 
+### Container environment
+
+When running inside a Docker container (detected by `/workspace` being the repo root):
+
+- **Do NOT create worktrees under `../` or relative to `/workspace`** — the parent directory is not writable
+- **Use `/worktrees/` instead** — this is a writable tmpfs mount provided by the container
+- Create worktrees with: `git worktree add /worktrees/<ticket-id> -b <branch-name>`
+- Dispatch sub-agents (Coder, Reviewer) to work in `/worktrees/<ticket-id>` as their working directory
+- These worktrees are ephemeral (in-memory) — they exist only for the container's lifetime, which is fine since all work is committed and pushed before teardown
+- The main `/workspace` checkout remains on its original branch and is not modified by sub-agent work
+
+**Example inside a container:**
+```bash
+# Instead of: git worktree add ../worktree-SMG-2384 -b feat/SMG-2384-description
+# Use:
+git worktree add /worktrees/SMG-2384 -b feat/SMG-2384-description
+```
+
+When **not** in a container (detected by repo root not being `/workspace`), use the standard `../worktree-<ticket>` path.
+
 ---
 
 ## Phase 1: Receive and Analyze
