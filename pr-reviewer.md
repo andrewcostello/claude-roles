@@ -64,7 +64,41 @@ gh repo view --json owner,name --jq '"OWNER=\(.owner.login) REPO=\(.name)"'
 
 For each file in the changed set, read the full file (not just the diff). Context matters — a bug may be visible only when you see the function caller or the test file.
 
-### 1.6 PR size gate
+### 1.6 Checkout and verify
+
+Before spending time on a code review, verify the PR actually builds and passes tests. Reviewing broken code wastes everyone's time.
+
+```bash
+gh pr checkout <number>
+```
+
+Then run the project's test and lint commands (check `CLAUDE.md` for project-specific commands):
+
+```bash
+# Typical commands — adapt to the project
+go test ./... 2>&1 | tail -30          # Go
+npm test 2>&1 | tail -30               # Node
+npx tsc --noEmit 2>&1 | tail -20      # TypeScript type check
+golangci-lint run 2>&1 | tail -20      # Go lint
+```
+
+**If tests fail:**
+1. Report the failures immediately — do not proceed with the full review
+2. Classify failures:
+   - **Pre-existing** (also fail on main) — note them but don't block the review
+   - **Introduced by this PR** — stop here, report to human. The author needs to fix tests before review is worth doing.
+3. To check if a failure is pre-existing: `git stash && go test ./path/to/failing/... && git stash pop`
+
+**If tests pass:** Note the result and proceed to Phase 2.
+
+```markdown
+### Build Verification
+- **Tests:** ✅ passed (N tests in Xs)
+- **Lint:** ✅ clean
+- **Type check:** ✅ clean (if applicable)
+```
+
+### 1.7 PR size gate
 
 Classify each changed file into one of three categories:
 
