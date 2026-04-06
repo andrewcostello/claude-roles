@@ -60,11 +60,25 @@ Parse the diff to build a map of **file → set of line numbers present in the d
 gh repo view --json owner,name --jq '"OWNER=\(.owner.login) REPO=\(.name)"'
 ```
 
-### 1.5 Read the changed files in full
+### 1.5 Check for prior reviews
+
+Determine if this PR has been reviewed before:
+
+```bash
+gh api repos/$OWNER/$REPO/pulls/$PR/reviews --jq '.[] | "\(.id) \(.state) \(.user.login)"'
+```
+
+If prior reviews exist, record:
+- Review IDs and their state (`CHANGES_REQUESTED`, `APPROVED`, `COMMENTED`)
+- Which review threads are outdated (the code they reference has since changed)
+
+You will use this in Phase 8 to clean up stale review state.
+
+### 1.6 Read the changed files in full
 
 For each file in the changed set, read the full file (not just the diff). Context matters — a bug may be visible only when you see the function caller or the test file.
 
-### 1.6 Checkout and verify
+### 1.7 Checkout and verify
 
 Before spending time on a code review, verify the PR actually builds and passes tests. Reviewing broken code wastes everyone's time.
 
@@ -98,7 +112,7 @@ golangci-lint run 2>&1 | tail -20      # Go lint
 - **Type check:** ✅ clean (if applicable)
 ```
 
-### 1.7 PR size gate
+### 1.8 PR size gate
 
 Classify each changed file into one of three categories:
 
@@ -576,7 +590,35 @@ gh api repos/$OWNER/$REPO/pulls/$PR/reviews/$REVIEW_ID \
 
 If the API doesn't support editing the review body, post the combined summary as a new top-level PR comment and note that it supersedes the initial assessment.
 
-### 8.3 Preserve line-level comments
+### 8.3 Clean up prior review state
+
+If prior reviews were recorded in Phase 1.5, clean up stale state now:
+
+**Resolve outdated comment threads.** For each inline comment thread from a prior review where the underlying code has been fixed, resolve it:
+
+```bash
+# Get review comments and resolve threads where the issue has been addressed
+gh api repos/$OWNER/$REPO/pulls/$PR/comments --jq '.[] | "\(.id) \(.path) \(.line) \(.body)"'
+```
+
+For each outdated thread, minimize (resolve) it via the GraphQL API:
+
+```bash
+gh api graphql -f query='mutation { minimizeComment(input: {subjectId: "<node_id>", classifier: RESOLVED}) { minimizedComment { isMinimized } } }'
+```
+
+**Dismiss stale `CHANGES_REQUESTED` reviews.** If a prior review has state `CHANGES_REQUESTED` and the current verdict is `APPROVE`, dismiss the old review so it no longer blocks the PR:
+
+```bash
+gh api repos/$OWNER/$REPO/pulls/$PR/reviews/<OLD_REVIEW_ID>/dismissals \
+  --method PUT \
+  --field message="Issues addressed — superseded by current review." \
+  --field event="DISMISS"
+```
+
+Only dismiss reviews authored by the same reviewer (you/the human). Never dismiss another reviewer's `CHANGES_REQUESTED`.
+
+### 8.4 Preserve line-level comments
 
 All inline comments (from both the agent's review and the human's walkthrough) stay in place. The combined summary is the overview — inline comments are the detail. Don't duplicate inline findings in the summary body.
 
