@@ -405,10 +405,10 @@ For each finding, present:
 After presenting each finding, ask:
 
 ```
-What do you think? (approve fix / flag for discussion / adjust severity / skip)
+What do you think? (agree / flag for discussion / adjust severity / skip)
 ```
 
-- **approve fix** — You agree with the finding and recommendation. Move on.
+- **agree** — You agree with the finding and recommendation. Move on.
 - **flag for discussion** — You want to post a comment or request a change. Go to 6.3.
 - **adjust severity** — You think the severity is wrong. Adjust and re-classify.
 - **skip** — You've seen enough, move to the next finding.
