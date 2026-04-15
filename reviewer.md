@@ -199,7 +199,7 @@ For each test quality issue, record:
 
 ---
 
-## The 8 Dimensions
+## The 9 Dimensions
 
 ### CRITICAL DIMENSIONS (Pass/Fail)
 
@@ -250,6 +250,11 @@ These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regard
 - [ ] Numeric overflow impossible for financial amounts (use int64/bigint, validate bounds)
 - [ ] Data flow tracing (Step 2) found no unvalidated paths from input to storage/query/response
 
+**If the PR touches client-side TypeScript or frontend code, also check:**
+- [ ] No paytable logic, RTP calculations, or house edge data present in the client bundle — an attacker can extract exact probabilities from compiled JS
+- [ ] Win animations and "congratulations" flows trigger only on server-settled outcomes — not on optimistic client-side prediction before the transaction is confirmed
+- [ ] No game state or outcome data is embedded in the client response before the server has settled the wager
+
 **What's missing? Check for:**
 - Validation at a trust boundary that doesn't exist yet
 - Rate limiting on endpoints that accept user input
@@ -278,6 +283,11 @@ These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regard
 - [ ] Sensitive operations have appropriate auth level
 - [ ] No hard deletes of auditable data (soft-delete only)
 
+**Responsible Gambling (if the PR touches any player-facing feature or wager flow):**
+- [ ] Features that trigger or continue play (e.g. "Play Again", auto-spin, bet continuation) check active Self-Exclusion status before executing
+- [ ] Mandatory Cool Down timers required by MGA/UKGC are enforced — not just present at login but rechecked at the point of action
+- [ ] Audit log fields satisfy GLI requirements: session ID, wager ID, outcome, timestamp with timezone, and player ID on every game-round record
+
 **If this task includes a schema migration, ALL of these must also pass:**
 - [ ] Up migration is idempotent (`IF NOT EXISTS`, `ON CONFLICT DO NOTHING`)
 - [ ] Down migration exactly reverses the up
@@ -299,6 +309,32 @@ These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regard
 - Missing audit trail for compliance-sensitive operations
 - Migration without idempotency guard
 - Missing FK index on a new foreign key column
+
+---
+
+### 4. Exploitability & Fairness — PASS / FAIL
+
+> Can a player gain an unfair advantage through timing, statistical analysis, or adversarial interaction with game mechanics?
+
+**PASS requires ALL of:**
+- [ ] RNG and shuffle operations use a cryptographically secure entropy source (CSPRNG) that is not re-seeded on a predictable schedule or with a predictable seed value
+- [ ] Time-gated mechanics (limited-time wagers, progressive jackpot triggers, bonus windows) read only server-anchored timestamps — client-supplied or manipulable time values are not trusted
+- [ ] No float arithmetic used for balance, payout, or probability calculations — use integer arithmetic (cents/pence, fixed-point basis points) throughout
+- [ ] Rounding is applied consistently and in the house's favour across the debit and credit sides of every transaction
+
+**What's missing? Check for:**
+- A shuffle or RNG call that gets re-seeded based on a guessable value (time, session ID, sequential counter)
+- A jackpot or bonus trigger that reads `time.Now()` or a client-supplied timestamp without server-side anchoring
+- Float multiplication or division anywhere in a payout or probability calculation path
+- Rounding applied at different precision levels on the debit vs. credit side (salami slicing)
+- A feature where the client receives outcome data before the server has locked in the result
+
+**Automatic FAIL:**
+- Non-CSPRNG used for any game outcome, shuffle, or RNG operation
+- Jackpot, bonus, or time-limited offer logic that accepts or uses a client-supplied timestamp
+- Float arithmetic anywhere in a balance mutation or payout calculation
+- Rounding applied asymmetrically between debit and credit paths in the same transaction
+- Client receives RTP, paytable, or probability data it can use to derive the exact house edge
 
 ---
 
@@ -608,6 +644,7 @@ If you don't have a genuine question, skip this section. An empty Questions sect
 - Correctness: PASS
 - Security: PASS
 - Compliance: PASS
+- Exploitability & Fairness: PASS
 - Quality Score: >= 20/25 (all dimensions >= 4)
 - No Critical or High findings
 

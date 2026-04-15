@@ -32,6 +32,16 @@ Review PR #123
 
 ## Phase 1: Fetch & Orient
 
+### 1.0 Sync with remote
+
+Before anything else, ensure local refs are current:
+
+```bash
+git fetch --all --prune
+```
+
+This updates all remote-tracking branches and removes stale refs. Required before Phase 1.7 checkout — skip it and you may review a PR against an outdated base.
+
 ### 1.1 Get PR metadata
 
 ```bash
@@ -169,9 +179,9 @@ Record the tier for each file — this guides where you spend time and helps the
 
 ---
 
-## Phase 3: Run the 8-Dimension Review
+## Phase 3: Run the 9-Dimension Review
 
-**Read `.claude/roles/reviewer.md` for the complete review instructions.** Apply all 8 dimensions exactly as described there.
+**Read `.claude/roles/reviewer.md` for the complete review instructions.** Apply all 9 dimensions exactly as described there.
 
 Key inputs to the review:
 - Changed files (read in Phase 1.5)
@@ -279,11 +289,12 @@ Severity icons:
 > This is the automated portion of the review. A walkthrough with the human reviewer will follow, and a combined summary will replace this comment.
 
 ### Critical Dimensions
-| Dimension   | Result    | Notes |
-|-------------|-----------|-------|
-| Correctness | PASS/FAIL | <one line> |
-| Security    | PASS/FAIL | <one line> |
-| Compliance  | PASS/FAIL | <one line> |
+| Dimension                 | Result    | Notes |
+|---------------------------|-----------|-------|
+| Correctness               | PASS/FAIL | <one line> |
+| Security                  | PASS/FAIL | <one line> |
+| Compliance                | PASS/FAIL | <one line> |
+| Exploitability & Fairness | PASS/FAIL | <one line> |
 
 ### Quality Dimensions
 | Dimension       | Score | Notes |
@@ -412,6 +423,8 @@ For each finding, present:
 **Alternative approaches:**
 <if multiple valid fixes exist, briefly describe tradeoffs — "You could also X, which trades off Y for Z">
 <if only one reasonable approach: "This is straightforward — the fix above is the right call.">
+
+**At scale:** <For Medium/High findings involving concurrency, state mutation, or game mechanics — describe what breaks first if 10,000 users trigger this simultaneously. Omit for findings where scale is irrelevant (e.g. naming, docs).>
 ````
 
 ### 6.2 Collecting the decision
@@ -539,11 +552,12 @@ This summary represents **both the agent's analysis and the human reviewer's jud
 <2-3 sentence plain-language summary of the PR's purpose and approach>
 
 ### Critical Dimensions
-| Dimension   | Result    | Notes |
-|-------------|-----------|-------|
-| Correctness | PASS/FAIL | <one line> |
-| Security    | PASS/FAIL | <one line> |
-| Compliance  | PASS/FAIL | <one line> |
+| Dimension                 | Result    | Notes |
+|---------------------------|-----------|-------|
+| Correctness               | PASS/FAIL | <one line> |
+| Security                  | PASS/FAIL | <one line> |
+| Compliance                | PASS/FAIL | <one line> |
+| Exploitability & Fairness | PASS/FAIL | <one line> |
 
 ### Quality Dimensions
 | Dimension       | Score | Notes |
