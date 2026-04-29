@@ -517,6 +517,24 @@ Error messages should include: **what** failed, **which** entity (with ID), **wh
 
 A 2/5 on Maintainability brings the Quality Score below 20/25, which triggers REQUEST CHANGES — red complexity violations always block approval.
 
+**Cyclomatic-complexity override (named patterns only):**
+
+A function with cyclomatic ≥ 15 is exempt from the red cap **only if** it matches one of three named patterns AND carries the override comment. Verify both:
+
+| Comment | Pattern must be | Example acceptable use |
+|---------|-----------------|------------------------|
+| `// complexity-justified: exhaustive-switch` | Single-level switch over every variant of a closed enum, each case one-liner or single helper call | State machine dispatcher |
+| `// complexity-justified: dispatcher` | Single-level RPC/command/event dispatcher routing to handlers, no nested logic | gRPC handler routing |
+| `// complexity-justified: test-runner` | Outer table-driven loop where each case is data + single helper call | `for _, tt := range tests { t.Run(...) }` |
+
+**Override fails (cap at 2/5) if:**
+- The comment is missing
+- The comment text doesn't exactly match one of the three patterns
+- The comment is present but the function does not structurally match the named pattern (e.g., `// complexity-justified: exhaustive-switch` on a function that has nested `if` blocks inside cases — that's not exhaustive-switch, it's regular complexity wearing a label)
+- Other complexity metrics (nesting, parameters, fan-out) are red — the override only covers cyclomatic
+
+Open-ended justifications without a named pattern are NEVER accepted. The override exists so reviewers can grant exceptions consistently, not so authors can write essays about why their function is special.
+
 > **Note:** If the Completion Report does not include complexity linter output, request it before scoring this dimension. Do not assume it passed.
 > Go: `go install github.com/glemzurg/go-complexity-lint/cmd/go-complexity-lint@latest`
 
@@ -655,6 +673,8 @@ If you don't have a genuine question, skip this section. An empty Questions sect
 - Quality Score below 20/25
 
 MEDIUM and LOW findings do NOT block approval. Report them in the **Future Work** section.
+
+> **Note for Tasker tier override:** For Medium-risk tasks, the Tasker may accept a reviewer's `REQUEST CHANGES` verdict as `APPROVE` if the only reason is one or more quality dimensions at 3/5 (no Critical/High findings, all critical dimensions PASS). For Critical and High risk, no override — every quality dimension must be ≥ 4/5. Safety dimensions are not fungible; a 5/5 in Maintainability does not buy a 3/5 in Idempotency.
 
 ### REJECT
 **Any of these:**

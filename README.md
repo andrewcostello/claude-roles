@@ -9,6 +9,7 @@ Shared Claude agent role definitions for the full development lifecycle — from
 | `tasker.md` | Orchestrator | Breaks down work, dispatches agents, manages review cycles |
 | `design-agent.md` | Design Agent | Produces 2-3 competing designs for Tasker to select — mandatory for Critical/High risk |
 | `coder.md` | Implementation Agent | Writes tested code against an approved design spec |
+| `verification-agent.md` | Verification Agent | Independent ground-truth runner — fresh-checkout build/test/lint/static-analysis/mutation/bench with no Coder context. Gates Critical review before any reviewer runs. |
 | `reviewer.md` | Code Reviewer | 8-dimension review with data flow tracing, dedicated test quality audit, design coherence checks, and focused sub-agents |
 | `security-linter.md` | Security Auditor | Focused SQL injection, PII exposure, integer overflow, and auth bypass audit with severity grading — gates Critical review |
 | `config/team-config.yaml` | Shared Configuration | Team roster, JIRA/GitHub settings, tracked epics, P0 tickets, known binaries — single source of truth for project-specific config |
@@ -123,21 +124,39 @@ This is the single source of truth for project-specific config. The standup repo
 
 ### 4. Configure project commands
 
-The Coder role references `[project test command]`, `[project lint command]`, and
-`[project complexity command]`. Common stacks:
+The Coder and Verification Agent roles reference these placeholders. Define each in your project's `CLAUDE.md`:
 
-| Stack | Test | Lint | Complexity |
-|-------|------|------|------------|
-| Go | `go test -race -cover ./...` | `golangci-lint run` | `go-complexity-lint ./...` |
-| TypeScript (Nx) | `nx test [app]` | `nx lint [app]` | ESLint complexity rules |
-| TypeScript (plain) | `vitest run` | `eslint src/` | `eslint --rule complexity` |
-| Python | `pytest --cov` | `ruff check .` | `radon cc .` |
+| Placeholder | Common Go value | Common TS value |
+|-------------|-----------------|-----------------|
+| `[project build command]` | `go build ./...` | `nx build [app]` |
+| `[project test command]` | `go test -race -cover ./...` | `nx test [app]` or `vitest run` |
+| `[project lint command]` | `golangci-lint run` | `nx lint [app]` or `eslint src/` |
+| `[project complexity command]` | `go-complexity-lint ./...` | ESLint complexity rules |
+| `[project semgrep rules path]` | `tools/semgrep/rules.yml` | same |
 
-Install `go-complexity-lint` for Go projects:
+Install the supporting tools:
 
 ```bash
+# Complexity linter
 go install github.com/glemzurg/go-complexity-lint/cmd/go-complexity-lint@latest
+
+# Static analysis (Critical/High pre-review gate)
+go install github.com/securego/gosec/v2/cmd/gosec@latest
+go install honnef.co/go/tools/cmd/staticcheck@latest
+# semgrep: pipx install semgrep   OR   brew install semgrep
+
+# Mutation testing (Critical financial code only)
+go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+# Benchmark comparison
+go install golang.org/x/perf/cmd/benchstat@latest
 ```
+
+Project-specific semgrep rules live at the configured path. A starter rules file
+should encode project invariants:
+- Forbidden patterns in financial code (raw SQL, `errors.New`, missing auth checks)
+- Required patterns (sentinel errors, structured logging, context propagation)
+- Anti-patterns specific to your domain
 
 ---
 

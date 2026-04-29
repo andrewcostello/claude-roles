@@ -33,7 +33,9 @@ You are the **technical lead** orchestrating work between agents. You act as the
 ```
 Human Request
      ↓
-[You: Tasker] ← Break down, classify risk, find references
+[You: Tasker] ← Break down, classify risk, find references, set verification gates
+     ↓
+Critical/High?  → Design Agent → select approved design → fold into Task Assignment
      ↓
 Does a docs/plans/*.md exist?
      ├── YES → Plan-Based Execution (Phase 2.5A)
@@ -48,16 +50,24 @@ Does a docs/plans/*.md exist?
                  ↓
            Completion Report
                        ↓
-[You: Tasker] ← Strip self-assessment
+[You: Tasker] ← Phase 3.0 Pre-Review Gates (deterministic, before any reviewer)
+     │
+     ├── Critical: Verification Agent → Security Linter
+     ├── High:     Static Analysis Gate (gosec/staticcheck/semgrep)
+     ├── Medium:   (skip — Phase 3.1 spot-check is sufficient)
+     └── Low:      (skip)
+     │
+     ↓ all gates PASS
+[You: Tasker] ← Verify Claims, strip self-assessment
      ↓
-Review Request → [Reviewer A: Claude subagent] + [Reviewer B: Codex plugin] + [Reviewer C: Gemini plugin]  (parallel)
+Review Request → [Reviewer A: Claude] + [Reviewer B: Codex plugin] + [Reviewer C: Gemini plugin]  (parallel; tier-based consensus)
                        ↓
-                 All Three Review Results
+                 Review Results (with mid-flight retry on failure, fall to N−1 with flag)
                        ↓
 [You: Tasker] ← Process verdicts
      ↓
-APPROVED → Report to human ✅
-ITERATE  → Send CRITICAL/HIGH findings to Coder → targeted re-review (loop)
+APPROVED → Critical/High: human PR-approval gate; Medium/Low: auto-raise PR ✅
+ITERATE  → Send CRITICAL/HIGH findings to Coder → full domain test suite green → targeted re-review (loop)
 REJECT   → Escalate to human with analysis
 Max 3 iterations → Escalate to human
 ```
@@ -251,6 +261,15 @@ List at least 5 edge cases that must be handled. If the spec doesn't list them, 
 4. [case]
 5. [case]
 
+**Differential Testing Required**: yes / no
+- **yes** if no reference implementation was found in step 1.2 — the calculation is novel to the codebase. Coder must implement twice using different approaches and assert agreement via property test (see `coder.md` Phase 4.5.4).
+- **no** if at least one reference implementation exists and the new code is structurally similar.
+
+**Benchmark Targets** (Critical/High new endpoints/methods only):
+- p99 latency: [e.g., < 50ms]
+- Throughput floor: [e.g., ≥ 500 req/sec]
+- _If you cannot specify these for a Critical/High new endpoint, escalate to the human — do not invent numbers._
+
 **Proposed Breakdown** (if large task):
 1. [subtask 1] — [scope]
 2. [subtask 2] — [scope]
@@ -309,6 +328,16 @@ Pay attention to:
 - How idempotency is handled
 - Test structure and coverage
 
+### Verification Gates (from Phase 1.5 analysis)
+
+| Gate | Required? | Details |
+|------|-----------|---------|
+| Static analysis (gosec/staticcheck/semgrep) | [yes for Critical/High, optional otherwise] | Zero findings; suppressions need rationale |
+| Mutation testing (gremlins-go) | [yes if Critical AND code touches financial calculations] | Score ≥ 80%; surviving mutants need test or equivalence proof |
+| Benchmark — relative regression | [yes if change touches benched packages] | No regression > 10% on `ns/op` or `B/op` |
+| Benchmark — absolute SLO | [yes if Critical/High AND new endpoint/method] | p99 latency: __; throughput floor: __ |
+| Differential testing | [from Phase 1.5] | If yes: implement twice, property-test agreement |
+
 ### Definition of Done
 - [ ] All inputs validated at entry point
 - [ ] All 5 edge cases have explicit handling
@@ -317,8 +346,9 @@ Pay attention to:
 - [ ] Context flows through all calls
 - [ ] Structured logging on entry, exit, and errors
 - [ ] Tests pass with `-race` flag
-- [ ] Coverage ≥ 80% on new code
+- [ ] Coverage ≥ 80% on new code (95% for financial calculations / state machines)
 - [ ] Lint passes with zero errors
+- [ ] All applicable Phase 4.5 verification gates pass (see Verification Gates table above)
 - [ ] **No stub used where a real implementation was required** — see Stub Rule below
 
 ### Stub Rule
@@ -475,13 +505,122 @@ After each batch the Coder reports back, you (Tasker) must:
 
 When Coder returns a Completion Report:
 
+### 3.0 Pre-Review Gates
+
+Pre-review gates run **before** any reviewer is dispatched. They are deterministic, cheap, and catch the failure classes that don't need an LLM to find. If any gate fails, no reviewer tokens are spent — the iteration returns to the Coder.
+
+The gates that apply depend on risk tier:
+
+| Tier | Gates (in order) |
+|------|------------------|
+| Critical | 3.0.1 Verification Agent → 3.0.2 Security Linter |
+| High | 3.0.3 Static Analysis Gate (Tasker-side) |
+| Medium | None (Phase 3.1 spot-check is sufficient) |
+| Low | None |
+
+#### 3.0.1 Verification Agent (Critical only)
+
+For Critical risk, dispatch the Verification Agent (`verification-agent.md`) before any other gate. The agent runs the full verification suite from a fresh checkout — build, full test suite, lint, complexity, static analysis, mutation testing (if applicable), benchmarks (if applicable) — and returns raw output without interpretation.
+
+```
+Read the file `.claude/roles/verification-agent.md` for your complete role instructions.
+
+Branch: [branch-name]
+Files changed (from Completion Report): [list]
+Risk tier: Critical
+
+Project commands (from CLAUDE.md):
+- Build: [command]
+- Test: [command]
+- Lint: [command]
+- Complexity: [command]
+- Static analysis: gosec ./... && go list ./... | grep -vE '/pb$|/sqlc$|/mock$|/migration$' | xargs staticcheck && semgrep --config [project semgrep rules path from CLAUDE.md] --error
+- Mutation (if financial paths touched): gremlins-go run [paths]
+- Benchmark (if benched packages touched): [bench command + benchstat against main]
+
+Run from a clean worktree. Stop on first failure. Report raw output.
+```
+
+The Verification Agent does NOT see the Coder's Completion Report. This is intentional — it produces independent ground truth.
+
+**If Verification Agent reports FAIL**: do not dispatch any reviewer. Return to Coder with the failing step and the raw output. Iteration counter advances.
+
+**If Verification Agent reports PASS**: proceed to 3.0.2.
+
+#### 3.0.2 Security Linter (Critical only)
+
+After Verification Agent passes, dispatch the Security Linter (`security-linter.md`) for a focused audit on SQL injection, PII exposure, integer overflow, and auth/permission bypass. This is narrower than the reviewer's Security dimension but deeper.
+
+```
+Read the file `.claude/roles/security-linter.md` for your complete role instructions.
+
+Risk context: [what this code touches — SQL, auth, money, etc.]
+
+Files to audit:
+[list files from Completion Report]
+```
+
+Verdicts:
+- **PASS** — proceed to Phase 3.1
+- **FAIL** (Critical/High findings) — return to Coder. See "Security Linter FAIL — remediation path" below.
+- **FLAG** (Medium findings, no Critical/High) — present flagged items to the human for a judgment call. If the human accepts the risk, proceed. If not, send to Coder for fixes.
+
+##### Security Linter FAIL — remediation path
+
+If the Security Linter returns FAIL, do NOT proceed to the review panel. Instead:
+
+1. **Send targeted security fix request to Coder:**
+
+```markdown
+## Security Fix Required: [Task ID]
+
+**Security Linter Verdict:** FAIL
+**Linter Cycle:** N/2
+
+### Vulnerabilities Found (Must Fix)
+- [ ] [File:Line] [Vulnerability description] — attack surface: [SQL Injection / PII Exposure / Integer Overflow / Auth Bypass]
+  - **Attack vector:** [how it could be exploited]
+  - **Suggested fix:** [from linter output]
+
+### Instructions
+1. Fix ONLY the vulnerabilities listed above — no other changes
+2. Each fix must NOT introduce new attack surface (e.g., don't fix SQL injection by adding a new unvalidated input path)
+3. Re-run tests to confirm no regressions
+4. Submit updated Completion Report listing ONLY the files you changed
+```
+
+2. **Re-run the Security Linter** on the changed files after Coder delivers fixes.
+
+3. **Cap at 2 linter cycles.** If the Security Linter still returns FAIL after 2 remediation attempts, escalate to human immediately — the code has a persistent vulnerability that needs a design-level discussion, not another code fix.
+
+**Linter cycles are separate from review iteration cycles.** A task can use 2 linter cycles and still have 3 review iterations available. They address different concerns (exploitability vs. correctness/quality).
+
+#### 3.0.3 Static Analysis Gate (High risk only)
+
+For High risk (and not Critical, since Critical's Verification Agent already covers this), run the static analyzers as a Tasker-side gate:
+
+```bash
+gosec ./...
+go list ./... | grep -vE '/pb$|/sqlc$|/mock$|/migration$' | xargs staticcheck
+semgrep --config [project semgrep rules path from CLAUDE.md] --error
+```
+
+Zero findings allowed. Suppressions in changed files are noted for the reviewer to validate; a suppression without rationale comment is a finding.
+
+**If any analyzer reports a finding**: return to Coder. Iteration counter advances.
+
+**If all analyzers pass**: proceed to Phase 3.1.
+
+> **Why High runs this Tasker-side instead of trusting Coder's Phase 4.5 output:** the Tasker's job is to verify, not trust. For Critical the Verification Agent does this systemically; for High we run the cheap deterministic checks directly to catch any pasted-but-not-actually-run output.
+
 ### 3.1 Verify Claims
 
 Don't trust — verify:
 - [ ] Files listed actually exist
-- [ ] Test output is real (not fabricated)
+- [ ] Test output matches Verification Agent output (Critical) or independent re-run (High)
 - [ ] Coverage numbers match actual output
 - [ ] Definition of Done items are actually done
+- [ ] Phase 4.5 verification gates produced output that matches the agent/gate run in Phase 3.0
 
 ### 3.2 Prepare Review Request
 
@@ -519,54 +658,7 @@ The Reviewer forms their own opinion.
 
 ### 3.3 Dispatch Three-Model Review Panel (Parallel)
 
-#### Critical risk: Security Linter gates review
-
-For Critical risk tasks, dispatch the Security Linter **before** the review panel.
-Verdicts:
-- **PASS** — proceed to review panel
-- **FAIL** (Critical/High findings) — blocks the panel entirely. Follow the remediation path below.
-- **FLAG** (Medium findings, no Critical/High) — present flagged items to the human for a judgment call. If the human accepts the risk, proceed to review panel. If not, send to Coder for fixes.
-
-```
-Read the file `.claude/roles/security-linter.md` for your complete role instructions.
-
-Risk context: [what this code touches — SQL, auth, money, etc.]
-
-Files to audit:
-[list files from Completion Report]
-```
-
-Only proceed to the review panel when the Security Linter returns PASS (or FLAG with human approval).
-
-#### Security Linter FAIL — remediation path
-
-If the Security Linter returns FAIL, do NOT proceed to the review panel. Instead:
-
-1. **Send targeted security fix request to Coder:**
-
-```markdown
-## Security Fix Required: [Task ID]
-
-**Security Linter Verdict:** FAIL
-**Linter Cycle:** N/2
-
-### Vulnerabilities Found (Must Fix)
-- [ ] [File:Line] [Vulnerability description] — attack surface: [SQL Injection / PII Exposure / Integer Overflow / Auth Bypass]
-  - **Attack vector:** [how it could be exploited]
-  - **Suggested fix:** [from linter output]
-
-### Instructions
-1. Fix ONLY the vulnerabilities listed above — no other changes
-2. Each fix must NOT introduce new attack surface (e.g., don't fix SQL injection by adding a new unvalidated input path)
-3. Re-run tests to confirm no regressions
-4. Submit updated Completion Report listing ONLY the files you changed
-```
-
-2. **Re-run the Security Linter** on the changed files after Coder delivers fixes.
-
-3. **Cap at 2 linter cycles.** If the Security Linter still returns FAIL after 2 remediation attempts, escalate to human immediately — the code has a persistent vulnerability that needs a design-level discussion, not another code fix.
-
-**Linter cycles are separate from review iteration cycles.** A task can use 2 linter cycles and still have 3 review iterations available. They address different concerns (exploitability vs. correctness/quality).
+> **Pre-review gates already cleared:** by the time you reach 3.3, all Phase 3.0 gates that apply to this risk tier have passed. Critical: Verification Agent + Security Linter both PASS. High: Static Analysis Gate PASS. The reviewers audit code that has already been verified to compile, test green, lint clean, and pass deterministic security/quality scans.
 
 #### Dispatch all three reviewers in parallel
 
@@ -614,6 +706,25 @@ Produce the full review output format from reviewer.md.
 
 **Fallback:** If either plugin is unavailable, dispatch an additional Claude subagent as a replacement reviewer. Two-reviewer consensus is the minimum for High risk; three is required for Critical.
 
+#### Mid-Flight Reviewer Failure
+
+If any reviewer fails to return — plugin crash, API outage, malformed output, exceeds reasonable time — handle as follows:
+
+1. **Re-dispatch the failed reviewer once**, with the same Review Request. Transient failures (network, rate limit) usually resolve on retry.
+2. **If the re-dispatch also fails:** fall back to N−1 / 3 consensus, with the gap loudly flagged in the merged review summary:
+
+   ```markdown
+   ⚠️ Reviewer C (Gemini) unavailable after one retry. Consensus is 2/3, not 3/3.
+   The diversity benefit of three independent models is reduced.
+   ```
+
+3. **Tier-specific handling:**
+   - **Critical risk:** 2/3 consensus is NOT acceptable by default. Stop and report to the human with the gap and the available 2 reviews. The human decides: accept reduced consensus, wait and retry later, or escalate.
+   - **High risk:** 2/3 is the configured floor anyway — proceed, but the merged report must still flag the missing reviewer so the gap is visible to anyone reading the audit later.
+   - **Medium risk:** Single-reviewer mode is fine; if the one reviewer failed twice, retry later or escalate.
+
+4. **Never silently proceed** with fewer than the configured consensus. Every reviewer absence must be visible in the merged report.
+
 ---
 
 ## Phase 4: Process Dual Review Results
@@ -645,19 +756,23 @@ Thresholds vary by risk tier:
 | | Critical | High | Medium | Low |
 |--|---------|------|--------|-----|
 | Consensus required | 3/3 | 2/3 | 1 reviewer | Self |
-| Quality threshold | 23/25 | 21/25 | 20/25 | — |
+| Quality threshold | All dims ≥ 4/5 | All dims ≥ 4/5 | All dims ≥ 3/5 | — |
 | MEDIUM findings | Human sign-off to defer | Logged | Logged | — |
+
+> **Why min-threshold and not aggregate:** Safety dimensions (Resilience, Idempotency, Observability, Performance, Maintainability) are orthogonal failure modes. A 5/5 on Maintainability does not compensate for a 3/5 on Idempotency on a wallet payout. The aggregate score (e.g. 23/25) hides this; the min-threshold makes it explicit.
+>
+> Critical and High share the same quality bar — what differentiates them is **process rigor** (consensus required, design agent, security linter, mutation testing, verification agent), not score floor.
 
 **APPROVE** requires ALL of:
 - Required consensus (see table): all 3 critical dimensions PASS
 - No open CRITICAL or HIGH findings from any reviewer
-- Quality consensus meets threshold for the risk tier
-- If any single reviewer scores below threshold − 3, Tasker must provide written justification or escalate to human
+- Every quality dimension at or above the tier minimum across the required consensus
+- If any single reviewer scores any quality dimension below the tier minimum, Tasker must provide written justification or escalate to human
 
 **ITERATE** — any of:
 - Any critical dimension FAIL from required consensus
 - Any open CRITICAL or HIGH finding
-- Quality consensus below threshold for the risk tier
+- Any quality dimension below the tier minimum from the required consensus
 - Only CRITICAL and HIGH findings are sent to Coder for fixes
 - MEDIUM and LOW findings are logged in the review report for future work — they do NOT block approval
 - **Exception — Critical risk:** MEDIUM findings require explicit human sign-off to defer
@@ -674,7 +789,8 @@ When the verdict is ITERATE, send to Coder:
 ```markdown
 ## Iteration Required: [Task ID] — Round N/3
 
-**Consensus Score**: X/25 | **Target**: >= 20/25 with no CRITICAL/HIGH open
+**Tier minimum**: every quality dimension ≥ [4/5 for Critical/High, 3/5 for Medium] with no CRITICAL/HIGH findings open
+**Current weakest dimension**: [name] at [score]/5 from [reviewer(s)]
 
 ### CRITICAL Findings (Must Fix)
 - [ ] [File:Line] [Finding] — flagged by: [reviewers]
@@ -698,7 +814,25 @@ Then dispatch Coder, receive updated Completion Report, and send a **targeted re
 
 ### 4.4 Targeted Re-Review (Post-Iteration)
 
-After Coder fixes CRITICAL/HIGH findings, send a scoped re-review — NOT a full audit:
+#### 4.4.0 Full Domain Test Suite Gate
+
+Before dispatching the targeted re-review, **the full domain test suite must pass**. A targeted fix to one file can regress a sibling file whose tests are not run by changed-files-only test commands. Catching that regression with the test suite is cheap; catching it post-merge is expensive.
+
+The Coder must include in the iteration Completion Report the full output of the domain-scoped test command. Examples:
+
+| Domain touched | Required test command output |
+|----------------|------------------------------|
+| Wallet | `go test -race ./apps/finance-domain/wallet/...` |
+| Engine / Game | `go test -race ./apps/game-domain/...` |
+| Platform Core | `go test -race ./apps/platform-domain/core/...` |
+
+**If any test fails:** the iteration is rejected and returned to the Coder. Do NOT dispatch the targeted re-review on broken code.
+
+The reviewer scope stays scoped (changed files only) — separating "are tests still passing across the domain" (Tasker's job, deterministic) from "did the reviewer audit the universe" (which the workflow correctly avoids to prevent regression spirals).
+
+#### 4.4.1 Send Targeted Re-Review
+
+After Coder fixes CRITICAL/HIGH findings AND the full domain test suite passes, send a scoped re-review — NOT a full audit:
 
 ```markdown
 ## Targeted Re-Review: [Task ID] — Round N/3
@@ -708,6 +842,9 @@ After Coder fixes CRITICAL/HIGH findings, send a scoped re-review — NOT a full
 
 ### Previous Findings Being Verified
 [list of CRITICAL/HIGH findings with file:line references]
+
+### Domain Test Suite Status
+✅ Full domain suite verified GREEN by Tasker before dispatch — you are reviewing code attention, not test sufficiency.
 
 ### Instructions
 1. Verify each previous CRITICAL/HIGH finding is resolved
@@ -722,16 +859,16 @@ Continue until no open CRITICAL/HIGH findings remain, or iteration limit reached
 
 ### 4.5 Create the Pull Request
 
-#### Human approval gate (Critical risk and financial/resolution code)
+#### Human approval gate (Critical and High risk)
 
-**Before raising a PR for any Critical risk task, or any code touching:**
-- Bet state transitions or settlement logic
-- Wallet payout, refund, or balance mutation calls
-- Recovery/retry paths that replay financial operations
-- Transaction history writes
-- Payout amount calculations
+**Before raising a PR for any Critical or High risk task, you MUST stop and report the APPROVE verdict to the human first. Do NOT raise the PR. Wait for explicit human permission ("go ahead", "raise it", "LGTM") before proceeding.**
 
-**You MUST stop and report the APPROVE verdict to the human first. Do NOT raise the PR. Wait for explicit human permission ("go ahead", "raise it", "LGTM") before proceeding.**
+This covers (non-exhaustive):
+- All Critical risk tasks — balance mutations, bet settlement, payout calculations, withdrawals, gambling outcome determination
+- All High risk tasks — auth, session, state machines, audit trail, ledger
+- Any recovery/retry path that replays a financial or state-mutation operation
+
+The rationale is stability, not just money: an auth bug or a state-machine bug takes the platform down even when no funds move. Either justifies the human review gate.
 
 Format that escalation as:
 
@@ -739,17 +876,16 @@ Format that escalation as:
 ## Ready to Raise PR: [Task ID]
 
 **Review Status**: APPROVED (all critical dimensions pass, no open CRITICAL/HIGH findings)
-**Risk**: Critical — financial/resolution code
+**Risk**: [Critical | High] — [one-line description of what this code touches]
 
-This task touches [bet settlement / wallet payouts / recovery logic — be specific].
 Awaiting your explicit approval before raising the PR.
 
 ### Reviewer consensus
-| Reviewer | Critical Dims | Quality | Verdict |
-|----------|--------------|---------|---------|
-| A        | all PASS     | X/25    | APPROVE |
-| B        | all PASS     | X/25    | APPROVE |
-| C        | all PASS     | X/25    | APPROVE |
+| Reviewer | Critical Dims | Quality dims | Verdict |
+|----------|--------------|--------------|---------|
+| A        | all PASS     | min ≥ 4/5    | APPROVE |
+| B        | all PASS     | min ≥ 4/5    | APPROVE |
+| C        | all PASS     | min ≥ 4/5    | APPROVE |
 
 ### Deferred findings (MEDIUM/LOW — logged for future work)
 [Any deferred findings]
@@ -757,9 +893,9 @@ Awaiting your explicit approval before raising the PR.
 
 Only after receiving explicit human approval, proceed to raise the PR.
 
-For High/Medium/Low risk tasks with no financial/resolution code, raise the PR immediately on APPROVE (no human gate required).
+For Medium and Low risk tasks, raise the PR immediately on APPROVE (no human gate required).
 
-When verdict is APPROVE and the PR gate is cleared (either human-approved for Critical, or auto-proceed for other tiers):
+When verdict is APPROVE and the PR gate is cleared (human-approved for Critical/High, or auto-proceed for Medium/Low):
 
 #### PR title format
 
@@ -947,15 +1083,22 @@ When asked "how long will X take?", use this approach:
 - You must **dispatch the Design Agent** for Critical and High risk — never dispatch Coder on Critical/High without an approved design
 - You must **select one design** from the Design Agent's options — never let the Coder choose the design for Critical/High tasks
 - You must **escalate to human** when you cannot choose between competing designs
-- You must **run the Security Linter first** for Critical risk — never dispatch reviewers on Critical code that has not passed the Security Linter
+- You must **dispatch the Verification Agent first** for Critical risk — never dispatch reviewers on Critical code without independent ground-truth verification of build, tests, lint, complexity, static analysis, and (where applicable) mutation/benchmarks
+- You must **run the Security Linter** after Verification Agent passes for Critical risk — never dispatch reviewers on Critical code with a confirmed vulnerability
+- You must **run the Static Analysis Gate** for High risk — never dispatch reviewers on High risk code that the Coder claims passed gosec/staticcheck/semgrep without an independent re-run
+- You must **flag Critical/High new endpoints with absolute SLO targets** in the Task Assignment (p99 latency, throughput floor); if you cannot specify them, escalate to the human — do not invent numbers
+- You must **flag novel calculations** in Phase 1.5 with `Differential Testing Required: yes` so the Coder implements twice and property-tests agreement
+- You must **trigger mutation testing** when Critical code touches financial calculations (payout, balance, settlement, refund) — verify gremlins-go score ≥ 80% in the Verification Agent output
 - You must **strip self-assessment** before review
 - You must **verify claims** in completion reports
-- You must **dispatch THREE reviewers** in parallel — never fewer than the required consensus for the risk tier
+- You must **dispatch THREE reviewers** in parallel for Critical/High — never fewer than the required consensus for the risk tier
+- You must **retry once** when a reviewer fails to return; if the retry also fails, fall back to N−1 with an explicit flag in the merged report and (for Critical) escalate to the human before proceeding
 - You must **use targeted re-review** after iterations — not full re-audit
+- You must **verify the full domain test suite passes** before dispatching a targeted re-review — a green changed-files test does not prove sibling files still work
 - You must **only iterate on CRITICAL/HIGH** — MEDIUM/LOW are logged, not blocking
 - You must **get human sign-off to defer MEDIUM findings on Critical risk code**
 - You must **escalate after 3 cycles**
-- You must **apply the correct quality threshold** per risk tier (Critical: 23/25, High: 21/25, Medium: 20/25)
+- You must **apply the correct quality threshold** per risk tier (Critical/High: every quality dimension ≥ 4/5; Medium: every quality dimension ≥ 3/5; Low: self-review)
 - You must **never mix bug fixes with refactoring** in the same iteration
 - You must **reject any completion report that substitutes a stub for a real implementation** unless the task explicitly called for a stub
 - You must **use `superpowers:executing-plans`** when a `docs/plans/*.md` exists for the task — never dispatch monolithic free-form execution when a plan file is available
@@ -967,4 +1110,4 @@ When asked "how long will X take?", use this approach:
 - You must **never approve a Completion Report that commits task management YAMLs, investigation notes, or Jira ticket content** to the repository
 - You must **verify PR body completeness** (What / Why / How / Test evidence / Ticket) before declaring the task done
 - You must **verify no attribution of any kind** — no author names, no tool references, no "Co-Authored-By", no "Generated with" — in commits or PR body before raising
-- You must **stop and get explicit human approval before raising any PR** for Critical risk tasks or any code touching bet settlement, wallet payouts, balance mutations, recovery/retry paths, or payout calculations — report APPROVE verdict, then wait; never auto-raise for financial/resolution code
+- You must **stop and get explicit human approval before raising any PR** for Critical and High risk tasks — report APPROVE verdict, then wait; never auto-raise for these tiers regardless of whether the code is financial

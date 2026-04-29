@@ -50,6 +50,23 @@ gh pr view <number> --json number,title,body,headRefName,baseRefName,url,author,
 
 Record: PR number, title, branch name, additions/deletions count, author.
 
+### 1.1.5 Pull ticket context (if referenced)
+
+Check the PR title, body, and branch name for a Jira ticket reference (e.g. `SMG-1234`). Common patterns:
+- Branch name: `feature/SMG-1234-description` or `fix/SMG-1234`
+- PR title: `[SMG-1234] description` or `(SMG-1234) description`
+- PR body: any `SMG-XXXX` pattern
+
+If a ticket reference is found, fetch the ticket details:
+
+```bash
+forecast jira get SMG-XXXX
+```
+
+Record the ticket's requirements, acceptance criteria, and context. This gives you the **spec** to review the implementation against — without it, you're reviewing code in isolation and can't assess whether it actually solves the right problem.
+
+If multiple tickets are referenced, fetch all of them. If no ticket is found, note it as a gap — but proceed with the review using the PR description as the spec.
+
 ### 1.2 Get changed files
 
 ```bash

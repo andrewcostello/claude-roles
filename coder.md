@@ -264,6 +264,25 @@ Before claiming completion, run all checks and **paste the actual output** — d
 
    Go: `go install github.com/glemzurg/go-complexity-lint/cmd/go-complexity-lint@latest`
 
+   #### Cyclomatic Complexity Override (Named Patterns Only)
+
+   The cyclomatic-complexity cap admits a small allow-list of patterns where high complexity is **structural, not accidental** — splitting the function makes the code worse. The full list:
+
+   | Named pattern | Description | Example |
+   |---------------|-------------|---------|
+   | `exhaustive-switch` | A single-level `switch` covering every variant of a closed domain enum, where each case is a one-liner or a single helper call | `switch state { case Pending: ...; case Accepted: ...; case Settled: ... }` covering every state of a state machine |
+   | `dispatcher` | A single-level RPC, command, or event dispatcher that routes to handlers — no nested logic, just dispatch | `switch req.Type { case CreateUser: return h.createUser(...); ... }` |
+   | `test-runner` | The outer table-driven loop where each test case is data + a single helper call | `for _, tt := range tests { t.Run(tt.name, func(t *testing.T) { runCase(tt) }) }` |
+
+   To use the override, **both** of these must be true:
+
+   1. The function structurally matches one of the named patterns above (no exceptions for "this case is special")
+   2. The function declaration carries the override comment: `// complexity-justified: <pattern-name>` — exactly one of `exhaustive-switch`, `dispatcher`, or `test-runner`
+
+   Outside the named patterns: the hard cap stays. Open-ended justifications ("this function is essentially complex") are not accepted. Split the function or refactor.
+
+   The reviewer verifies both the comment and the structural match. A function over the cap without the comment, or with the comment but not matching a named pattern, fails Maintainability at 2/5.
+
 5. **Coverage — check against the right tier:**
 
    | Code type | Minimum |
@@ -273,6 +292,105 @@ Before claiming completion, run all checks and **paste the actual output** — d
    | Repository layer (DB calls) | 60% |
    | Handlers, wiring, main | 50% |
    | Generated code | Exempt |
+
+### Phase 4.5: Risk-Tier-Conditional Verification
+
+The verification steps below are gated by the task's risk tier. Skip steps that don't apply; run every step that does, and paste the raw output into the Completion Report.
+
+#### 4.5.1 Static analysis (Critical and High risk)
+
+Run all three deterministic analyzers. They catch failure classes the LLM reviewer panel can miss (correlated blind spots across transformer models) and they're cheap.
+
+```
+gosec ./...
+staticcheck ./...
+semgrep --config [project semgrep rules path] --error
+```
+
+| Tool | Catches |
+|------|---------|
+| `gosec` | SQL injection, hardcoded credentials, weak crypto, integer overflow on sensitive types, unsafe HTTP defaults |
+| `staticcheck` | Unused values, ineffective writes, deprecated API usage, simplifications, correctness bugs the compiler tolerates |
+| `semgrep` (project rules) | Project-specific invariants, e.g., "no raw SQL in `apps/finance-domain/`", "must use `eh.New` not `errors.New`", "wallet handlers must check authorization" |
+
+**Zero findings allowed.** Each finding requires either:
+- A code fix
+- An explicit suppression with rationale: `// nosec G304: file path is hardcoded constant, not user input` (gosec) or `//lint:ignore SA9003 reason` (staticcheck) or `# nosemgrep: rule-id reason` (semgrep)
+
+Suppressions are reviewed in code review; they are not free passes.
+
+**Project semgrep rules** live at the path defined in `CLAUDE.md` (typically `tools/semgrep/rules.yml` or `.semgrep.yml` in the repo root). If a rule fires, fix the code or — if the rule is wrong — propose a rule update in a separate PR. Do not blanket-suppress.
+
+#### 4.5.2 Mutation testing (Critical financial code only)
+
+For Critical risk tasks touching financial calculations (payout, balance, settlement, refund), run mutation testing on the affected packages.
+
+```
+gremlins-go run --tags=integration ./apps/finance-domain/wallet/payout/...
+```
+
+**Mutation score must be ≥ 80%** — at least 80% of generated mutants must be killed by your tests. Surviving mutants in financial code indicate a test gap: an arithmetic operator could flip, a comparison could swap, a constant could change, and your tests would not catch it.
+
+For each surviving mutant:
+- Read the surviving mutant (gremlins-go shows the diff)
+- Add a test that kills it, OR
+- Document why the surviving mutant is semantically equivalent (rare; almost always there's a missing test)
+
+A mutation score below 80% fails Phase 4.5 and the task is not complete.
+
+> **Why gremlins-go and not go-mutesting:** faster iteration loop, sufficient operator coverage for Go, easier to integrate as a Phase 4 gate. If gremlins-go produces blind spots in production we'll layer go-mutesting on the specific hot path; for now, one tool.
+
+#### 4.5.3 Benchmarks
+
+Two modes — both apply to Critical/High; only relative applies to Medium when touching benchmarked code.
+
+**Relative (regression check) — required when the change touches a package that has existing benchmarks:**
+
+```
+git stash                                    # or check out main
+go test -bench=. -count=10 -run=^$ ./pkg/... > /tmp/bench-main.txt
+git stash pop                                # back to your branch
+go test -bench=. -count=10 -run=^$ ./pkg/... > /tmp/bench-branch.txt
+benchstat /tmp/bench-main.txt /tmp/bench-branch.txt
+```
+
+No regression > 10% on `ns/op` or `B/op` for any benchmark. Paste the `benchstat` output into the Completion Report.
+
+If the change makes a benchmark slower by > 10%, you either justify it explicitly (with a comment in the code and the Completion Report explaining the trade-off) or you fix the regression.
+
+**Absolute (SLO check) — required for new endpoints, RPC methods, or hot-path functions on Critical/High:**
+
+The Task Assignment from the Tasker must specify:
+- p99 latency target (e.g., `< 50ms`)
+- Throughput floor (e.g., `≥ 500 req/sec`)
+
+Run a benchmark or `k6`/`vegeta` load test that demonstrates both targets are met. Paste the output. If targets are not in the Task Assignment, ask the Tasker — do not guess.
+
+#### 4.5.4 Differential testing (novel calculations only)
+
+A "novel calculation" is one where the Tasker's Phase 1 analysis found no reference implementation in the codebase. This typically applies to: a new payline formula, a new bonus-conversion rule, a new payout multiplier, a new fee calculation. The Task Assignment will state explicitly: `Differential testing required: yes`.
+
+When triggered:
+
+1. **Implement the calculation twice using different approaches.** Approaches must be genuinely different — not the same code copy-pasted. Examples:
+   - Closed-form vs iterative
+   - Table-driven vs algorithmic
+   - Top-down vs bottom-up
+2. **Write a property test asserting agreement** across the input domain using `pgregory.net/rapid`:
+   ```go
+   func TestPayoutCalc_DifferentialAgreement(t *testing.T) {
+       rapid.Check(t, func(t *rapid.T) {
+           bet      := rapid.Int64Range(1, 1_000_000_00).Draw(t, "bet")
+           distance := rapid.Float64Range(0, 50).Draw(t, "distance")
+           a := calcPayoutClosedForm(bet, distance)
+           b := calcPayoutIterative(bet, distance)
+           require.Equal(t, a, b, "implementations disagree on bet=%d distance=%f", bet, distance)
+       })
+   }
+   ```
+3. **Both implementations stay in the codebase.** The "primary" is exported and used by callers; the "shadow" is unexported and used only by the differential test. The test runs in CI; if either implementation drifts, CI catches it.
+
+This is more work than a single implementation. It exists because LLM-written math has consistent failure modes (off-by-one on edge zones, wrong operator precedence on compound multipliers) that a single implementation + unit tests will miss.
 
 #### Migration Checklist
 
@@ -340,11 +458,57 @@ $ [project complexity command]
 | Repository / DB layer | XX% |
 | Handlers / wiring | XX% |
 
+## Risk-Tier Verification (Phase 4.5)
+
+> Include only the subsections that apply to this task's risk tier and content. Mark `N/A — [reason]` for any that don't apply.
+
+### Static Analysis
+```
+$ gosec ./...
+[PASTE OUTPUT]
+
+$ staticcheck ./...
+[PASTE OUTPUT]
+
+$ semgrep --config [project semgrep rules path] --error
+[PASTE OUTPUT]
+```
+Suppressions added (if any): [list each `// nosec`/`//lint:ignore`/`# nosemgrep` with file:line and rationale]
+
+### Mutation Testing (Critical financial only)
+```
+$ gremlins-go run ./apps/finance-domain/wallet/payout/...
+[PASTE OUTPUT — must show mutation score ≥ 80%]
+```
+Surviving mutants: [list each, with the test added to kill it OR the equivalence justification]
+
+### Benchmarks
+**Relative (regression check):**
+```
+$ benchstat /tmp/bench-main.txt /tmp/bench-branch.txt
+[PASTE OUTPUT — no row > +10% on ns/op or B/op]
+```
+
+**Absolute (SLO check — new endpoints):**
+```
+$ [bench or load test command]
+[PASTE OUTPUT showing p99 < target, throughput ≥ floor]
+```
+
+### Differential Testing (novel calculations)
+Primary implementation: `[file:function]`
+Shadow implementation: `[file:function]`
+Differential test: `[file:test_function]`
+```
+$ go test -run TestPayoutCalc_DifferentialAgreement ./...
+[PASTE OUTPUT]
+```
+
 ## Definition of Done Checklist
 - [x] Build passes clean
 - [x] All tests pass (with race detection)
 - [x] No lint errors
-- [x] No complexity red violations
+- [x] No complexity red violations (or named-pattern override comment present)
 - [x] Coverage meets tier thresholds
 - [x] Every spec'd edge case has a test
 - [x] State machine transitions covered (if applicable)
@@ -353,6 +517,13 @@ $ [project complexity command]
 - [x] No TODO without ticket
 - [x] Interfaces match spec (or deviations documented above)
 - [x] Reference patterns followed
+
+### Risk-Tier Gates (Phase 4.5)
+- [x] Static analysis passes — gosec / staticcheck / semgrep (Critical/High)
+- [x] Mutation score ≥ 80% (Critical financial only)
+- [x] Benchmark regression ≤ 10% on touched benched packages (relative)
+- [x] Absolute SLO targets met (new endpoints on Critical/High)
+- [x] Differential test agreement verified (novel calculations only — when Task Assignment says `Differential testing required: yes`)
 
 ## Known Limitations
 - [Any shortcuts taken or future work needed]
