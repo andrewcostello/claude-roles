@@ -10,6 +10,7 @@ Shared Claude agent role definitions for the full development lifecycle — from
 | `design-agent.md` | Design Agent | Produces 2-3 competing designs for Tasker to select — mandatory for Critical/High risk |
 | `coder.md` | Implementation Agent | Writes tested code against an approved design spec |
 | `verification-agent.md` | Verification Agent | Independent ground-truth runner — fresh-checkout build/test/lint/static-analysis/mutation/bench with no Coder context. Gates Critical review before any reviewer runs. |
+| `regression-test-author.md` | Regression Test Author | Independent test author for confirmed user-reported bugs at Medium/High risk. Two phases on the same agent: writes a failing test from the user's reported contract before the fix exists, then verifies the fix satisfies it once the fix PR is up. Black-box only — refuses to write unit tests at the layer the Coder's TDD covers. |
 | `reviewer.md` | Code Reviewer | 8-dimension review with data flow tracing, dedicated test quality audit, design coherence checks, and focused sub-agents |
 | `security-linter.md` | Security Auditor | Focused SQL injection, PII exposure, integer overflow, and auth bypass audit with severity grading — gates Critical review |
 | `config/team-config.yaml` | Shared Configuration | Team roster, JIRA/GitHub settings, tracked epics, P0 tickets, known binaries — single source of truth for project-specific config |

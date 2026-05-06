@@ -389,6 +389,26 @@ A Completion Report for a bug fix that does not include a prior failing test out
 - **Total: ~90 min**
 ```
 
+### Bug Fix — User-Reported, Non-Trivial: also dispatch Regression Test Author
+
+For bug fixes that originated from a **user report** (not a Coder-discovered bug during implementation) and that are **Medium or High risk** with a **confirmed root cause**, also dispatch the Regression Test Author (`regression-test-author.md`) **before** dispatching the Coder.
+
+The Regression Test Author works in two phases:
+
+1. **Phase A (before fix exists)** — translates the user-reported contract into a failing test, opens a draft PR. Black-box only (e2e, wire-effect, integration). Refuses to write unit tests at the layer the Coder's TDD will cover.
+2. **Phase B (after Coder's fix PR is up)** — cherry-picks the test onto the fix branch and runs it. Reports whether the fix satisfies the user-reported contract.
+
+Skip the Regression Test Author for:
+
+- **Trivial bugs (Low risk)** — Coder's TDD is sufficient.
+- **Critical risk** — Verification Agent + multi-reviewer panel already produces independent ground truth at sufficient depth.
+- **Coder-discovered bugs** — the existing Bug Fix Protocol (failing test first, owned by Coder) handles them.
+- **Unconfirmed root cause** — return to human first; the Regression Test Author refuses to write speculative tests against fuzzy causes.
+
+If the Coder's PR ships with thorough internal tests covering the same observable contract, the Regression Test Author's draft PR closes rather than merges. That is a successful workflow outcome, not a failure — the duplicate signal isn't worth the maintenance overhead.
+
+Read `.claude/roles/regression-test-author.md` for the full role definition.
+
 ---
 
 ## Phase 2.3: Design Agent (Critical and High risk)
