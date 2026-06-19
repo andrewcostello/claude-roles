@@ -42,12 +42,19 @@ stacks (React/TS, Go, etc.).
   (the DBF-6 lesson: a facade that changes shape needs a documented escape hatch,
   not a silent mismatch).
 
-### 2. Author the SKELETON  →  **GATE 1: human approval**
+### 2. Author the SKELETON + PRD  →  **GATE 1: human approval**
 Produce, as real code (not prose):
 - types / interfaces / enums for the new surface,
 - the state machine + mutation points,
 - data-flow seams (who produces/consumes which shape),
 - **contracts-as-tests**: the failing/skipped tests that define "done" for each body.
+
+Also emit the **PRD** at `features/<feature>/PRD.md` from
+`claude-dispatcher/docs/templates/PRD-template.md` — the intent oracle the FINAL
+feature review reads to check the cumulative diff against *intent + acceptance +
+cross-task coherence* (not just per-task quality). Fill its Problem/intent,
+Contracts + seams (from the skeleton), feature-level Acceptance criteria,
+Non-goals, and any degradation decisions. (The run appends to its Deviations log.)
 
 **Contract-test quality is THE load-bearing thing — be rigorous here above all
 else.** An agent fills the body to pass *exactly the test you wrote* — no more.
@@ -92,7 +99,8 @@ test a clause, the contract is too vague — sharpen it before dispatch.
 
 ### 5. Emit `tasks.yaml`  →  **GATE 2: human review before dispatch**
 Schema per task: `key, summary, description, type, labels, [blockedBy], [agent],
-[model], [effort]`. Top-level `project` + `epic`. Each description states the
+[model], [effort]`. Top-level `project` + `epic` + `prd: features/<feature>/PRD.md`
+(so the final review can find the oracle). Each description states the
 contract the body must satisfy + the acceptance (which contract test goes green).
 
 **STOP. Present the full task list + the dependency graph for human review before
