@@ -49,11 +49,24 @@ Produce, as real code (not prose):
 - data-flow seams (who produces/consumes which shape),
 - **contracts-as-tests**: the failing/skipped tests that define "done" for each body.
 
-**Contract-test quality is load-bearing.** Tests MUST use *realistic* data shapes
-and casing. (A real bite: a contract test used lowercase `"approve"` while live
-verdicts were `"APPROVE"`; the body matched the test, passed the gate, and
-shipped a case-sensitivity bug the panel later caught. A weak contract manufactures
-exactly that trap.) Plant at least one "must-fail" assertion per contract.
+**Contract-test quality is THE load-bearing thing — be rigorous here above all
+else.** An agent fills the body to pass *exactly the test you wrote* — no more.
+So an under-specified contract test ships a real bug with a green gate, and only
+the panel (maybe) catches it. This failure has recurred repeatedly; a contract
+test MUST:
+1. **Cover EVERY condition / branch the docstring or signature promises — not a
+   subset.** If the docstring lists four trip conditions, test four. (Real bite:
+   `alarm_tripped`'s docstring promised four conditions; the test checked two; the
+   body implemented two; gate green; panel caught it.)
+2. **Use realistic data shapes + casing.** (Real bite: a test used lowercase
+   `"approve"` while live verdicts were `"APPROVE"` — case-sensitivity bug, green
+   gate.)
+3. **Include invalid / edge-type inputs**, not just the happy path. (Real bite:
+   `feature_prd` was tested on present/absent/blank strings but not a non-string
+   value, which the body then silently `str()`'d.)
+4. **Plant at least one "must-fail" assertion** so a no-op/stub body can't pass.
+Treat the docstring as the spec and write one assertion per clause. If you can't
+test a clause, the contract is too vague — sharpen it before dispatch.
 
 **STOP. Present the skeleton for human approval. Do not proceed until approved.**
 
