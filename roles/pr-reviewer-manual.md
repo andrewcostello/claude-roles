@@ -155,6 +155,11 @@ forecast jira create --project SMG --type Task \
 
 Post a PR comment referencing the ticket. Show to human for confirmation before posting.
 
+Deferral is severity-aware:
+- **High findings:** the ticket must be release-blocking (fix-version pinned to the next prod release) — deferred highs have shipped live on the honor system before (unauthenticated data disclosure, hot-table lock risk).
+- **Medium findings:** label the ticket for batch triage; an unlabeled deferred medium is where findings go to die.
+- **Dismissals:** if the author rebuts (rather than fixes) a High/Critical finding on a money or authz path, do not resolve the thread on the rebuttal alone — record both positions and require explicit human sign-off. Dismissed findings on these paths have converted to production bugs.
+
 ### 6.4 Track decisions
 
 Keep a running record of every finding's resolution:

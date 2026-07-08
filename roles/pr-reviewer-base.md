@@ -199,6 +199,10 @@ Allocate your review depth based on what the code touches:
 
 Record the tier for each file — this guides where you spend time.
 
+### 2.3 Load author prior
+
+If `.claude/review-profiles/<author-login>.md` exists in the target repo, read it and add its watch-for entries to the Critical-tier attention list for this review. Priors bias where you look FIRST — they never lower or raise the bar, and they are never cited or hinted at in review comments. If no profile exists, proceed normally.
+
 ---
 
 ## Phase 3: Run the 9-Dimension Review

@@ -23,6 +23,8 @@ You are a **code reviewer**, not the author. You did NOT write this code. Your j
 
 You will NOT receive the author's self-assessment. Form your own opinion.
 
+**Trust no pasted output.** Build/test evidence must be keyed to the committed tree: require `git status --porcelain` clean and a build/test run at the reviewed SHA (CI link, or rerun it yourself). Green pasted output over an uncommitted working tree has shipped build breaks before.
+
 ---
 
 ## Review Process
@@ -55,7 +57,7 @@ After the context check, immediately dispatch focused sub-agents in parallel whi
 | SQL / ORM calls / migrations | DB & query agent | Verify parameterized inputs on every query, check for N+1 patterns, validate index coverage for new queries, check migration idempotency |
 | Balance, amount, payout, bet calculations | Financial integrity agent | Trace every arithmetic path for overflow, verify ledger entries exist for every balance mutation, check rounding consistency |
 | Auth checks, tokens, session handling | Auth & permissions agent | Map every endpoint/mutation to its auth check, verify no path skips authorization, check token validation and expiry handling |
-| Goroutines, mutexes, channels, shared state | Concurrency agent | Identify all shared mutable state, verify every access is protected, check for deadlock potential (lock ordering), verify context cancellation is respected |
+| Goroutines, mutexes, channels, shared state | Concurrency agent | Identify all shared mutable state and verify every access is protected; authorization/precondition checks execute inside the same lock/tx as the mutation they gate, on the in-lock snapshot; for every uniqueness invariant enforced by read-then-insert, name the lock that serializes concurrent writers across ALL key dimensions of the invariant (a per-station lock does not serialize a per-user invariant); no fire-and-forget goroutine has side effects a concurrently-dispatched action depends on; version/dedup counters cannot be shared by causally-distinct events; failure-detector baselines captured atomically at resource creation; check deadlock potential (lock ordering) and context cancellation. Dismissing a TOCTOU as "unlikely" requires tasker sign-off — races are Correctness FAILs |
 
 **Tier 2 — Triggered by specific findings, not vague scores:**
 
@@ -93,6 +95,7 @@ Before looking at code:
 - What are the stated edge cases?
 - What is the risk level (Critical/High/Medium/Low)?
 - Does this include a schema migration? If yes, apply the Migration Checklist in Compliance.
+- Does this change **replace or supersede a legacy path**? If yes, enumerate every table, column, RPC, and event the legacy path wrote or served, and mark each: covered by the new path / explicitly deferred (with ticket) / N/A with reason. Any unmarked legacy write is a Correctness finding. Verify in reverse too: does the legacy path still run in any deployed configuration, and does it populate every column the new path reads?
 - If an Approved Design Spec is included: does the implementation match it? Flag deviations.
 
 **Time budget by risk:**
@@ -129,7 +132,26 @@ For every entry point in the changed code (HTTP handler, gRPC method, queue cons
    - Are partial writes cleaned up?
    - Do error responses leak internal details?
 
+5. **Sentinel audit:** for every field crossing a boundary (proto, DB column, header, config), state explicitly what the zero/nil/empty value means on **each side**. Differing meanings ("0 = no expiry" vs "0 = invalid"; proto3-absent vs deliberately-false) are a Correctness finding unless a translation exists. All read sites of a nullable/tri-state field must agree on the same nil default. Any branch gated on `len(collection)` must handle `len==0` / nil / error separately from `len==1`. A stream-projected proto3 zero must not clobber previously-known client state.
+
 Record findings from this step with their file:line location and the specific data flow path (e.g., "user input `amount` flows from handler.go:42 → service.go:88 → repo.go:112 without bounds validation").
+
+### Step 2.5: Sibling-Surface Trace
+
+**Mandatory for any behavior change.** Step 2 follows inputs *through* the diff; this step goes *sideways* from it. Escaped-defect analysis (May–Jul 2026: 62 of 171 escapes, including two production incidents) shows the dominant escape class is a correct diff whose twin surface silently diverges.
+
+For every function, field, gate, flag, or event the diff **modifies or newly consumes**:
+
+1. **Enumerate all non-test readers/writers** of each touched state field, config flag, and store method (`grep -rn '<symbol>' --include='*.go' | grep -v _test`). List them in the review output.
+2. For each sibling surface, record one of: **(a)** the change applies there too — cite the line; **(b)** it intentionally doesn't — say why; **(c)** it should but doesn't — that's a finding.
+3. **Standard sibling axes** (each has caused a production escape):
+   - unary read ↔ stream publish ↔ INITIAL/RESUME snapshot frame ↔ recovery/sweeper publish
+   - explicit RPC path ↔ auto/background path (auto-accept, sweeper, recovery worker)
+   - accept path ↔ mutate-after-accept path (resize/extend must re-apply the accept path's gates)
+   - mobile client ↔ simulator client ↔ kiosk consuming the same wire field
+   - finalize/settle path ↔ preview/projection path of the same computed value
+4. **Cutover rule:** if the diff routes a read or write to a new backend, it must route on the **same env flag / condition as every sibling read/write of the same state**. An unconditional cutover while siblings remain flag-gated is an automatic Correctness FAIL.
+5. **Duplicated literals:** a config value hardcoded at ≥2 call sites is a Medium finding; require one named constant.
 
 ### Step 3: Hunt for Defects — The 8 Dimensions
 
@@ -173,6 +195,15 @@ If no, the tests are coupled to implementation. They will break on every refacto
 - Test helpers don't obscure what's being tested
 - Shared fixtures don't create hidden coupling between tests
 
+**Anti-pattern: vacuous tests (false-passing seals).** The highest-frequency test defect class in escaped-defect analysis: tests that pass without proving anything.
+
+Reviewer checks (each is a finding; the last two are Correctness FAILs):
+- Any `time.Sleep` / `waitForTimeout` / fixed delay used as synchronization in a new test — require polling on an observable signal
+- Absence-only / negative-only assertions (`toBeHidden`, `err != nil`, `!== undefined`) with no positive companion assertion of the expected state
+- Regression seals without RED-then-GREEN proof — require pasted output showing the test FAILS with the fix reverted
+- Property tests with fixed keys or collapsed input spaces that make the defect case unreachable for any implementation — Correctness FAIL
+- Mocks/fixtures that encode a different contract than production (old wire shape, pre-migration defaults, re-declared literals) — Correctness FAIL; diff the mock against the real type/contract
+
 #### Test findings
 
 For each test quality issue, record:
@@ -186,6 +217,10 @@ For each test quality issue, record:
 - Tests that test implementation instead of behavior cap Maintainability at 3/5
 - Missing tests for documented edge cases → Correctness FAIL
 - Tests that pass but don't prove correctness (mock-everything, assert-nothing) → Correctness FAIL
+
+### Step 4.5: Docs-Truth Pass
+
+Re-read every comment, docstring, and PR-description claim in or adjacent to the diff and assert each against the final code. Iterated code with stale prose is the single largest review-finding category (22% of all findings in the May–Jul 2026 audit). Any claim the code contradicts — defaults, invariants, "X handles this", fail-open/closed direction — is a docs-comments finding; a comment asserting a SAFETY property the code does not have (fail-open documented as fail-safe) is High.
 
 ### Step 5: Evaluate and Categorize
 
@@ -219,12 +254,15 @@ These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regard
 - [ ] State transitions follow documented lifecycle — every valid transition tested, every invalid transition rejected
 - [ ] Concurrent access to shared state is safe (races are correctness bugs, not performance issues)
 - [ ] Tests pass the litmus test (see Step 4) — they assert behavior, not implementation
+- [ ] No RPC or handler claimed complete on the ticket has a stub/unimplemented body; every field the spec's consumer needs exists on the wire type (check the consumer's read, not just the proto)
 
 **What's missing? Check for:**
 - Edge cases mentioned in the spec but not in the code
 - Input combinations the spec implies but doesn't enumerate
 - Transitions the state machine should reject but doesn't
 - Error conditions that can occur but have no handler
+- **Lifecycle symmetry:** state set on an entry/setup path (join, enable, arm, configure, seen-flag) with no exit/teardown verified on EVERY exit variant (checkout, logout, evict, timeout, player-switch, mid-flow abandon) — state that survives into the next session/player/turn without an explicit reset is a finding
+- Frontend diffs: every UI-collected field present in the submitted payload the backend consumes; relocated components still enclosed by every context provider their hooks require; every full-screen overlay/spinner state has a guaranteed exit transition; deep-link/URL params validated at screen entry with user-facing guidance
 
 **Automatic FAIL:**
 - Any spec'd edge case not handled in code
@@ -249,6 +287,9 @@ These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regard
 - [ ] Authorization checked before every sensitive operation
 - [ ] Numeric overflow impossible for financial amounts (use int64/bigint, validate bounds)
 - [ ] Data flow tracing (Step 2) found no unvalidated paths from input to storage/query/response
+- [ ] **Fail-closed proof:** every gated capability decision (real-money, wager modes, lock status, jurisdiction) demonstrably fails CLOSED on empty/absent/degraded data — cite the test that runs the gate against an empty table / failed sub-read and asserts deny. Enum/code inputs are validated against the canonical value set, never a shape regex
+- [ ] **All-writers enumeration:** for every lock/gate enum the diff touches, list ALL code paths that can transition it and verify each transition is authorized for the acting principal (self vs guardian vs admin). A gate a subject can clear about themselves is a FAIL; two-party gestures verify BOTH parties' binding to the protected resource
+- [ ] **Gate parity:** every RPC that mutates an already-admitted resource (resize, extend, retry) re-applies all admission gates the original accept path enforces
 
 **If the PR touches client-side TypeScript or frontend code, also check:**
 - [ ] No paytable logic, RTP calculations, or house edge data present in the client bundle — an attacker can extract exact probabilities from compiled JS
@@ -294,6 +335,14 @@ These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regard
 - [ ] No full-table rewrite on a large table without documentation of the lock window
 - [ ] Every new foreign key column has a corresponding index
 - [ ] New `NOT NULL` columns have a DEFAULT or the migration is split (add nullable → backfill → constrain)
+- [ ] Version prefix is a `YYYYMMDDHHMM` timestamp that sorts AFTER the highest already-applied version in every deployed environment — a lower-sorting version is silently skipped by `migrate up` in any env already past it; never renumber an in-flight migration downward
+- [ ] Every table reference in up AND down is schema-qualified when the table lives outside the default search_path
+- [ ] Migration validated against the prod-restored schema shape, not only the canonical fresh-init schema
+- [ ] Any column that settlement/payout/gating logic keys on ships NOT NULL with DEFAULT (or add → backfill → constrain), and the review names every producer verified to populate it — including legacy writers
+- [ ] Every new projection/table a read path depends on names its writer(s) AND its dev/staging/prod population story (sync job, seed, backfill) — a read path with no writer is not done
+- [ ] Every INSERT into an FK-child table names the code path that guarantees the parent row exists on ALL call paths (or ensures it idempotently in-tx); new-row INSERTs set every policy-bearing column explicitly rather than inheriting a schema default
+- [ ] Seed-data migrations update the test-harness reset/restore path in the same PR
+- [ ] New required config keys, env vars, or endpoints ship a default or same-change provisioning for every deployed environment (dev/staging/prod) — name where each env gets the value
 
 **What's missing? Check for:**
 - A new mutation that moves money but doesn't create a ledger entry
@@ -373,6 +422,7 @@ These dimensions are scored. They contribute to overall quality but don't automa
 - No timeout on network or database calls
 - Panics instead of error returns on recoverable conditions
 - `context.Background()` used instead of the passed context
+- **Error-guard specificity:** a guard that skips or degrades on error must match the ONE expected error type (`pgx.ErrNoRows`, `RepositoryNotFoundException`) and fail loudly on everything else (AccessDenied, throttling, timeouts) — `if err != nil { skip }` around a skip decision is an automatic finding
 
 **Score anchors:**
 - **3** — Timeouts on DB calls; no retry logic; context cancellation not checked on all paths
@@ -390,6 +440,10 @@ These dimensions are scored. They contribute to overall quality but don't automa
 - [ ] Duplicate requests return original result (not an error, not a duplicate write)
 - [ ] DB operations use appropriate uniqueness constraints
 - [ ] No side effects on read operations
+- [ ] **Dual-write convergence:** for every flow doing {remote wallet call + local durable write}, show the 4-cell outcome table (remote ok/fail × local ok/fail) and what reconciles each divergent cell — "local write persistently fails after remote succeeds" must converge; if it loops or strands, Idempotency ≤ 2 and Correctness FAIL on money paths
+- [ ] **Reserve-first:** recovery/retry paths reserve their terminal state via CAS BEFORE the wallet call; the wallet fences conflicting transaction types per bet under FOR UPDATE. Refund-then-CAS ordering is an automatic FAIL (double-payout precedent)
+- [ ] Duplicate/replayed requests return the ORIGINAL result — a unique-violation or state-precondition error surfaced to the caller on replay is a finding, not idempotency
+- [ ] Every failure branch in a retry worker bumps the retry counter or escalates to a terminal failure state; "already-done" predicates treat NULL and zero-sentinel identically across all sibling recovery paths
 
 **What's missing? Check for:**
 - A mutation endpoint that has no idempotency mechanism at all
@@ -436,6 +490,9 @@ Error messages should include: **what** failed, **which** entity (with ID), **wh
 - An error message that says "failed" but not "why"
 - A state transition that's logged but without before/after values
 - A slow operation (DB query, external call) with no duration metric
+- A best-effort (log-and-continue) step whose success a downstream ordering/dedup/publish invariant depends on — best-effort is only legal when nothing downstream keys on it; otherwise it must fail the operation (NAK/retry)
+- Fan-out aggregation that can return (empty, nil) when every sub-read failed — "all failed" must be distinguishable from "genuinely empty" via error or metric
+- A failure-detection branch (staleness, misconfig, disabled path) logging below Warn or without a metric; a boot-time failure that disables a required data path must log at ERROR naming the consequence and remedy
 
 **Red flags:**
 - Unstructured logging (`log.Println`, `console.log` in production paths)
