@@ -1,6 +1,6 @@
 ---
 name: critical-review-dispatch
-description: Pre-review gates + 3-reviewer parallel panel dispatch for Critical/High risk tasks. Owns Design Agent, Verification Agent, Security Linter, Static Analysis Gate, and reviewer panel mechanics.
+description: Pre-review gates + 4-reviewer parallel panel dispatch for Critical/High risk tasks. Owns Design Agent, Verification Agent, Security Linter, Static Analysis Gate, and reviewer panel mechanics.
 ---
 
 # Critical / High Review Dispatch
@@ -9,7 +9,7 @@ The Tasker loads this skill for Critical and High risk tasks. It owns:
 
 1. Design Agent dispatch and design selection (Phase 2.3)
 2. Pre-review gates (Phase 3.0): Verification Agent, Security Linter, Static Analysis Gate
-3. 3-reviewer parallel panel dispatch (Phase 3.3) including plugin invocation and mid-flight failure handling
+3. 4-reviewer parallel panel dispatch (Phase 3.3) including plugin/CLI invocation and mid-flight failure handling
 
 ---
 
@@ -78,7 +78,7 @@ Verdicts:
 
 Do NOT proceed to reviewer panel. Send a targeted security fix request to Coder:
 
-```markdown
+````markdown
 ## Security Fix Required: [Task ID]
 **Security Linter Verdict:** FAIL
 **Linter Cycle:** N/2
@@ -93,7 +93,7 @@ Do NOT proceed to reviewer panel. Send a targeted security fix request to Coder:
 2. Each fix must NOT introduce new attack surface
 3. Re-run tests, confirm no regressions
 4. Submit updated Completion Report listing ONLY the files you changed
-```
+````
 
 Re-run the Security Linter on changed files after the fix.
 
@@ -123,45 +123,50 @@ Zero findings allowed. Suppressions in changed files are noted for the reviewer 
 
 ---
 
-## Phase 3.3: Three-Reviewer Panel (Parallel)
+## Phase 3.3: Multi-Agent Review Panel
 
-All three reviewers receive the same Review Request, have **NO knowledge of the others' findings**, and produce independent 8-dimension reviews. Dispatch in parallel (same message). The prompt body is identical; only the transport differs:
+The multi-agent panel is fully encapsulated in the `cmd/reviewer` CLI tool. The orchestrator automatically handles reviewer isolation, reasoning depth scaling based on risk tier, fallback and retries, and merges the findings into a consensus verdict.
 
-- **Reviewer A** — Task tool with `subagent_type: general-purpose`.
-- **Reviewer B** — Codex Claude Code plugin.
-- **Reviewer C** — cc-gemini-plugin (Gemini).
+### Dispatching the Panel
 
-Prompt body (use for all three):
+Run the `reviewer` binary inside the worktree, passing the diff via stdin:
 
-```
-Read the file .claude/workflow/roles/reviewer.md for your complete role instructions.
-You did NOT write this code. Your job is to find defects, teach principles, and raise the bar.
-
-[paste Review Request — spec, file list, actual test output]
-
-Produce the full review output format from reviewer.md.
+```bash
+cd ~/Project/claude-workflow
+git diff main...HEAD | ./cmd/reviewer/main -cwd "$WORKTREE" -risk [critical|high|medium|low] \
+  [-component wallet,bet-settlement,...]   # when the diff touches a floor component (table below)
 ```
 
-### Plugin Unavailability — Fallback
+The CLI defaults to the 5-seat `claude,claude-scouts,codex,grok,agy` panel (claude mono restored 2026-07-16 after the 10-minute timeout misconfiguration was fixed — monitor its unique-finding contribution across upcoming reviews before revisiting). It outputs the full merged review report, a deduplicated Critical & High findings section (near-duplicate findings are clustered with all sources listed; severity is the max across the cluster; nothing is dropped), and the final `Status` + `Final Verdict`.
 
-If either plugin is unavailable, dispatch an additional Claude subagent as replacement reviewer. Two-reviewer consensus is the minimum for High; three is required for Critical.
+### Consensus and Mid-Flight Failures
 
-If `$REVIEWER_COUNT` is set, honor that count (overrides tier default).
+Each reviewer is retried once on failure. The CLI then applies the tier consensus floor to whatever completed:
 
-### Mid-Flight Reviewer Failure
+| Tier | Floor (N-seat panel) | 5-seat example |
+|------|----------------------|----------------|
+| Critical | N/N — full panel required | 5/5 |
+| High | max(2, ceil(3N/4)) | 4/5 |
+| Medium | majority (ceil(N/2)) | 3/5 |
+| Low | 1 | 1/5 |
 
-On plugin crash, API outage, malformed output, or excessive time:
-
-1. **Re-dispatch once** with the same Review Request — transient failures often resolve on retry.
-2. **If re-dispatch also fails**, fall back to N−1 / N consensus with the gap flagged in the merged review: `⚠️ Reviewer C (Gemini) unavailable after retry. Consensus is 2/3.`
-3. **Tier handling:** Critical — 2/3 NOT acceptable by default; stop and report to human, who decides accept / wait / escalate. High — 2/3 is the floor; proceed but flag. Medium — single-reviewer is fine; if it failed twice, retry later or escalate.
-4. **Never silently proceed** with fewer reviewers than configured. Every absence is visible in the merged report.
+At or above the floor with absences, the review proceeds and every absence is listed under **Reviewer Availability** plus a **Consensus** line in the report header. Below the floor → `REVIEW_UNAVAILABLE`: do not send the output to the Coder; re-run the CLI once (provider outages are usually transient), then escalate to human naming which reviewers failed (paths to their `.err` dumps are in the report log output).
 
 ---
 
 ## Component-specific dimension floors
 
-The floor table is canonical in `tasker.md` Phase 4.2. Why each floor was set where it was:
+Floors are enforced mechanically by the CLI. Pass `-component` with any preset the diff touches; `-floors "idem=5,obs=5"` sets custom per-dimension overrides. Floors only raise the tier baseline (4 for critical/high, 3 for medium/low), never lower it.
+
+| `-component` preset | Perf | Idem | Resil | Obs |
+|---------------------|------|------|-------|-----|
+| `wallet` | 5 | 5 | 5 | — |
+| `bet-settlement` | 5 | 5 | 5 | 5 |
+| `bet-placement` | 5 | 5 | 5 | — |
+| `jackpot` | 4 | 5 | 5 | — |
+| `responsible-gambling` | — | — | — | 5 |
+
+Why each floor was set where it was:
 
 - **Wallet / settlement / placement writes (Perf 5, Idem 5, Resil 5).** Money-movement paths at high TPS with real concurrent-duplicate risk. 5/5 on performance, idempotency, and resilience reflects what correctness means at this scale, not aspirational engineering. A 4/5 here means "good enough most of the time" — which is the same as "duplicate-pays under load."
 - **Bet settlement also requires Obs 5.** Dispute resolution and regulatory inquiries need the full bet lifecycle reconstructed (placed → odds locked → event resolved → outcome determined → payout calculated → wallet credited) with timing at each state transition. 4/5 observability is "logged the result" — not enough. 5/5 is "I can answer the player and the regulator without paging an SRE."
@@ -176,22 +181,52 @@ If a reviewer scores a floor dimension at less-than-floor, the iteration request
 
 The Reviewer receives this — never include the Coder's self-assessment:
 
-```markdown
+````markdown
 ## Review Request
 **Task ID:** [from assignment]
 **Risk:** Critical/High/Medium/Low
 
+### Review Metadata
+**Worktree:** [absolute path]
+**Branch:** [branch name]
+**Reviewed SHA:** [git rev-parse HEAD]
+**Base ref:** [base branch/commit, or "not provided"]
+**Dirty worktree:** true/false
+
+#### Git Status
+```text
+[git status --porcelain output, or "(clean)"]
+```
+
+#### Changed Files
+| Path | Status | Exists in worktree |
+|------|--------|--------------------|
+| [path] | added/modified/deleted | true/false |
+
 ### Original Spec
 [Copy Task Assignment — Objective through Definition of Done]
+
+### Precomputed Context
+[Tasker/CLI should include cheap deterministic context so every reviewer starts from the same facts:]
+- Sibling-surface trace from `rg` for changed symbols / tables / exported functions
+- Relevant callers/readers/writers found
+- Relevant project conventions from CLAUDE.md or architecture docs
 
 ### Implementation
 [List of files to review]
 
-### Test Output
+### Verification Output
 [Paste actual test output]
+[Paste actual lint output]
+[Paste actual complexity output]
+
+### Project Conventions
+[Paste relevant sections from CLAUDE.md or architectural guidelines so the reviewer can accurately judge Design Coherence]
 
 ### Files for Review
-[Code files attached / paths listed]
-```
+[Code files attached / paths listed — Prefer providing diffs and paths so active agents can use their tools to actively explore the codebase]
+````
 
 > Pre-review gates already cleared by the time you dispatch the panel — Critical has Verification Agent + Security Linter PASS; High has Static Analysis Gate PASS. Reviewers audit code that's already verified to compile, test green, lint clean, and pass deterministic security/quality scans.
+
+Before dispatching CLI reviewers, validate that every non-deleted changed file exists in the reviewed worktree. If not, report `INVALID_INPUT` and do not spend reviewer tokens.

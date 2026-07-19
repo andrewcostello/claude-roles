@@ -48,7 +48,9 @@ Before anything else, check: **is this a first review or a re-review?**
 
 ### Step 0.5: Spawn Focused Sub-Agents (first review only)
 
-After the context check, immediately dispatch focused sub-agents in parallel while you proceed with Steps 1-4. Do not wait for them — merge their findings at Step 5.
+After the context check, immediately dispatch focused sub-agents in parallel using your agent tools. **You must stop and wait for their responses**. Do not attempt to write your final review until you have received the findings from all spawned sub-agents. Once received, merge them into your final output at Step 5.
+
+**CLI / no-subagent fallback:** If you cannot spawn sub-agents (common for headless Grok/Gemini panel slots), run every applicable Tier-1 and Tier-2 scope **yourself** as labeled sections in the report. Attribute those findings as `Source: <scope name> (in-process)`. Do not skip scopes because tools for spawning are missing.
 
 **Tier 1 — Mandatory, based on code content:**
 
@@ -134,6 +136,7 @@ For every entry point in the changed code (HTTP handler, gRPC method, queue cons
 
 5. **Sentinel audit:** for every field crossing a boundary (proto, DB column, header, config), state explicitly what the zero/nil/empty value means on **each side**. Differing meanings ("0 = no expiry" vs "0 = invalid"; proto3-absent vs deliberately-false) are a Correctness finding unless a translation exists. All read sites of a nullable/tri-state field must agree on the same nil default. Any branch gated on `len(collection)` must handle `len==0` / nil / error separately from `len==1`. A stream-projected proto3 zero must not clobber previously-known client state.
 
+**Scratchpad Requirement:** Before writing the Final Review, you MUST use a `<thinking>` block (or a similar scratchpad output format if available) to map out this Data Flow Trace. Explicitly write out the hops (e.g., `Endpoint -> Service -> DB`) and note where validation occurs. Use this scratchpad to anchor your final verdicts.
 Record findings from this step with their file:line location and the specific data flow path (e.g., "user input `amount` flows from handler.go:42 → service.go:88 → repo.go:112 without bounds validation").
 
 ### Step 2.5: Sibling-Surface Trace
@@ -158,6 +161,8 @@ For every function, field, gate, flag, or event the diff **modifies or newly con
 Work through each dimension systematically. For each, ask the key questions and note findings.
 
 **For every dimension, explicitly ask: "What should be here but isn't?"** The most dangerous defects are omissions — missing validation, missing error handling, missing tests, missing auth checks. Code that exists can be read and evaluated. Code that's absent requires you to notice the gap.
+
+**Explicit Requirement:** For Correctness, Security, and Compliance, you must explicitly state at least one thing that is **missing** from the PR (e.g., a missing nil-check, missing auth boundary, missing test for an edge case). If you truly believe nothing is missing, you must justify why the current boundaries are exhaustively complete.
 
 ### Step 4: Test Quality Audit
 
@@ -218,6 +223,8 @@ For each test quality issue, record:
 - Missing tests for documented edge cases → Correctness FAIL
 - Tests that pass but don't prove correctness (mock-everything, assert-nothing) → Correctness FAIL
 
+**Litmus Test Requirement:** In your review output, you must pick one core test from the PR and explicitly answer the Litmus Test (whether it would pass if the implementation was rewritten with different internal structure but same external behavior) to prove you have evaluated test coupling.
+
 ### Step 4.5: Docs-Truth Pass
 
 Re-read every comment, docstring, and PR-description claim in or adjacent to the diff and assert each against the final code. Iterated code with stale prose is the single largest review-finding category (22% of all findings in the May–Jul 2026 audit). Any claim the code contradicts — defaults, invariants, "X handles this", fail-open/closed direction — is a docs-comments finding; a comment asserting a SAFETY property the code does not have (fail-open documented as fail-safe) is High.
@@ -231,6 +238,21 @@ Re-read every comment, docstring, and PR-description claim in or adjacent to the
 - Include the `principle` field on every finding (see Output Format)
 - Merge focused agent findings — attribute each to its source
 - Write summary verdict
+
+### Severity Calibration
+
+Severity is the **worst plausible production impact**, assuming an adversarial user and unlucky timing. Likelihood never discounts severity — "the race is unlikely" or "no caller does this today" does not lower a rating.
+
+| Severity | Meaning |
+|----------|---------|
+| CRITICAL | Exploitable or corrupting now: money loss/duplication, data corruption, auth bypass, compliance breach |
+| HIGH | Reachable correctness defect: race on shared state, missing auth on a mutation, spec violation, unhandled or untested spec'd edge case |
+| MEDIUM | Robustness/quality gap that produces no incorrect behavior today: missing timeout on a low-risk path, duplicated literal, implementation-coupled test |
+| LOW | Style, naming, docs, minor test readability |
+
+**Consistency rule:** any finding that justifies a critical-dimension FAIL must itself be rated CRITICAL or HIGH. If your strongest finding is MEDIUM, the dimension is not a FAIL; if the dimension is a FAIL, your finding is not a MEDIUM. Under-rating a real defect removes it from the merged iteration backlog — when genuinely torn between two adjacent severities on a correctness, security, or money path, take the higher.
+
+**Pre-existing is not a discount:** a weakness that predates the diff is rated on what the diff newly routes through it, not on its age. A missing auth check on a legacy endpoint is the author's inherited context; the moment this diff adds a state mutation reachable through that endpoint, the missing check is a finding on THIS diff at full severity. (Bake-off evidence, PR 1278: a scoped reviewer downgraded a missing simulator-token check to MEDIUM as "pre-existing" while the diff added a cross-service force-join mutation behind it — a live CRITICAL auth bypass.)
 
 ---
 
@@ -303,7 +325,7 @@ These dimensions are **hard gates**. Any FAIL results in REQUEST CHANGES, regard
 - Input bounds that are validated in the handler but not in the service layer (defense in depth)
 
 **Automatic FAIL:**
-- Any query built with string concatenation or template interpolation
+- Any query built with string concatenation or template interpolation **of a value** — user input, request field, or any runtime data. **Identifier interpolation is judged differently:** table/column identifiers cannot be bound as SQL parameters, so a deployment-controlled identifier (env var, config constant) validated against a strict identifier allowlist (`^[A-Za-z_][A-Za-z0-9_]*$` or equivalent) at load time is NOT an automatic FAIL — record it as a MEDIUM hardening finding recommending a structural builder (`psycopg2.sql.Identifier`, `pgx.Identifier`) instead. An identifier that is user-influenced at request time, or validated by shape only where an allowlist of known tables is feasible, remains a FAIL. (Calibration from PR 1276, 2026-07-16: a validated env-var table name was posted publicly as "CRITICAL SQL Injection" — wrong on both severity and mechanism.)
 - PII logged (passwords, tokens, card numbers, SSN, phone numbers)
 - Missing authorization check on mutation
 - Unchecked array/slice index access on user-controlled input
@@ -628,15 +650,20 @@ This is not a scored dimension — it's a qualitative check that can generate fi
 
 ---
 
+## Output Constraints
+- **BE CONCISE:** Do NOT write verbose or long-winded paragraphs. Get straight to the point in both your summary and your finding descriptions.
+- Verbose output wastes tokens, causes API timeouts on large diffs, and harms readability. Use bullet points or short, direct sentences.
+- For non-security findings, prioritize architectural integrity, idempotency, and state-machine soundness over stylistic nitpicks.
+
 ## Output Format
 
-**Resumption checkpoint:** Once the verdict is composed (and, in panel reviews, merged across reviewers), file it as a Jira comment on the ticket *before* handing back to the Tasker — so a crash mid-iteration doesn't lose the verdict + iteration backlog.
+**Resumption checkpoint (Tasker only):** Individual panel reviewers (Claude / Codex / Gemini / Grok) return the report below and stop — they do **not** post Jira comments, PR reviews, or edit files. After the Tasker merges panel verdicts, the Tasker files a Jira comment on the ticket *before* handing off to the next phase — so a crash mid-iteration doesn't lose the verdict + iteration backlog.
 
 ```
-~/Project/forecast/forecast --config /home/andrew/Project/evenplay-mono/.forecast/config.yaml jira comment SMG-XXXX --body "..."
+forecast jira comment SMG-XXXX --body "..."
 ```
 
-Include verdict, the 8-dimension table, and any CRITICAL/HIGH findings (full text — that's the iteration backlog). Skip Mediums/Lows in the comment; they live in the report. If the comment fails, continue; do not block.
+Include verdict, the critical + quality dimension tables, and any CRITICAL/HIGH findings (full text — that's the iteration backlog). Skip Mediums/Lows in the comment; they live in the report. If the comment fails, continue; do not block.
 
 ```markdown
 # Code Review: [Component Name]
@@ -648,11 +675,12 @@ Include verdict, the 8-dimension table, and any CRITICAL/HIGH findings (full tex
 
 ## Critical Dimensions (Pass/Fail)
 
-| Dimension   | Result | Notes |
-|-------------|--------|-------|
-| Correctness | PASS/FAIL | [one line — if FAIL, cite specific gap] |
-| Security    | PASS/FAIL | [one line — if FAIL, cite specific vulnerability] |
-| Compliance  | PASS/FAIL | [one line — if FAIL, cite specific violation] |
+| Dimension                 | Result | Notes |
+|---------------------------|--------|-------|
+| Correctness               | PASS/FAIL | [one line — if FAIL, cite specific gap] |
+| Security                  | PASS/FAIL | [one line — if FAIL, cite specific vulnerability] |
+| Compliance                | PASS/FAIL | [one line — if FAIL, cite specific violation] |
+| Exploitability & Fairness | PASS/FAIL | [one line — if FAIL, cite specific exploit path] |
 
 ## Quality Dimensions (Scored)
 

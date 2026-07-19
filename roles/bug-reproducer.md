@@ -47,18 +47,23 @@ Before writing anything, search for what already covers this surface:
 
 - Go integration tests: `tests/e2e/integration/*.go` — `grep -l <feature>` (e.g. `previewedTarget`, `disable_round_robin`)
 - Go gherkin features: `tests/e2e/gherkin/features/*.feature`
+- **Karate API features**: `tests/e2e/karate/features/*.feature` (login flows, session lifecycle, JWT auth — server contract, no UI)
 - Cross-app harness: `tests/e2e/playwright/tests/cross-app/*.spec.ts`
-- Mocked Playwright: `apps/burrito-golf-web/e2e/`, `apps/skillstrike-mobile/e2e/`
+- Mocked + live Playwright: `apps/burrito-golf-web/e2e/`, `apps/skillstrike-mobile/e2e/`
 
 Note what those tests assert. Your spec extends — it doesn't duplicate. If the existing tests cover the bug *and pass*, that itself is a finding (the bug is downstream of what the existing tests gate on).
 
-### 3. Pick the layer
+### 3. Pick the harness — selection matrix
 
-Same prefer-order as `regression-test-author.md`:
+Prefer the highest layer at which the symptom is observable (user-observable beats wire beats internal), then pick by surface:
 
-1. **End-to-end cross-app** — `tests/e2e/playwright/tests/cross-app/`. Drives the running Tilt stack via the harness's TS RPC clients + kiosk/skillstrike fixtures. Asserts at the user-observable layer.
-2. **Wire-effect** — when only the server contract is in scope and the UI is incidental, assert directly on the participant stream / GetGameState reply via the harness's clients.
-3. **Integration** — Go integration tests when no UI is involved and the existing Go suite is the natural home.
+| Bug surface | Harness |
+|-------------|---------|
+| Server API contract only (auth, session lifecycle, RPC status codes/shapes) — UI incidental | **Karate** feature (`tests/e2e/karate`) or wire-effect assertion via the playwright harness's TS RPC clients |
+| Cross-app state (kiosk and mobile must agree; stream + UI on the same flow) | **Playwright cross-app** (`tests/e2e/playwright/tests/cross-app/`) — the two-axis pattern |
+| Kiosk-only render/interaction (burrito-golf) | `apps/burrito-golf-web/e2e/` |
+| Mobile-only render/interaction (skillstrike) | `apps/skillstrike-mobile/e2e/` |
+| Backend invariant, no UI, Go suite is the natural home | Go integration (`tests/e2e/integration`, `tests/e2e/bay-session-integration`) |
 
 Forbidden: unit tests at the layer of the suspected fix (those are the Coder's job).
 
@@ -69,11 +74,27 @@ Spec docstring at the top must include:
 - Source ticket (`FSG-XXXX` and the SMG mirror, if any)
 - Quoted excerpt of the customer's words
 - Assertion strategy (which axis, what fingerprint matches the customer report)
-- Status line: `Status: regression seal for SMG-XXXX. Goes green when <fix description> lands.` OR `Status: forward-looking guard; bug does not reproduce server-side per investigation, but pins contract for future regressions.`
+- **A `Steps:` block** — a numbered, human-readable list of the exact actions the spec takes (what it drives, in what order, what it asserts). This block is extracted verbatim into the Jira ticket so a human can confirm the reproduction matches the reported bug rather than trusting "a test exists and it's red/green." `cmd/repro` refuses to post ticket evidence for a spec without one. Write it for the reporter, not for an engineer: "Join two players with known balances → open the stream with no resume cursor → check both players' funds appear."
+- Status line: `Status: regression seal for SMG-XXXX. Goes green when <fix description> lands.` OR `Status: forward-looking guard; bug does not reproduce server-side per investigation, but pins contract for future regressions.` Include the server SHA the verdict was produced against.
 
 Two-axis pattern when applicable: drive server-side state, observe the participant stream, AND the kiosk UI. If they disagree, the asymmetry is the diagnosis.
 
-### 5. Run on current main
+### 5. Run via `cmd/repro` (preferred) — or manually
+
+The repro runner does the stack-version preflight, sets the env, runs the spec N times, classifies RED/GREEN/FLAKY mechanically, and builds the Jira evidence (steps + SHAs + sample output). Use it:
+
+```bash
+~/Project/claude-workflow/cmd/repro/repro run \
+  -worktree <checkout-under-test> \
+  -spec tests/cross-app/<your-spec>.spec.ts \
+  -clients burrito-golf,skillstrike \      # the clients your spec drives
+  -runs 3 \
+  -jira SMG-XXXX          # prints the ticket comment; add -post to send + attach the spec
+```
+
+It refuses to run when the stack or clients serve a different SHA than the worktree under test (see Stack Version Alignment below), and exits 2 on FLAKY so a flake can't masquerade as a verdict. `*.feature` specs route to the karate runner automatically; other suites via `-cmd`.
+
+Manual fallback (no preflight — you own version alignment yourself):
 
 ```bash
 cd tests/e2e/playwright
@@ -83,6 +104,17 @@ export SIMULATOR_SECRET="test-hmac-secret-for-e2e"
 npx playwright test tests/cross-app/<your-spec>.spec.ts --reporter=list
 ```
 
+#### Stack Version Alignment (Tilt) — MANDATORY before trusting any run
+
+**A harness verdict is only evidence about the code the stack is actually serving.** RED against a build that predates the fix, or GREEN against a build that predates the bug, is noise — and it's silent noise, because the spec runs fine either way. Before every run:
+
+1. **Know which checkout Tilt is serving.** Tilt builds images from the checkout it was started in — `tilt trigger <service>` rebuilds from THAT checkout's HEAD, not from your worktree. If you are reproducing on main, confirm the Tilt checkout is at the `origin/main` SHA you think it is. If you are verifying a **fix branch/worktree**, the services under test must be rebuilt from it: either run Tilt from the worktree (`tilt down` in the old checkout, `tilt up` in the worktree), or check the fix branch out in the checkout Tilt is running from and `tilt trigger` the affected services.
+2. **Kill and restart the burrito-golf and skillstrike clients from the same checkout.** The web/mobile dev clients serve whatever source they were started from — a stack with fixed servers but a stale kiosk client (or vice versa) tests a version that exists nowhere. Restart both clients from the checkout under test before driving any UI assertion.
+3. **Watch for the stale-image trap** (CLAUDE.md "Local Stack (tilt) Gotchas" #1): a pod crash-looping on "no migration found for version X" means the running image predates the checkout — rebuild, don't debug the migration.
+4. **Record the SHAs in your output.** Every ticket comment and spec report states the server SHA served and the client build SHA/branch. A verdict without its SHA is unreviewable.
+
+The same rules bind the Coder and Tasker when they re-run your spec against the fix branch — put the SHA line in the spec docstring's Status line so nobody can accidentally "verify" against the wrong build.
+
 Three outcomes:
 
 - **RED — bug reproduces.** Capture the failure output verbatim. Spec lands as a regression seal.
@@ -90,6 +122,8 @@ Three outcomes:
 - **FLAKY** — the spec passes some runs and fails others. Stop. Investigate the flake before committing.
 
 ### 6. Update / create the SMG ticket
+
+**Every reproduction comment must let a human verify the steps, not just the verdict.** `repro run -jira SMG-XXXX -post` does this automatically: it extracts the spec's `Steps:` block into the comment under "please confirm these match the reported bug", records the server/client SHAs the verdict was produced against, includes the sample output tail, and **attaches the spec file itself to the ticket**. If you post manually, you owe the ticket the same four things — steps, SHAs, sample output, attached spec.
 
 If an SMG mirror exists (`forecast jira search`):
 

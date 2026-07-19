@@ -9,6 +9,31 @@ Load this skill when the task has `type: Fix`. The protocol enforces that a bug 
 
 ---
 
+## Phase 0: Evidence-State Triage (before any dispatch)
+
+Route the ticket by what is actually known, not by what the reporter guessed:
+
+| Evidence state | Route |
+|----------------|-------|
+| User/externally-reported symptom, root cause **unconfirmed** | Dispatch **Bug Reproducer** (`roles/bug-reproducer.md`) FIRST. Its RED harness spec + updated SMG ticket becomes the Coder's contract. Do not send an unreproduced user report straight to a Coder. |
+| Root cause **confirmed**, user-reported, Medium/High risk | Regression Test Author Phase A (section below), then Coder. |
+| Coder-discovered during other work, or trivially unit-reproducible (stack trace in hand, pure function) | Straight to Coder under the RED → GREEN protocol below. |
+
+**When the Bug Reproducer ran first**, the Coder's Task Assignment gains one Definition of Done line:
+
+> - [ ] The reproducer spec at `<path>` goes GREEN with your fix, **unmodified**. If the spec is wrong, stop and report — do not edit it to pass.
+
+…and the Tasker re-runs that spec against the fix branch during Phase 3.2 verify-claims, via the repro runner (which enforces stack-version alignment mechanically and refuses to produce a verdict against the wrong build):
+
+```bash
+~/Project/claude-workflow/cmd/repro/repro run -worktree "$FIX_WORKTREE" \
+  -spec <reproducer-spec-path> -clients <as the spec requires> -expect green
+```
+
+Exit 0 = the fix satisfies the user-reported contract on the right build; exit 1 = still red (iterate); exit 2 = flaky (investigate before concluding anything); exit 3 = the stack isn't serving the fix branch — fix the environment, not the code. See "Stack Version Alignment (Tilt)" in `bug-reproducer.md` for the manual mechanics; the same rules bind anyone running live-stack specs by hand.
+
+---
+
 ## The Rule
 
 **A bug fix without a prior failing test is REJECTED.**

@@ -33,7 +33,7 @@ Composable workflow primitives the Tasker loads on demand. Each skill is self-co
 
 | File | When Loaded | Owns |
 |------|-------------|------|
-| `skills/critical-review-dispatch.md` | Risk = Critical or High | Design Agent dispatch, Verification Agent, Security Linter, Static Analysis Gate, 3-reviewer parallel panel, mid-flight retry, component-specific dimension floors rationale |
+| `skills/critical-review-dispatch.md` | Risk = Critical or High | Design Agent dispatch, Verification Agent, Security Linter, Static Analysis Gate, 4-reviewer parallel panel (Claude + Codex + Gemini + Grok), mid-flight retry, component-specific dimension floors rationale |
 | `skills/migration-checklist.md` | Task touches DB schema | Filename convention, PK type rules, idempotency + FK indexes + NOT NULL splits |
 | `skills/bug-fix-protocol.md` | `type: Fix` | RED-first protocol, Regression Test Author dispatch criteria |
 | `skills/git-worktree-setup.md` | First dispatch on a ticket | Branch naming, container vs host paths, one-ticket-one-worktree |
@@ -52,17 +52,27 @@ Composable workflow primitives the Tasker loads on demand. Each skill is self-co
 
 ## Prerequisites
 
-### Three-model review panel
+### Four-model review panel
 
-The Tasker dispatches three independent reviewers in parallel using Claude Code plugins:
+The Tasker dispatches four independent reviewers in parallel for Critical/High risk:
 
-**Codex Plugin (Reviewer B):**
-Install the Codex plugin for Claude Code. Requires an OpenAI API key.
+| Slot | Model | Transport | Setup |
+|------|-------|-----------|--------|
+| **A** | Claude | Task / general-purpose subagent | Built-in |
+| **B** | Codex | `codex` CLI | Codex CLI + OpenAI auth |
+| **C** | Gemini | `agy` CLI | Antigravity / Gemini credentials |
+| **D** | Grok | `grok` CLI | [Grok CLI](https://grok.com) on `PATH`, `grok login` once per host |
 
-**Gemini Plugin (Reviewer C):**
-Install [cc-gemini-plugin](https://github.com/thepushkarp/cc-gemini-plugin) for Claude Code. Requires a Gemini API key.
+**Fallback:** If any plugin or CLI is unavailable, the Tasker dispatches an additional Claude subagent as replacement and labels the gap. Consensus floors when the full panel is present: **4/4 Critical**, **3/4 High**.
 
-**Fallback:** If either plugin is unavailable, the Tasker dispatches additional Claude subagent reviewers. Two-reviewer consensus is the minimum for High risk; three is required for Critical.
+Shared review tooling:
+
+```bash
+sudo apt update
+sudo apt install ripgrep
+```
+
+`rg` is used for sibling-surface traces before and during reviewer dispatch.
 
 ---
 
@@ -109,11 +119,18 @@ Create a general-purpose subagent with this prompt:
 Create a general-purpose subagent with this prompt:
 "Read `.claude/workflow/roles/reviewer.md` for your role instructions, then review: [Review Request]"
 
-**To dispatch Reviewer B (Codex plugin):**
-Dispatch via the Codex Claude Code plugin with the reviewer.md prompt.
+**To dispatch Reviewer B (Codex CLI):**
+Write the shared Review Request prompt to a file, then from the review worktree run:
+`codex exec -C "$(pwd)" -s read-only --ephemeral -o "/tmp/review-codex-$TASK_ID.md" - < "/tmp/review-request-$TASK_ID.md"`
 
-**To dispatch Reviewer C (Gemini plugin):**
-Dispatch via the cc-gemini-plugin with the reviewer.md prompt.
+**To dispatch Reviewer C (Gemini / agy CLI):**
+Write the shared Review Request prompt to a file, then:
+`agy --print-timeout 15m --print "$(cat /tmp/review-request-$TASK_ID.md)"`
+
+**To dispatch Reviewer D (Grok CLI):**
+Same prompt file as C, then from the review worktree run:
+`grok --prompt-file /tmp/review-request-$TASK_ID.md --cwd "$(pwd)" --always-approve --tools "read_file,grep,list_dir,run_terminal_cmd" --disallowed-tools "search_replace,write" --max-turns 50 --reasoning-effort high --output-format plain`
+Full dispatch mechanics (and multiline form) live in `.claude/workflow/skills/critical-review-dispatch.md`.
 
 **To dispatch the Design Agent (subagent — Critical/High risk):**
 Create a general-purpose subagent with this prompt:
@@ -225,9 +242,9 @@ Completion Report → Tasker strips self-assessment
      ↓
 (Critical only) → [Security Linter] → PASS / FLAG / FAIL
      ↓
-[Reviewer A: Claude]  +  [Reviewer B: Codex plugin]  +  [Reviewer C: Gemini plugin]
-     ↓                          ↓                              ↓
-                    Three-model merged verdict
+[Reviewer A: Claude] + [B: Codex] + [C: Gemini/agy] + [D: Grok]
+     ↓                    ↓              ↓                 ↓
+                    Four-model merged verdict
                            ↓
     APPROVED ✅  |  ITERATE → fix CRITICAL/HIGH only → targeted re-review
                  |  REJECT → escalate to human

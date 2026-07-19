@@ -31,6 +31,24 @@ Tickets carry one of three impact labels that drive Priority Watch sorting and t
 
 A ticket can have `ep-watch` without an impact label — it's watched but not urgent.
 
+> **`ep-blocker` = "this blocks *others*"** (impact). It is distinct from the `blocked:*` family below, which is **"this ticket is *itself* waiting on something"** (cause). A ticket can carry both.
+
+### Standup-driver labels (managed in JIRA)
+
+These drive the PART 1 walkthrough directly:
+
+| Label | Meaning | How the walk uses it |
+|-------|---------|----------------------|
+| `discuss` | Manually flag a ticket to raise at standup, regardless of status | Shows 💬 on that person's block + a "Flagged for today" call-out. **Cleared after standup.** |
+| `blocked:decision` | Waiting on a product/architecture call | → **⛔ Resolve live** — needs a decision in the room |
+| `blocked:review` | PR waiting on review/approval | → ⛔ Resolve live — route to the reviewer |
+| `blocked:qa` | Waiting on QA to test/deploy | → ⛔ Resolve live — QA owner |
+| `blocked:external` | Waiting on partner / simulator / 3rd-party | → noted as **out of our hands** — do NOT spend meeting time |
+| `blocked:dep` | Waiting on another internal ticket | → ⛔ Resolve live — name the dependency |
+| `risk:critical` / `risk:high` / `risk:medium` / `risk:low` | Review-gate tier (per CLAUDE.md risk table) | Shown on the block next to status, so the team anticipates the heavy-review / human-approval bottleneck |
+
+`blocked:*` should be set whenever a ticket enters `Is Blocked` and removed when unblocked. `risk:*` uses the colon form (supersedes the legacy `risk-critical` / `risk-medium` spellings).
+
 ---
 
 ## Step 1 — Determine report window
@@ -38,6 +56,7 @@ A ticket can have `ep-watch` without an impact label — it's watched but not ur
 - Report date = yesterday (last Friday if today is Monday)
 - Week window = Monday through today
 - Use `date` command to calculate. Store as `REPORT_DATE` (YYYY-MM-DD) and `MONDAY_DATE`.
+- **Generation day-of-week** (`date +%u` → 1=Mon … 7=Sun) gates conditional sections: the **⚖️ Team Load** strip (PART 1 top) renders **only when it is 1 (Mon) or 4 (Thu)**; omit it entirely on Tue/Wed/Fri.
 
 ---
 
@@ -95,7 +114,9 @@ jql: project in (SMG,BO,KIOS) AND status in ("In Development","Is Blocked","In D
 # P0 security tickets (read ticket list from config/team-config.yaml → p0_security_tickets)
 jql: issueKey in ({comma-separated p0_security_tickets from config})
 
-# Each person's open assigned tickets (for Up Next)
+# Each person's open assigned tickets (drives the PART 1 walkthrough blocks)
+# Fetch fields: key,summary,status,priority,labels,updated,parent
+# (priority + ep-* labels are shown per ticket in the walkthrough)
 jql: project in (SMG,BO,KIOS) AND assignee = "{person}" AND status not in ("Done","Canceled") ORDER BY priority DESC, updated ASC
 ```
 
@@ -128,6 +149,30 @@ gh api "repos/EvenPlay/evenplay-mono/commits?since=${MONDAY}&per_page=100" \
 
 ---
 
+## Step 4b — Release pipeline status
+
+Completed work doesn't vanish at "Done" — it moves through deploy environments,
+tracked by JIRA labels. Generate the "🚀 Release Pipeline" section by running:
+
+```bash
+bash docs/standup/pipeline_status.sh --markdown
+```
+
+Paste its output verbatim into the report as the Release Pipeline section
+(placed right after "🎉 Shipped Yesterday"). The script is the single source
+of truth for label semantics — do not hand-roll the pipeline query.
+
+- **Internal pipeline (we control), ordered:** `Awaiting_Deploy` → `Deployed_DEV`
+  → `Deployed_STG` → `Deployed_PRD`. A ticket's stage is the furthest label present.
+- **`AwaitsDeploy_SIM`** is the **partner simulator** deploy, which we do *not*
+  control — it's a parallel lane, shown as a badge, not a step in the chain.
+- Labels are meant to be cumulative; that convention is new, so the script
+  surfaces chain gaps (e.g. `Deployed_STG` without `Deployed_DEV`) as hygiene items.
+
+The same script run with no arguments gives a richer terminal view for ad-hoc use.
+
+---
+
 ## Step 5 — Analysis rules
 
 **Stale PR:** 🟡 3–6 days · 🔴 7–13 days · 🚨 14d+
@@ -156,17 +201,33 @@ gh api "repos/EvenPlay/evenplay-mono/commits?since=${MONDAY}&per_page=100" \
 - Came from 🔨 In Development → dev is blocked mid-build. Show what/who it's waiting on.
 - Came from 🧪 In QA → QA rejected. Needs a dev to pick it back up. Flag assignee.
 
-**Per-person Team Status logic:**
-- 🔄 **Now** = tickets in 🔨 In Development, ⏳ Waiting, 📦 Development Complete, or 🧪 In QA assigned to this person
-- ➡️ **Next** = single highest-priority action:
-  1. PR with CHANGES_REQUESTED → address review before any ticket
-  2. Their `ep-blocker` tickets not yet started
-  3. Their `ep-soon` tickets not yet started
-  4. Their highest-priority open ticket in current sprint
-  5. If 0 open assigned tickets → suggest highest-priority unassigned `ep-watch` ticket
-- **Every team member gets a row.** All three columns empty → `⚠️ No active work, nothing completed — status unknown`
+**Per-person Walkthrough logic (PART 1 — one block per roster member, in config order):**
 
-**Needs-decision flag:** Ticket in To Do 7+ days, no assignee, no recent comment → stalled on ownership not execution.
+Walk every person in `config/team-config.yaml` → `team:` whose `role` is `engineer` or `qa` (missing `role` ⇒ engineer), **in the order listed** (fixed roster order — predictable, everyone knows when they're up). **Skip `role: exec`** entirely (rostered only to suppress the unmapped warning). Each walked person is one block:
+
+> **Identity matching (do this first, it's bitten us):** match a ticket/PR to a roster member by comparing the assignee `displayName` (and GitHub `login`) to the member's `jira` / `github` fields **case-insensitively**, trimming whitespace. A member may have a `github_aliases:` list — match a commit/PR author against `github` **or any alias** (e.g. Andrew = `andrewcostello` + `amcolv`; Fahim = `fahim-evenplay` + `fahim-riseuplabs`), and attribute all of them to that one person — Jira renders the same person as `Boris`/`boris`, `Taleh`/`taleh`, etc. A member's real name may differ from their Jira display name (e.g. config `name: Roman Gonzales-Valdes` but `jira: Roman Honzales`); **always match on the `jira` field, not `name`.** Any assignee with activity in the window that matches **no** roster entry MUST be surfaced under a `⚠️ Unmapped assignees` line at the end of PART 1 (list the names) — never silently drop them. That line is how a misspelled mapping or an unrostered contributor gets caught instead of a person disappearing from standup.
+
+- **Status pill:** 🔴 if they have any active `ep-blocker` ticket, a ticket in `Is Blocked`, or an open PR with CHANGES_REQUESTED awaiting them; else 🟢 if they had a commit / PR event / JIRA transition yesterday; else 🟡 if they have active tickets but no activity yesterday; else ⬛ (no active work, nothing done — that itself is the signal). Append ` — ⛔ blocked` to the heading when 🔴.
+- **Now** = tickets assigned to them in In Development / Is Blocked / In Dev QA / In Internal QA. Each line: `[KEY] Summary · P{N} · {impact label if any} · {risk:* if any} · {Status} · {age}d`. Append `💬` to any ticket carrying the `discuss` label. Then append their open PRs with decision (✅ APPROVED-unmerged / ⛔ CHANGES_REQUESTED / 🟡 REVIEW_REQUIRED). `—` if none.
+- **Next** = their open `To Do` tickets, highest Jira priority first (`ep-blocker` → `ep-soon` break ties upward). `—` if none.
+- **⛔ Resolve live** = the single most meeting-worthy item, derived primarily from the `blocked:*` label (and `discuss`):
+  - `blocked:decision` → "needs a decision: {what}"  ·  `blocked:review` → "PR waiting on {reviewer}"  ·  `blocked:qa` → "waiting on QA: {what}"  ·  `blocked:dep` → "blocked on {dep ticket}"
+  - `blocked:external` → note it as **out of our hands (partner/sim)** — flag it but say it's not for meeting time
+  - else fall back to: a CHANGES_REQUESTED PR, an `Is Blocked` ticket, or a `discuss`-flagged item
+  - **Omit this line entirely when there's nothing** — never print an empty ⛔.
+- **💬 Flagged for today** = any `discuss`-labelled ticket always surfaces on the owner's block even if it isn't in an active status; the facilitator clears `discuss` after the walk.
+- **QA members (`role: qa`)**: tag the heading with `(QA)`. Their **Now** = tickets they're testing in In Internal QA / In External QA; **Next** = their queue of tickets awaiting test. Same block shape otherwise. QA members are walked but **excluded from the ⚖️ Team Load strip** (its size-weighted metric is dev-shaped).
+- **Done** = tickets they moved to Done / Dev-complete since the last standup + PRs merged. `—` if none.
+
+Priority is the Jira `priority` field, rendered `P0`–`P4` (or Highest/High/Med/Low if that's how the project shows it). Impact labels (`ep-blocker`/`ep-soon`/`ep-future`) ride **alongside** priority — the label answers "is it blocking?", priority answers "how urgent". Do **not** show `size:`/`type:` labels in the walkthrough — they're for planning, not the daily alignment walk.
+
+**Needs-decision flag:** Ticket in To Do 7+ days, no assignee, no recent comment → stalled on ownership not execution; surface it on that area-owner's block, or in Priority Watch (Part 2) if unassigned.
+
+**⚖️ Team Load strip (PART 1 top — Monday & Thursday reports only):**
+- Render the section **only** when the generation day-of-week (Step 1) is Monday (1) or Thursday (4). On Tue/Wed/Fri omit the header + table completely.
+- Include **`role: engineer` members only** (exclude `role: qa` and `role: exec`). For each, compute over their **current open** tickets (a fresh snapshot, not the report window): **WIP** = count in In Development / Is Blocked / In Dev QA / In Internal QA; **Weighted** = Σ `size:` points (XS·1 S·2 M·3 L·5 XL·8), and report a `size:?` count for WIP tickets with no size label; **Blocked** = WIP carrying `Is Blocked` or any `blocked:*`; **Oldest active** = age of their longest-running WIP ticket.
+- **Flag:** 🔴 when WIP ≥ 4 **or** weighted ≥ 13 · 🟡 when oldest active > 10d · — otherwise. It's a conversation starter, not a verdict — confirm with the person.
+- One row per roster member, same fixed config order as the walkthrough.
 
 ---
 
@@ -391,6 +452,51 @@ Documentation space
 
 ---
 
+# ── PART 1 · TEAM WALKTHROUGH ──
+
+*The running order for standup. Go down the list in roster order — one block per person. The **⛔ Resolve live** line is the only thing that needs the room; everything else is reference.*
+
+<!-- ⚖️ TEAM LOAD — render this section ONLY on Monday & Thursday reports (see Step 5). Omit entirely Tue/Wed/Fri. -->
+
+## ⚖️ Team Load — _Monday & Thursday only_
+*Twice-weekly overload checkpoint. Snapshot of **current** open work (not yesterday's). Read overload by weighted load, not ticket count.*
+
+| Person | 🔨 WIP | ⚖️ Weighted | ⛔ Blocked | 🕔 Oldest active | Flag |
+|--------|--------|------------|-----------|------------------|------|
+| **Name** | N | ~N (XL+L+M) | N | Nd | 🔴 high WIP / 🟡 stuck / — |
+
+> - **WIP** = their tickets In Development / Is Blocked / In Dev QA / In Internal QA.
+> - **Weighted** = Σ `size:` points (XS·1 · S·2 · M·3 · L·5 · XL·8). Show a `size:?` count when sizes are missing — surface the gap, don't hide it.
+> - **Blocked** = WIP tickets carrying `Is Blocked` or a `blocked:*` label.
+> - **Oldest active** = age of their longest-running WIP ticket.
+> - **Flag:** 🔴 WIP ≥ 4 **or** weighted ≥ 13 · 🟡 oldest active > 10d · — otherwise. A conversation starter, not a verdict.
+> - One row per roster member, same fixed order as the walkthrough below.
+
+---
+
+### 🔴 {Person} — ⛔ blocked
+- **Now:** [KEY](link) Summary · `P1` · 🚨 ep-blocker · `risk:critical` · In Dev · 2d 💬<br>PR #XX ⛔ CHANGES_REQUESTED
+- **Next:** [KEY](link) Summary · `P2` · To Do
+- **⛔ Resolve live:** `blocked:decision` — needs a call on {X}
+- **Done:** [KEY](link) Summary ✅
+
+### 🟢 {Person}
+- **Now:** [KEY](link) Summary · `P1` · ⏰ ep-soon · In Dev · 1d
+- **Next:** [KEY](link) Summary · `P2` · To Do
+- **Done:** — (PR #XX merged)
+
+### ⬛ {Person}
+- **Now:** — · **Next:** — · **Done:** —  *(no active work, nothing completed — status unknown)*
+
+> One block per **roster member**, in config order (fixed). Status pill: 🟢 active yesterday · 🟡 active work but no activity yesterday · 🔴 has a blocker (`ep-blocker`, `Is Blocked`, a `blocked:*` label, or a CHANGES_REQUESTED PR) · ⬛ nothing active or done.
+> Per ticket: `P{N}` priority + impact label (🚨 `ep-blocker` · ⏰ `ep-soon` · 🔜 `ep-future`) + `risk:*` tier + status + age, and 💬 if `discuss`-flagged. The **⛔ Resolve live** line is driven by the `blocked:*` cause label (decision/review/qa/dep = handle live; external = out of our hands). Omit it when there's nothing to resolve.
+
+---
+
+# ── PART 2 · SIGNALS ──
+
+*Facilitator flags — raise before closing. Not walked person-by-person.*
+
 ## 🎯 Priority Watch
 
 *Sorted by impact. Labels managed in JIRA — add/remove `ep-watch`, `ep-blocker`, `ep-soon`, `ep-future` to update.*
@@ -407,22 +513,6 @@ Documentation space
 
 ---
 
-## 👥 Team Status
-*Completed yesterday, what's in progress now, and what to pick up next. One row per person.*
-
-| Person | ✅ Completed Yesterday | 🔄 Working On Now | ➡️ Up Next |
-|--------|----------------------|-------------------|------------|
-| **Name** | 1. [KEY](link) Summary<br>2. [KEY](link) Summary | 1. [KEY](link) Summary *(status)*<br>2. [KEY](link) PR #XX *(APPROVED / CHANGES_REQUESTED)* | 1. [KEY](link) Summary — 🚨 reason |
-| **Name** | ⚠️ No Git or JIRA activity | — | 1. [KEY](link) Summary — reason |
-
-> - ✅ Yesterday: tickets moved to Done OR PRs merged on the previous working day. Show `⚠️ No Git or JIRA activity` if no commits, PR events, or JIRA transitions.
-> - 🔄 Now: all tickets In Development / In PR / In Dev QA assigned to this person. Show `—` if none.
-> - ➡️ Next: highest-priority recommended action — CHANGES_REQUESTED PR first, then ep-blocker, ep-soon, highest open ticket. Show `—` if nothing queued.
-> - **Every team member gets a row.** If all three columns are empty, show `⚠️ No active work, nothing completed — status unknown` across the row.
-> - Flag ⚠️ inline if a ticket has been In Development 14d+ with no movement.
-
----
-
 ## 💡 Spotlight
 
 > One sentence on the most notable work from yesterday.
@@ -436,6 +526,13 @@ Documentation space
 | [KEY](link) | ... | ... | 🔴 P0 / Bug / Feature |
 
 *If nothing: "No tickets completed yesterday."*
+
+---
+
+## 🚀 Release Pipeline
+
+*Generated by `bash docs/standup/pipeline_status.sh --markdown` — paste its
+output here (rollup line + internal-pipeline table + SIM-only / hygiene notes).*
 
 ---
 

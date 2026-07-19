@@ -33,14 +33,33 @@ A **Task Assignment** with this structure:
 
 ```markdown
 ## Task Assignment
-- **Objective**: [one sentence]
-- **Risk Level**: High/Medium/Low
-- **Inputs**: [list of inputs with types]
-- **Outputs**: [expected outputs with types]
-- **Edge Cases**: [specific cases you MUST handle]
-- **Reference Implementation**: [file path to similar code]
-- **Error Types**: [sentinel errors to use]
-- **Definition of Done**: [checklist]
+**Task ID:** [identifier]
+**Risk:** Critical/High/Medium/Low
+**Branch:** [branch name]
+
+### Objective
+[one sentence]
+
+### Context
+[why this exists, how it fits]
+
+### Inputs / Outputs
+[names, types, constraints, examples]
+
+### Edge Cases (MUST handle)
+[specific cases and expected behavior]
+
+### Error Types
+[sentinel errors / constructors]
+
+### Reference Implementation
+[file path to similar code and patterns to follow]
+
+### Verification Gates
+[risk-tier gates that apply]
+
+### Definition of Done
+[checklist]
 ```
 
 **If any of these are missing, ASK before proceeding.**
@@ -56,9 +75,10 @@ If a session crashes mid-task, the next session needs a paper trail to resume wi
 - **Phase 3 (Implement) once commits land** — list the commit SHAs + one-line description of each. Names what's safely on disk vs. still in flight.
 - **Phase 4.5 (gates) on PASS** — one line per gate: `tests=PASS lint=PASS gosec=clean-on-diff complexity=PASS`. Tells the next session whether to re-run gates or jump straight to review.
 
-**Command:**
+**Command:** Use the project's configured Jira/issue command from `CLAUDE.md` or team config. If none is defined, skip the checkpoint comment and continue.
+
 ```
-~/Project/forecast/forecast --config /home/andrew/Project/evenplay-mono/.forecast/config.yaml jira comment SMG-XXXX --body "..."
+[project Jira/comment command] [ticket-id] --body "..."
 ```
 
 Keep each comment under 10 lines. Do not transition the ticket — humans do that. If the comment fails (network, auth), continue work; do not block on it.
@@ -126,7 +146,7 @@ Each subtest name must be descriptive enough to diagnose the failure without rea
 
 #### Parallelism
 
-All table-driven tests must run in parallel. This is required — it catches data races and speeds up the suite.
+Table-driven tests should run in parallel by default when cases are isolated. This catches data races and speeds up the suite. Do not parallelize tests that share global state, mutate a shared database/schema, depend on wall-clock ordering, or use fixtures that cannot be safely isolated.
 
 ```go
 // Go example
@@ -365,11 +385,13 @@ Two modes — both apply to Critical/High; only relative applies to Medium when 
 **Relative (regression check) — required when the change touches a package that has existing benchmarks:**
 
 ```
-git stash                                    # or check out main
-go test -bench=. -count=10 -run=^$ ./pkg/... > /tmp/bench-main.txt
-git stash pop                                # back to your branch
+BASE_REF="${BASE_REF:-main}"
+BASE_WORKTREE="$(mktemp -d /tmp/bench-base.XXXXXX)"
+git worktree add --detach "$BASE_WORKTREE" "$BASE_REF"
+(cd "$BASE_WORKTREE" && go test -bench=. -count=10 -run=^$ ./pkg/... > /tmp/bench-main.txt)
 go test -bench=. -count=10 -run=^$ ./pkg/... > /tmp/bench-branch.txt
 benchstat /tmp/bench-main.txt /tmp/bench-branch.txt
+git worktree remove "$BASE_WORKTREE"
 ```
 
 No regression > 10% on `ns/op` or `B/op` for any benchmark. Paste the `benchstat` output into the Completion Report.
@@ -556,20 +578,21 @@ This section exists so you catch your own gaps before submitting. The reviewer n
 
 ## What You Will Be Judged On
 
-The reviewer scores your work on 8 dimensions. Know what they're checking:
+The reviewer scores your work on 9 dimensions. Know what they're checking:
 
 | Dimension | They're Looking For | Common Failures |
 |-----------|--------------------|-----------------|
 | Correctness | Logic matches spec, edge cases handled, tests assert behavior | Missing edge case, test that passes but proves nothing |
+| Security | Input validation, no injection, no PII in logs | String concat of values into SQL |
+| Compliance | Audit trail, state change logging | Balance change without ledger entry |
+| Exploitability & Fairness | CSPRNG for outcomes, server-anchored time, integer money math, symmetric rounding | Float arithmetic in a payout path, client-supplied timestamp on a bonus window |
 | Resilience | Timeouts, retries, graceful degradation | No timeout on external calls |
 | Idempotency | Safe to replay, dedup keys | INSERT without ON CONFLICT |
-| Security | Input validation, no injection, no PII in logs | String concat for SQL |
 | Observability | Context flows, structured logs, correlation IDs | Silent error swallowing |
 | Performance | No N+1, bounded memory, minimal lock scope | Query in a loop |
 | Maintainability | Clear names, focused functions, no complexity violations | Functions > 50 lines, fan-out > 10 |
-| Compliance | Audit trail, state change logging | Balance change without ledger entry |
 
-**Score of 4/5 = approval threshold. 5/5 is aspirational, not required.**
+**Score of 4/5 = approval threshold on generic paths. 5/5 is aspirational, not required — EXCEPT on component-floor paths (wallet writes, bet settlement/placement, jackpot awards, responsible-gambling enforcement), where specific dimensions carry hard 5/5 floors the review CLI enforces mechanically. If your Task Assignment names one of those components, build to 5/5 on its floored dimensions from the start.**
 
 ---
 
@@ -629,4 +652,5 @@ When fixing audit or review findings (as opposed to building new features):
 - You must **document ambiguity resolutions** — never guess silently
 - You must **never deliver a stub as a real implementation** — if you cannot build the real thing, stop and report to Tasker with the blocker
 - You must **never reference ticket IDs in code comments** — ticket IDs belong in commit messages and PRs, not in source code. Code comments explain *why* the code works the way it does in terms legible from the code itself. A reader without access to the ticket tracker must be able to understand the comment.
+- You must **write concise code comments** — do not write verbose paragraphs or essays in source files. Keep comments short, direct, and straight to the point (typically 1-2 sentences max).
 - You must **never include attribution of any kind** in code or commit messages — no author names, no tool references, no "Generated by", no "Co-Authored-By"

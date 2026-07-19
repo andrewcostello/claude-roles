@@ -24,20 +24,32 @@ Coder returns updated Completion Report
   ↓
 Tasker verifies full domain suite output independently
   ↓
-Targeted re-review (changed files only)
+Re-review (two-tier — see below):
+  Round 2:  FULL re-audit (cmd/reviewer, same as round 1)
+  Round 3+: targeted verification (cmd/recheck)
   ↓
-APPROVE → pr-raise.md   |   ITERATE → loop (max 2)   |   REJECT → escalate
+APPROVE → pr-raise.md
+ITERATE → loop while converging (ceiling 4)
+ESCALATE / REJECT → Blocked/Escalated summary
 ```
 
 ---
 
-## Iteration Cap
+## Iteration Budget & Convergence Rules
 
-- **Max 2 cycles** per task (initial review + 1 fix round), or `$MAX_ITERATIONS` if set in the environment.
-- If open CRITICAL or HIGH findings remain after the cap, write `Status: Blocked` with reason "iteration cap reached" and include the full review history in the summary's Escalation reason.
-- The cap recommendation in the summary: pair session, spec clarification, or scope reduction.
+The old flat cap of 2 conflated three concerns; they are now separate (decision 2026-07-16, informed by the PR 1285 cycle where a round-2 full re-audit caught a genuine round-1 miss):
 
-> **Why 2 and not 3:** if the Coder cannot resolve a finding after one targeted fix iteration, more iterations rarely help — they typically introduce regression or scope creep. Two cycles also bounds dispatcher runtime more tightly for unattended runs. Override with `--max-iterations 3` if the human believes a specific class of finding genuinely needs the extra cycle.
+**Escalate IMMEDIATELY — any round, don't wait for the counter:**
+- Any prior CRITICAL/HIGH finding reported **STILL OPEN or REGRESSED** after its dedicated fix round. A finding that survives a clean, focused fix attempt is a design or spec problem — more patching won't help. (This was the real signal the old cap approximated.)
+- Any critical dimension (Correctness/Security/Compliance/Exploitability) **FAILing two consecutive rounds**.
+
+**Otherwise iterate while converging:**
+- All prior CRITICAL/HIGH findings RESOLVED each round, **and**
+- The count of NEW CRITICAL/HIGH findings is **strictly decreasing** round-over-round. New findings with prior ones resolved is the panel working, not the process failing — a stricter panel finds round-1 misses on a second look.
+
+**Hard ceiling: 4 rounds** (`$MAX_ITERATIONS` overrides), purely as a runaway backstop — the escalation triggers above should fire long before it.
+
+On escalation/ceiling: write `Status: Blocked`, include the full review history and per-round finding lineage in the Escalation reason. Recommendation menu unchanged: pair session, spec clarification, or scope reduction. The Security Linter's separate 2-cycle cap is unchanged — persistent vulnerabilities need design discussion at 2, full stop.
 
 ---
 
@@ -46,7 +58,7 @@ APPROVE → pr-raise.md   |   ITERATE → loop (max 2)   |   REJECT → escalate
 Send this to the Coder — never include MEDIUM/LOW findings in the actionable list:
 
 ```markdown
-## Iteration Required: [Task ID] — Round N/2
+## Iteration Required: [Task ID] — Round N (ceiling 4; convergence rules apply)
 
 **Tier minimum:** every quality dimension ≥ [4/5 for Critical/High, 3/5 for Medium] with no CRITICAL/HIGH findings open
 **Current weakest dimension:** [name] at [score]/5 from [reviewer(s)]
@@ -72,7 +84,7 @@ These are tracked for future work. Fixing them in this iteration risks regressio
 5. Submit updated Completion Report listing ONLY the files you changed
 ```
 
-This is the **only fix round** under the default `MAX_ITERATIONS=2` cap. If your fix doesn't resolve the findings cleanly, the task is Blocked next round — the Tasker writes an Escalated/Blocked summary rather than iterating again. Treat this as your one shot.
+A finding gets **one dedicated fix round**. If the re-review reports it STILL OPEN or REGRESSED, the task escalates immediately — there is no second attempt at the same finding. New findings discovered by the re-review get their own round while the convergence rules hold (see Iteration Budget & Convergence Rules). Treat each finding as your one shot at it.
 
 ---
 
@@ -104,9 +116,21 @@ This separates "are tests still passing across the domain" (Tasker's determinist
 
 ---
 
-## Targeted Re-Review
+## Two-Tier Re-Review
 
-After the domain test gate is GREEN, send a **scoped** re-review — NOT a full audit:
+After the domain test gate is GREEN:
+
+**Round 2 — full re-audit, deliberately.** Re-run `cmd/reviewer` on the full PR diff exactly like round 1 (`git diff BASE...HEAD | reviewer -cwd WT -risk TIER [-component ...] -findings-out /tmp/findings-TASK-r2.json`). One full second look catches what round 1 missed while attention was on the flagged items — evidence: PR 1285's round-2 re-audit found a real money-display bug (PRACTICE fallback) in a file round 1 had reviewed and passed. The Tasker adjudicates round-2 findings before dispatching fixes: dismissing a finding requires cited code evidence (see the 1285 funds.go dismissal for the standard).
+
+**Rounds 3+ — targeted verification via `cmd/recheck`.** No more discovery passes; the question narrows to "did the fixes land, and did they break anything in the files they touched":
+
+```bash
+~/Project/claude-workflow/cmd/recheck/recheck \
+  -worktree "$WT" -findings /tmp/findings-TASK-rN.json \
+  -risk TIER -max-new <prior round's new-finding count minus 1>
+```
+
+`recheck` verifies each prior CRITICAL/HIGH as RESOLVED / STILL_OPEN / REGRESSED against the iteration diff, hunts new CRITICAL/HIGH **only in files changed since the prior review**, and computes the verdict mechanically per the convergence rules: exit 0 APPROVE, 1 ITERATE, 2 ESCALATE (any STILL_OPEN/REGRESSED, or new findings ≥ `-max-new`). The old scoped-re-review prompt below remains the fallback for agent-driven (non-CLI) runs:
 
 ```markdown
 ## Targeted Re-Review: [Task ID] — Round N/2
@@ -131,7 +155,7 @@ After the domain test gate is GREEN, send a **scoped** re-review — NOT a full 
 
 Continue until no open CRITICAL/HIGH findings remain, or the iteration cap is reached.
 
-For Critical/High: dispatch all 3 reviewers (or the configured `$REVIEWER_COUNT`) in parallel for the targeted re-review, same as the initial review. The fallback / mid-flight retry rules in `critical-review-dispatch.md` apply.
+For Critical/High: dispatch the full panel (Claude + Codex + Gemini + Grok, or the configured `$REVIEWER_COUNT`) in parallel for the targeted re-review, same as the initial review. The fallback / mid-flight retry rules in `critical-review-dispatch.md` apply.
 
 For Medium: a single reviewer for the targeted re-review is sufficient — they're verifying their own prior findings.
 
@@ -139,17 +163,18 @@ For Medium: a single reviewer for the targeted re-review is sufficient — they'
 
 ## Verdict at Each Cycle
 
-- All previous CRITICAL/HIGH findings RESOLVED + no new CRITICAL/HIGH in changed files → APPROVE
-- Any prior finding STILL OPEN or REGRESSED → ITERATE (with the still-open findings listed in the next Fix Request)
-- Any new CRITICAL/HIGH found in changed files → ITERATE (added to the next Fix Request)
-- After Round 2 with open CRITICAL/HIGH → write `Status: Blocked`, reason "iteration cap reached", include full review history (or after `$MAX_ITERATIONS` if overridden)
+- All prior CRITICAL/HIGH RESOLVED + no new CRITICAL/HIGH → **APPROVE**
+- Any prior finding STILL OPEN or REGRESSED → **ESCALATE immediately** (write Blocked/Escalated — do not spend remaining rounds; the fix attempt failing is the design-problem signal)
+- All prior RESOLVED + new CRITICAL/HIGH, count strictly below the previous round's → **ITERATE** (new findings go in the next Fix Request)
+- New CRITICAL/HIGH count NOT decreasing → **ESCALATE** (the change is defect-dense; patching isn't converging)
+- Round 4 reached with anything open (`$MAX_ITERATIONS` overrides) → **Blocked**, reason "iteration ceiling", full per-round finding lineage in the summary
 
 ---
 
 ## What NOT to Do
 
 - Do not iterate on MEDIUM/LOW. They are logged in the summary's `Deferred findings` section. Fixing MEDIUM/LOW in a fix iteration risks regression because the Coder mixes scope.
-- Do not run a full re-audit. The cost of re-reading unchanged files for new issues compounds across iterations and creates a regression spiral — every "new finding" in unchanged code restarts the process.
+- Do not run full re-audits past round 2. Round 2's full re-audit is deliberate (catches round-1 misses — see Two-Tier Re-Review); from round 3 the discovery budget is spent and re-reading unchanged files creates the regression spiral this rule always guarded against. Rounds 3+ are `cmd/recheck` targeted verification only.
 - Do not skip the full domain test suite gate. The cost is one test run; the cost of skipping it is finding regressions post-merge.
 
 ---

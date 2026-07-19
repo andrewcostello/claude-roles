@@ -1493,12 +1493,12 @@ func claudeEffort(risk string) string {
 	}
 }
 
-// grokEffort maps risk tier to grok --reasoning-effort. xhigh is reserved for
-// Critical per critical-review-dispatch.md.
+// grokEffort maps risk tier to grok --reasoning-effort. The grok CLI only
+// accepts high|medium|low (it rejects xhigh outright), so high is grok's
+// ceiling — Critical does not get an extra grok tier the way the claude seat
+// does. Passing xhigh here silently dropped the grok seat from every Critical
+// panel until this was clamped.
 func grokEffort(risk string) string {
-	if risk == "critical" {
-		return "xhigh"
-	}
 	return "high"
 }
 

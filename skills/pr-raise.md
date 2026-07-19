@@ -5,6 +5,10 @@ description: PR-raise mechanics — human approval gate (Critical OR financial-p
 
 # PR Raise
 
+**Precondition — a review panel must have run; no PR is ever raised with zero AI review.** For any change in the mandatory-panel set (Go/server/SQL/proto, money/wallet/auth paths, or Medium+ risk — see `tasker.md` Phase 3.4 "The panel is MANDATORY"): a completed full `cmd/reviewer` panel at `APPROVE`. For the client-only-presentation carve-out: at minimum a **single-reviewer** run (`-reviewers claude` or `-reviewers codex`) at `APPROVE`. "Read-path", "small", or "obvious" are not full-panel exemptions. A PR raised on mandatory-set code without the full panel — or any PR raised with no reviewer at all — is a process defect, corrected by running the appropriate panel retroactively.
+
+**Post-merge — close the ticket (team policy, Andrew 2026-07-16).** When a PR MERGES, transition its ticket(s) to the terminal closed state — **SMG → `Done`, FSG → `Closed`** — regardless of assignee, with a comment referencing the merging PR. (SMG's Done transition has no resolution-screen field — don't pass `--resolution`.) Two guards: (1) a PR that only *partially* delivers a ticket does NOT close it — leave it open with a note; (2) a ticket explicitly gated on deployment (e.g. "close with next stage release") closes on deploy, not merge. This supersedes the older "humans transition" convention for the merge boundary.
+
 Load this skill on `APPROVE` verdict. The skill owns:
 
 1. The human approval gate — fires for Critical risk OR when changed files match the configured financial-paths list

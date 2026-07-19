@@ -37,12 +37,17 @@ confluence:
 
 # ─── Team Roster ─────────────────────────────────────────────────────────────
 # github: GitHub username (null if not confirmed)
-# jira: JIRA display name used for matching
+# jira: JIRA display name used for matching (match case-insensitively)
+# role: engineer (default if unset) | qa | exec
+#   - engineer/qa → walked in the PART 1 standup walkthrough
+#   - qa → excluded from the ⚖️ Team Load strip (size-weighted load is dev-shaped)
+#   - exec → rostered to suppress unmapped-assignee warnings, but NOT walked and NOT in load
 # notes: any special handling
 
 team:
   - name: Andrew Costello
     github: andrewcostello
+    github_aliases: [amcolv]   # 2nd GitHub account, same person
     jira: Andrew Costello
 
   - name: Boris
@@ -67,17 +72,72 @@ team:
     jira: Nafeem Haque
 
   - name: Eashan
-    github: null  # not confirmed
+    github: rs-eashan
     jira: Eashan
 
   - name: Fahim
-    github: null  # TBC
+    github: fahim-evenplay
+    github_aliases: [fahim-riseuplabs]   # 2nd GitHub account (Mohammad Fahim Hossain), same person
     jira: Fahim
 
   - name: Roman Gonzales-Valdes
     github: roman-2kgroup
-    jira: Roman Gonzales-Valdes
-    notes: "External contractor"
+    jira: Roman Honzales          # Jira display name differs from real name — match on this
+    notes: "External contractor. Jira account shows 'Roman Honzales'."
+
+  - name: Roman Tishchenko
+    github: RomanT-evenplay
+    jira: Roman Tishchenko
+    role: engineer
+    notes: "Distinct person from Roman Honzales — do not conflate."
+
+  - name: Andrii Shalaienko
+    github: andrei-evenplay
+    jira: Andrii Shalaienko
+    role: engineer
+
+  - name: Oleksandr Vaitovych
+    github: oleksandrvait
+    jira: Oleksandr Vaitovych
+    role: engineer
+
+  - name: Robert Lynch
+    github: radlantern
+    jira: Robert Lynch
+    role: engineer
+    notes: "Goes by Rob"
+
+  - name: Vitalii Kostenko
+    github: VitaliiKostenko-Evenplay
+    jira: Vitalii Kostenko
+    role: engineer
+
+  - name: Philipp Batallia
+    github: pbevenplay
+    jira: Philipp Batallia
+    role: engineer
+
+  - name: Antonina
+    github: null  # intentionally none — QA, does not commit
+    jira: Antonina
+    role: qa
+
+  - name: James Baker
+    github: jamesbakersmg
+    jira: James Baker
+    role: qa
+
+  - name: Slava
+    github: slavashtat
+    jira: Slava
+    role: exec
+    notes: "Executive — rostered to suppress unmapped warnings; not walked, not in load strip."
+
+  - name: Sameer Gupta
+    github: sameerfest
+    jira: Sameer Gupta
+    role: exec
+    notes: "Executive — rostered to suppress unmapped warnings; not walked, not in load strip."
 
 # ─── Tracked Epics (for weekly project health report) ────────────────────────
 

@@ -34,9 +34,9 @@ This role is a router. Per-phase mechanics live in focused skills under `.claude
 
 | Risk | Applies To | Review Depth |
 |------|------------|--------------|
-| **Critical** | Balance mutations, bet settlement, payout calculations, gambling outcome determination, withdrawals | 3-model review + Verification Agent + Security Linter + Design Agent; mutation testing for financial code |
-| **High** | Auth, session, state machines, audit trail, ledger | 3-model review + Static Analysis Gate + Design Agent |
-| **Medium** | Repositories, validation, queries, read-only | Single review; Design Agent optional |
+| **Critical** | Balance mutations, bet settlement, payout calculations, gambling outcome determination, withdrawals | 5-seat CLI panel (full consensus) + Verification Agent + Security Linter + Design Agent; mutation testing for financial code |
+| **High** | Auth, session, state machines, audit trail, ledger | 5-seat CLI panel (4/5 consensus) + Static Analysis Gate + Design Agent |
+| **Medium** | Repositories, validation, queries, read-only | CLI panel (majority consensus); Design Agent optional |
 | **Low** | Migrations, types, config, docs, test helpers | Self-review only |
 
 **When in doubt, go one level higher.**
@@ -64,7 +64,7 @@ Load only what applies. Each skill is self-contained and assumes you loaded it o
 |---------|-------|
 | Risk = Critical or High | `.claude/workflow/skills/critical-review-dispatch.md` |
 | Task touches DB schema (`.sql`, migration file) | `.claude/workflow/skills/migration-checklist.md` |
-| `type: Fix` (any bug fix) | `.claude/workflow/skills/bug-fix-protocol.md` |
+| `type: Fix` (any bug fix) | `.claude/workflow/skills/bug-fix-protocol.md` — its Phase 0 triage decides whether the Bug Reproducer runs before the Coder |
 | Dispatching Coder for first time on this ticket | `.claude/workflow/skills/git-worktree-setup.md` |
 | `docs/plans/*.md` exists for this task | `.claude/workflow/skills/plan-based-execution.md` |
 | Verdict = ITERATE | `.claude/workflow/skills/iteration-protocol.md` |
@@ -192,79 +192,66 @@ Remove the Coder's `Self-Assessment` block (Confidence level, Areas I'm uncertai
 
 ### 3.4 Dispatch Review Panel
 
-| Tier | Reviewers | Consensus | Quality floor |
-|------|-----------|-----------|---------------|
-| Critical | 3 (Claude + Codex + Gemini), parallel | 3/3 | every dim ≥ 4/5 |
-| High | 3 (same) | 2/3 | every dim ≥ 4/5 |
-| Medium | 1 (Claude subagent) | 1/1 | every dim ≥ 3/5 |
-| Low | Self-review | — | — |
+#### The panel is MANDATORY — no "read-path" or "small change" exemption
 
-All reviewers receive the same Review Request and have NO knowledge of the others' findings. Reviewer role file: `.claude/workflow/roles/reviewer.md`. Dispatch mechanics (prompts, plugin invocation, fallback on plugin failure, mid-flight retry, N−1 fallback flag) live in `critical-review-dispatch.md`.
+The 5-seat panel is **required before raising a PR** whenever the diff touches **any of**:
+- **Go / server code** (any `apps/**/*.go`, migrations, SQL, protos) — *including read-only paths*. Query-shape and projection changes are exactly what the panel's data-flow / sibling-surface trace exists to catch; "it's only a read" is not an exemption. (Precedent: PR 1294 (SMG-3872) was raised without the panel on a "read-path" rationale and shipped a customer-facing regression — the widened wallet query surfaced every bet row as "UNKNOWN". The panel's sibling-surface trace would have flagged it. Do not repeat this.)
+- **Money, wallet, balance, payout, settlement, or auth/session/permission paths** — always, at any tier.
+- Any change the Tasker classified **Medium risk or higher**.
+
+**The carve-out is a REDUCED panel, never zero review:** a change confined entirely to **client-only presentation** (React Native / web TS components, copy, styling, icons) with **no Go/server/wire/money/auth surface touched** may run a **single-reviewer** panel instead of the full 5 seats.
+
+**NOT eligible for the carve-out even when client-only:** any change to a **gate, guard, feature flag, environment check, or debug/override toggle** — i.e. code whose job is to *decide whether something is allowed or shown*. These carry a correctness/safety dimension (fail-open exposure), not just presentation, and get the **full panel**. (Precedent: PR 1298 was a "client-only" debug-panel change reviewed by a single human at Low severity; the retroactive full panel escalated a **fail-open debug gate reachable in deployed envs** to HIGH with 5-seat corroboration — SMG-3880. A single reviewer under-served it.)
+
+Carve-out dispatch (pure presentation only):
+
+```bash
+git -C "$WORKTREE" diff "$BASE_REF"...HEAD | ~/Project/claude-workflow/cmd/reviewer/main \
+  -cwd "$WORKTREE" -base "$BASE_REF" -risk medium -reviewers claude   # or -reviewers codex
+```
+
+No PR is ever raised with zero AI review. If a "client" diff also changes a proto, a wire contract, or server code, it is NOT client-only — run the full panel.
+
+When in doubt, run the full panel. A missing panel (or a zero-reviewer raise) on anything in the mandatory set is a process defect, not a judgment call.
+
+#### Dispatch
+
+Use the orchestrator CLI to dispatch the parallel review panel. The CLI handles reviewer isolation, reasoning depth scaling, mid-flight retries, tier consensus floors, component dimension floors, finding dedup, and final verdict determination:
+
+```bash
+BASE_REF="${BASE_REF:-main}"
+git -C "$WORKTREE" diff "$BASE_REF"...HEAD | ~/Project/claude-workflow/cmd/reviewer/main \
+  -cwd "$WORKTREE" \
+  -base "$BASE_REF" \
+  -risk [critical|high|medium|low] \
+  [-component wallet,bet-settlement,bet-placement,jackpot,responsible-gambling] \
+  -findings-out /tmp/findings-$TASK_ID-r$ROUND.json   # machine input for cmd/recheck at iteration rounds 3+
+```
+
+**You own the `-component` call:** if the diff touches wallet/balance writes, bet settlement, bet placement, jackpot awards, or responsible-gambling enforcement, pass the matching preset(s) — the CLI raises the per-dimension floors accordingly (canonical table and rationale in `critical-review-dispatch.md` under "Component-specific dimension floors"). The CLI cannot infer the component from the diff; forgetting the flag silently reviews at the generic tier floor.
+
+The CLI outputs a full merged review report with separate `Status` and `Final Verdict` fields.
 
 ---
 
 ## Phase 4: Process Review Results
 
-### 4.1 Merge Scores
+The CLI orchestrator outputs a full review summary and a final verdict at the bottom of its stdout (e.g. `=== FINAL STATUS: REVIEW_COMPLETE / VERDICT: APPROVE ===`).
 
-```markdown
-## Review Summary: [Task ID]
+### 4.1 Apply Status
 
-| Dimension       | Rev A | Rev B | Rev C |
-|-----------------|-------|-------|-------|
-| Correctness     | P/F   | P/F   | P/F   |
-| Security        | P/F   | P/F   | P/F   |
-| Compliance      | P/F   | P/F   | P/F   |
-| Resilience      | X/5   | X/5   | X/5   |
-| Idempotency     | X/5   | X/5   | X/5   |
-| Observability   | X/5   | X/5   | X/5   |
-| Performance     | X/5   | X/5   | X/5   |
-| Maintainability | X/5   | X/5   | X/5   |
-| **Quality**     | **X/25** | **X/25** | **X/25** |
-```
+| Status | Action |
+|--------|--------|
+| REVIEW_COMPLETE | Apply the `Final Verdict` table below. |
+| INVALID_INPUT | Fix the Tasker/dispatcher input: wrong worktree, missing changed file, unparsable diff, or wrong base. Do not send to Coder as an iteration. |
+| REVIEW_UNAVAILABLE | The CLI already applied the tier's N−1 consensus floor — this status means completed reviews fell BELOW it. Re-run the CLI once (provider outages are usually transient); if still unavailable, escalate to human naming the failed reviewers. Do not send to Coder as an iteration. |
 
-### 4.2 Verdict
+### 4.2 Apply Verdict
 
-**APPROVE** — ALL of:
-- Required consensus on the 3 critical dimensions (Correctness / Security / Compliance all PASS)
-- No open CRITICAL or HIGH findings from any reviewer
-- Every quality dimension at or above the tier minimum across the consensus set
-- Every applicable component-specific floor satisfied (table below)
-
-**ITERATE** — any of:
-- A critical dimension FAILed from required consensus
-- An open CRITICAL or HIGH finding
-- A quality dimension below the tier minimum from required consensus
-- A component-specific floor unmet from any reviewer
-- (Only CRITICAL/HIGH are sent to Coder; MEDIUM/LOW are logged. Critical-risk MEDIUM findings require explicit human sign-off to defer.)
-
-**REJECT** — any of:
-- Multiple critical dimension FAILs from required consensus
-- Fundamental design flaw identified by multiple reviewers
-- Escalate via summary
-
-> **Why min-threshold and not aggregate:** safety dimensions are orthogonal. 5/5 on Maintainability does not compensate for 3/5 on Idempotency on a wallet payout. Aggregate scores hide that; min-threshold makes it explicit.
-
-#### Component-specific dimension floors
-
-On top of the general tier minimum, certain components require hard per-dimension floors. **No reviewer may score below these values.** If any reviewer does, the component cannot APPROVE regardless of the overall quality score.
-
-| Component | Perf | Idem | Resil | Obs |
-|-----------|------|------|-------|-----|
-| Wallet write paths (deposits, withdrawals, transfers, balance mutations) | 5 | 5 | 5 | — |
-| Bet settlement write paths | 5 | 5 | 5 | 5 |
-| Bet placement write paths (live/in-play) | 5 | 5 | 5 | — |
-| Jackpot award paths | 4 | 5 | 5 | — |
-| Responsible gambling enforcement (self-exclusion, deposit limits, cooling-off) | — | — | — | 5 |
-
-A dash (—) means no component-specific floor; the general tier minimum still applies. Rationale per floor (why these specific numbers) lives in `.claude/workflow/skills/critical-review-dispatch.md` under "Component-specific dimension floors".
-
-### 4.3 Apply Verdict
-
-| Verdict | Action |
-|---------|--------|
+| Final Verdict | Action |
+|---------------|--------|
 | APPROVE | Load `pr-raise.md`. Human gate fires for Critical risk OR financial-paths-touched; otherwise auto-raise. |
-| ITERATE | Load `iteration-protocol.md`. Send CRITICAL/HIGH-only fix request. Max 2 cycles (or `$MAX_ITERATIONS`). |
+| ITERATE | Load `iteration-protocol.md`. Include the full CLI report as context, but send only blocking CRITICAL/HIGH findings in the fix request. Max 2 cycles (or `$MAX_ITERATIONS`). |
 | REJECT | Write Escalated summary; do not retry. |
 
 ---
@@ -306,9 +293,11 @@ Recoverable: forgetting to commit isn't fatal, but it costs a full Claude sessio
 ## Review consensus
 | Reviewer | Score | Verdict |
 |----------|-------|---------|
-| A | X/25 | APPROVE/ITERATE/REJECT |
-| B | X/25 | APPROVE/ITERATE/REJECT |
-| C | X/25 | APPROVE/ITERATE/REJECT |
+| claude | X/25 | APPROVE/ITERATE/REJECT |
+| claude-scouts | X/25 | APPROVE/ITERATE/REJECT |
+| codex | X/25 | APPROVE/ITERATE/REJECT |
+| grok | X/25 | APPROVE/ITERATE/REJECT |
+| agy | X/25 | APPROVE/ITERATE/REJECT |
 
 ## Files changed
 - path/to/file.go
@@ -346,10 +335,9 @@ When invoked by the dispatcher, you receive these env vars:
 | `MAX_ITERATIONS` | Override default 2. |
 | `SKIP_DESIGN` | Skip Design Agent (Phase 1 analysis still runs). |
 | `SKIP_SECURITY_LINTER` | Skip Security Linter. Verification Agent still runs for Critical. |
-| `REVIEWER_COUNT` | Override consensus reviewer count (1 / 2 / 3). |
+| `REVIEWER_COUNT` | Deprecated — panel size is the CLI's `-reviewers` flag; the consensus floor scales with it automatically. |
 | `FINANCIAL_PATHS` | Comma-separated glob patterns for the human-gate financial-paths check (default per `pr-raise.md`). |
 
 Standalone (no `DISPATCHER_RUN_ID`) — write the summary to stdout under a fenced block at session end.
 
 You raise the PR yourself when the human gate does NOT fire (non-Critical AND no financial-paths change). When the gate fires, stop and write `Prepared PR` into the summary — the dispatcher (in supervised mode) or human (in unattended mode) decides whether to raise it. See `pr-raise.md` for the gate rule.
-
