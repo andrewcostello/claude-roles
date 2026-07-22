@@ -3,21 +3,25 @@
 //
 // Where the reviewer is an independent full audit that must NOT see prior
 // findings, recheck is the opposite machine: it takes the reviewer's
-// -findings-out JSON, shows a verifier each prior CRITICAL/HIGH finding plus
-// the diff since that review, and demands a per-finding status — RESOLVED /
-// STILL_OPEN / REGRESSED — with evidence, plus any NEW CRITICAL/HIGH strictly
-// within the files changed since the prior review. The verdict is computed
-// mechanically per the convergence rules:
+// -findings-out JSON, shows a verifier each prior finding at or above the
+// severity floor plus the diff since that review, and demands a per-finding
+// status — RESOLVED / STILL_OPEN / REGRESSED — with evidence, plus any NEW
+// at-or-above-floor finding strictly within the files changed since the prior
+// review. The verdict is computed mechanically per the convergence rules:
 //
-//	exit 0 APPROVE   — all prior findings RESOLVED, no new CRITICAL/HIGH
+//	exit 0 APPROVE   — all prior findings RESOLVED, no new at-or-above-floor
 //	exit 1 ITERATE   — all prior RESOLVED, new findings below -max-new
 //	exit 2 ESCALATE  — any STILL_OPEN/REGRESSED, or new findings >= -max-new
 //	exit 3 error     — bad input, verifier failure, git failure
 //
+// The floor is -min-severity: "high" (default) verifies/hunts CRITICAL+HIGH —
+// the always-on bar; "medium" also tracks MEDIUMs, for critical systems that
+// must converge to zero MEDIUM-or-higher; "critical" is CRITICAL-only.
+//
 // Usage:
 //
 //	recheck -worktree <path> -findings /tmp/findings-TASK-r2.json \
-//	        -risk high [-max-new 2] [-runs-dir /tmp]
+//	        -risk high [-min-severity medium] [-max-new 2]
 package main
 
 import (
@@ -81,8 +85,11 @@ func main() {
 	worktree := flag.String("worktree", "", "Worktree holding the fix commits (required)")
 	findingsPath := flag.String("findings", "", "Path to cmd/reviewer's -findings-out JSON from the prior round (required)")
 	risk := flag.String("risk", "", "Risk tier (default: taken from the findings file)")
-	maxNew := flag.Int("max-new", 0, "Escalate if NEW CRITICAL/HIGH count is >= this (0 = any new finding escalates; pass prior round's new-count minus 1 to enforce strict decrease)")
+	maxNew := flag.Int("max-new", 0, "Escalate if NEW at-or-above-floor finding count is >= this (0 = any new finding escalates; pass prior round's new-count minus 1 to enforce strict decrease)")
+	minSeverity := flag.String("min-severity", "high", "Severity floor to converge to: critical|high|medium. \"high\" (default): verify prior CRITICAL/HIGH and hunt new CRITICAL/HIGH — the always-on bar. \"medium\": also verify prior MEDIUMs and hunt new MEDIUMs — for critical systems that must reach zero MEDIUM-or-higher. \"critical\": CRITICAL only.")
 	flag.Parse()
+
+	floor := normalizeFloor(*minSeverity)
 
 	if *worktree == "" || *findingsPath == "" {
 		fmt.Fprintln(os.Stderr, "-worktree and -findings are required")
@@ -104,9 +111,9 @@ func main() {
 		tier = *risk
 	}
 
-	open := criticalHigh(export.Findings)
+	open := atOrAboveFloor(export.Findings, floor)
 	if len(open) == 0 {
-		fmt.Println("No CRITICAL/HIGH findings in the prior round — nothing to verify. APPROVE.")
+		fmt.Printf("No %s-or-higher findings in the prior round — nothing to verify. APPROVE.\n", floor)
 		os.Exit(0)
 	}
 
@@ -120,28 +127,59 @@ func main() {
 		os.Exit(3)
 	}
 
-	log.Printf("Verifying %d prior CRITICAL/HIGH finding(s) against %d changed file(s) (%s..%s)",
-		len(open), len(changedFiles), short(export.ReviewedSHA), short(headSHA))
+	log.Printf("Verifying %d prior %s-or-higher finding(s) against %d changed file(s) (%s..%s)",
+		len(open), floor, len(changedFiles), short(export.ReviewedSHA), short(headSHA))
 
-	out, err := runVerifier(*worktree, tier, open, iterDiff, changedFiles)
+	out, err := runVerifier(*worktree, tier, floor, open, iterDiff, changedFiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "verifier failed: %v\n", err)
 		os.Exit(3)
 	}
 
-	verdict, code := computeVerdict(open, out, *maxNew)
+	verdict, code := computeVerdict(out, *maxNew, floor)
 	printReport(export, out, open, verdict, headSHA, changedFiles)
 	os.Exit(code)
 }
 
-func criticalHigh(findings []ExportFinding) []ExportFinding {
+var severityRank = map[string]int{"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+
+// normalizeFloor clamps the -min-severity flag to a supported floor. recheck
+// never hunts LOW, so the floor is one of CRITICAL/HIGH/MEDIUM; anything else
+// falls back to HIGH (the always-on bar).
+func normalizeFloor(s string) string {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "CRITICAL":
+		return "CRITICAL"
+	case "MEDIUM":
+		return "MEDIUM"
+	default:
+		return "HIGH"
+	}
+}
+
+// atOrAboveFloor selects prior findings at or above the severity floor. Blocking
+// findings are always included regardless of their labelled severity.
+func atOrAboveFloor(findings []ExportFinding, floor string) []ExportFinding {
 	var out []ExportFinding
 	for _, f := range findings {
-		if f.Severity == "CRITICAL" || f.Severity == "HIGH" || f.Blocking {
+		if severityRank[f.Severity] >= severityRank[floor] || f.Blocking {
 			out = append(out, f)
 		}
 	}
 	return out
+}
+
+// huntLabels renders the "hunt for NEW X, do not report Y" severity language
+// for the verifier prompt at a given floor.
+func huntLabels(floor string) (hunt, exclude string) {
+	switch floor {
+	case "CRITICAL":
+		return "CRITICAL", "HIGH/MEDIUM/LOW"
+	case "MEDIUM":
+		return "MEDIUM-or-higher (CRITICAL, HIGH, or MEDIUM)", "LOW"
+	default:
+		return "CRITICAL/HIGH", "MEDIUM/LOW"
+	}
 }
 
 func iterationDiff(worktree, reviewedSHA string) (diff string, files []string, head string, err error) {
@@ -220,9 +258,10 @@ func verifierSchema(findingCount int) map[string]any {
 	}
 }
 
-func buildVerifierPrompt(findings []ExportFinding, iterDiff string, changedFiles []string) string {
+func buildVerifierPrompt(findings []ExportFinding, iterDiff string, changedFiles []string, floor string) string {
+	hunt, exclude := huntLabels(floor)
 	var b strings.Builder
-	b.WriteString(`You are a fix VERIFIER, not a reviewer. A prior review produced the findings below; the author then committed fixes. Your job has exactly two parts:
+	fmt.Fprintf(&b, `You are a fix VERIFIER, not a reviewer. A prior review produced the findings below; the author then committed fixes. Your job has exactly two parts:
 
 1. For EACH numbered finding, determine its status against the current code:
    - RESOLVED: the defect is genuinely fixed (cite the fixing code file:line as evidence)
@@ -230,11 +269,11 @@ func buildVerifierPrompt(findings []ExportFinding, iterDiff string, changedFiles
    - REGRESSED: the fix changed behavior but the defect re-manifests another way (cite how)
    Read the actual current files with your tools — do not judge from the diff alone. Do not mark RESOLVED because a test was added; verify the defect itself is gone.
 
-2. Hunt for NEW CRITICAL/HIGH defects ONLY in the files changed since the prior review (listed below). Do NOT audit unchanged files. Do not report MEDIUM/LOW. Severity per worst plausible production impact, never discounted by likelihood.
+2. Hunt for NEW %s defects ONLY in the files changed since the prior review (listed below). Do NOT audit unchanged files. Do not report %s. Severity per worst plausible production impact, never discounted by likelihood.
 
 Your FINAL message must be ONLY a raw JSON object matching the provided schema, with exactly one verification entry per finding index. Do the analysis in intermediate turns. Do NOT edit any files.
 
-`)
+`, hunt, exclude)
 	b.WriteString("## Prior findings to verify\n\n")
 	for i, f := range findings {
 		fmt.Fprintf(&b, "### Finding %d — [%s] %s:%d — %s\n%s\n", i, f.Severity, f.File, f.Line, f.Title, f.Problem)
@@ -254,7 +293,7 @@ Your FINAL message must be ONLY a raw JSON object matching the provided schema, 
 	return b.String()
 }
 
-func runVerifier(worktree, risk string, findings []ExportFinding, iterDiff string, changedFiles []string) (verifierOutput, error) {
+func runVerifier(worktree, risk, floor string, findings []ExportFinding, iterDiff string, changedFiles []string) (verifierOutput, error) {
 	effort := "high"
 	if risk == "critical" {
 		effort = "xhigh"
@@ -263,7 +302,7 @@ func runVerifier(worktree, risk string, findings []ExportFinding, iterDiff strin
 	if err != nil {
 		return verifierOutput{}, err
 	}
-	prompt := buildVerifierPrompt(findings, iterDiff, changedFiles)
+	prompt := buildVerifierPrompt(findings, iterDiff, changedFiles, floor)
 
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -347,22 +386,22 @@ func validateVerifications(out verifierOutput, findingCount int) error {
 
 // --- verdict ------------------------------------------------------------------
 
-func computeVerdict(prior []ExportFinding, out verifierOutput, maxNew int) (string, int) {
+func computeVerdict(out verifierOutput, maxNew int, floor string) (string, int) {
 	for _, v := range out.Verifications {
 		if v.Status != "RESOLVED" {
 			return "ESCALATE", 2
 		}
 	}
-	newCH := 0
+	newAtFloor := 0
 	for _, f := range out.NewFindings {
-		if f.Severity == "CRITICAL" || f.Severity == "HIGH" || f.Blocking {
-			newCH++
+		if severityRank[f.Severity] >= severityRank[floor] || f.Blocking {
+			newAtFloor++
 		}
 	}
 	switch {
-	case newCH == 0:
+	case newAtFloor == 0:
 		return "APPROVE", 0
-	case maxNew > 0 && newCH < maxNew:
+	case maxNew > 0 && newAtFloor < maxNew:
 		return "ITERATE", 1
 	default:
 		return "ESCALATE", 2

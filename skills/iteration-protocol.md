@@ -127,10 +127,17 @@ After the domain test gate is GREEN:
 ```bash
 ~/Project/claude-workflow/cmd/recheck/recheck \
   -worktree "$WT" -findings /tmp/findings-TASK-rN.json \
-  -risk TIER -max-new <prior round's new-finding count minus 1>
+  -risk TIER [-min-severity high|medium] \
+  -max-new <prior round's new-finding count minus 1>
 ```
 
-`recheck` verifies each prior CRITICAL/HIGH as RESOLVED / STILL_OPEN / REGRESSED against the iteration diff, hunts new CRITICAL/HIGH **only in files changed since the prior review**, and computes the verdict mechanically per the convergence rules: exit 0 APPROVE, 1 ITERATE, 2 ESCALATE (any STILL_OPEN/REGRESSED, or new findings ≥ `-max-new`). The old scoped-re-review prompt below remains the fallback for agent-driven (non-CLI) runs:
+`recheck` verifies each prior finding **at or above the severity floor** as RESOLVED / STILL_OPEN / REGRESSED against the iteration diff, hunts new at-or-above-floor findings **only in files changed since the prior review**, and computes the verdict mechanically per the convergence rules: exit 0 APPROVE, 1 ITERATE, 2 ESCALATE (any STILL_OPEN/REGRESSED, or new findings ≥ `-max-new`).
+
+**Severity floor (`-min-severity`, default `high`):**
+- **`high`** — the always-on bar: converge to zero CRITICAL/HIGH; MEDIUMs are logged, not iterated. Use for all normal tasks.
+- **`medium`** — critical-system bar: also verify prior MEDIUMs and hunt new MEDIUMs, converging to **zero MEDIUM-or-higher**. Use when the task is a critical system (wallet, bet-settlement, auth, RGL — the `-component` set) and the reviewer's `-findings-out` was written at a bar that includes mediums. At this floor, MEDIUMs are in the actionable Fix Request (the "do not iterate MEDIUM/LOW" default is lifted — see What NOT to Do).
+
+The old scoped-re-review prompt below remains the fallback for agent-driven (non-CLI) runs:
 
 ```markdown
 ## Targeted Re-Review: [Task ID] — Round N/2
@@ -163,17 +170,19 @@ For Medium: a single reviewer for the targeted re-review is sufficient — they'
 
 ## Verdict at Each Cycle
 
-- All prior CRITICAL/HIGH RESOLVED + no new CRITICAL/HIGH → **APPROVE**
+"At-or-above-floor" below means CRITICAL/HIGH at the default `high` floor, or CRITICAL/HIGH/MEDIUM at the `medium` floor for critical systems.
+
+- All prior at-or-above-floor findings RESOLVED + no new at-or-above-floor → **APPROVE**
 - Any prior finding STILL OPEN or REGRESSED → **ESCALATE immediately** (write Blocked/Escalated — do not spend remaining rounds; the fix attempt failing is the design-problem signal)
-- All prior RESOLVED + new CRITICAL/HIGH, count strictly below the previous round's → **ITERATE** (new findings go in the next Fix Request)
-- New CRITICAL/HIGH count NOT decreasing → **ESCALATE** (the change is defect-dense; patching isn't converging)
-- Round 4 reached with anything open (`$MAX_ITERATIONS` overrides) → **Blocked**, reason "iteration ceiling", full per-round finding lineage in the summary
+- All prior RESOLVED + new at-or-above-floor findings, count strictly below the previous round's → **ITERATE** (new findings go in the next Fix Request)
+- New at-or-above-floor count NOT decreasing → **ESCALATE** (the change is defect-dense; patching isn't converging)
+- Ceiling reached with anything open → **Blocked**, reason "iteration ceiling", full per-round finding lineage in the summary. The default ceiling is 4 (runaway backstop). **Critical systems converging to the `medium` floor legitimately run longer** — raise or remove the cap with `$MAX_ITERATIONS`; the STILL_OPEN/REGRESSED escalation above is the real stop, not the round count, so a run that keeps cleanly RESOLVING-and-finding-lower-severity is converging, not looping.
 
 ---
 
 ## What NOT to Do
 
-- Do not iterate on MEDIUM/LOW. They are logged in the summary's `Deferred findings` section. Fixing MEDIUM/LOW in a fix iteration risks regression because the Coder mixes scope.
+- Do not iterate on MEDIUM/LOW **at the default `high` floor**. They are logged in the summary's `Deferred findings` section. Fixing MEDIUM/LOW in a fix iteration risks regression because the Coder mixes scope. **Exception — critical systems at the `medium` floor:** when the task demands zero MEDIUM-or-higher (`recheck -min-severity medium`), MEDIUMs are in scope and iterated like HIGHs; LOW is still never iterated. Keep each fix round minimal-diff even so.
 - Do not run full re-audits past round 2. Round 2's full re-audit is deliberate (catches round-1 misses — see Two-Tier Re-Review); from round 3 the discovery budget is spent and re-reading unchanged files creates the regression spiral this rule always guarded against. Rounds 3+ are `cmd/recheck` targeted verification only.
 - Do not skip the full domain test suite gate. The cost is one test run; the cost of skipping it is finding regressions post-merge.
 

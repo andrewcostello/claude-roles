@@ -230,6 +230,8 @@ git -C "$WORKTREE" diff "$BASE_REF"...HEAD | ~/Project/claude-workflow/cmd/revie
 
 **You own the `-component` call:** if the diff touches wallet/balance writes, bet settlement, bet placement, jackpot awards, or responsible-gambling enforcement, pass the matching preset(s) — the CLI raises the per-dimension floors accordingly (canonical table and rationale in `critical-review-dispatch.md` under "Component-specific dimension floors"). The CLI cannot infer the component from the diff; forgetting the flag silently reviews at the generic tier floor.
 
+**Critical systems converge to zero MEDIUM-or-higher.** For any change carrying a `-component` preset (the critical systems above), the iteration loop's rounds-3+ verification runs at the medium bar — `cmd/recheck -min-severity medium` — so the task cannot APPROVE while a MEDIUM remains open, and MEDIUMs join the actionable Fix Request. All other tasks stay at the default `high` bar (MEDIUMs logged, not iterated). See `iteration-protocol.md` → Two-Tier Re-Review for the mechanics.
+
 The CLI outputs a full merged review report with separate `Status` and `Final Verdict` fields.
 
 ---
