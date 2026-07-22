@@ -184,7 +184,7 @@ func main() {
 	}
 	log.Printf("Loaded reviewer role: %s\n", rolePath)
 
-	sharedBody := buildSharedBody(inputCtx, diff)
+	sharedBody := buildSharedBody(inputCtx, diff, nil)
 	promptBody := buildPrompt(roleText, sharedBody)
 	promptPath := filepath.Join(tempDir, "review-request.md")
 	if err := os.WriteFile(promptPath, []byte(promptBody), 0644); err != nil {
@@ -205,7 +205,7 @@ func main() {
 		cwd:           *cwdFlag,
 		risk:          risk,
 		diff:          diff,
-		deepseekTemp:  0.1,
+		inputCtx:      inputCtx,
 	}
 	log.Printf("Claude seats model: %s\n", *claudeModelFlag)
 	log.Printf("DeepSeek broad model: %s\n", *deepseekModelFlag)
@@ -281,7 +281,7 @@ type reviewEnv struct {
 	cwd           string
 	risk          string
 	diff          string
-	deepseekTemp  float64 // investigation-phase temperature; bumped on retry
+	inputCtx      ReviewInputContext
 }
 
 // providerTimeout is the per-attempt ceiling for one reviewer. Bake-off data
@@ -311,24 +311,15 @@ func dispatchReviewers(reviewers []string, env reviewEnv) ([]NamedResponse, []er
 
 			log.Printf("Dispatching review to %s...\n", name)
 
-			// Focused Tier-1 scope reviewers (roles/reviewer.md Step 0.5) run
-			// programmatically, in parallel with the broad Claude review, so
-			// their findings cost no extra wall-clock time. Failures are
-			// non-fatal — the broad review stands on its own.
-			var focused <-chan []Finding
-			if name == "claude" && env.risk != "low" {
-				focused = dispatchClaudeFocusedScopes(env.diff, env.cwd, env.risk, env.tempDir, env.claudeModel)
-			}
-
+			// The broad `claude` seat and the 7-way `claude-scouts` slot each
+			// cover all 8 dimensions and were each surfacing findings the other
+			// missed, so both are kept. The old per-seat focused Tier-1 scopes
+			// (auth/db/financial/concurrency) were a THIRD pass over dimensions
+			// the scouts already own — pure token duplication — and have been
+			// dropped. Scouts run those exact traces inside their scopes.
 			var resp ReviewResponse
 			var err error
 			for attempt := 1; attempt <= 2; attempt++ {
-				// Bump deepseek temperature on retry so the second attempt
-				// explores a different reasoning path (temp 0.0 would
-				// produce identical output to the first attempt).
-				if name == "deepseek" && attempt == 2 {
-					env.deepseekTemp = 0.2
-				}
 				ctx, cancel := context.WithTimeout(context.Background(), providerTimeout(name))
 				resp, err = callLLMProvider(ctx, name, env)
 				cancel()
@@ -342,12 +333,6 @@ func dispatchReviewers(reviewers []string, env reviewEnv) ([]NamedResponse, []er
 			if err != nil {
 				errors <- fmt.Errorf("%s failed: %w", name, err)
 				return
-			}
-			if focused != nil {
-				if ff := <-focused; len(ff) > 0 {
-					log.Printf("claude: merged %d focused-scope finding(s)\n", len(ff))
-					resp.Findings = append(resp.Findings, ff...)
-				}
 			}
 			results <- NamedResponse{Name: name, Response: resp}
 			log.Printf("%s completed successfully.\n", name)
@@ -826,10 +811,12 @@ func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (Revie
 		cmd = exec.CommandContext(ctx, "agy", "--dangerously-skip-permissions", "--print-timeout", "15m", "--print", agyPrompt)
 		cmd.Dir = env.cwd
 	case "claude":
+		// The 52KB reviewer.md rides --append-system-prompt (cached, shared
+		// prefix) rather than stdin — the single biggest input-cost lever.
 		cmd = claudeCmd(ctx, env.cwd, claudeEffort(env.risk), env.schemaStr, env.roleText, env.claudeModel)
 		cmd.Stdin = strings.NewReader(buildClaudeBroadStdin(env.sharedBody))
 	case "deepseek":
-		cmd = deepseekBroadCmd(ctx, env.cwd, env.deepseekModel, env.schemaStr, env.roleText, env.risk, env.deepseekTemp)
+		cmd = claudeCmd(ctx, env.cwd, claudeEffort(env.risk), env.schemaStr, env.roleText, env.deepseekModel)
 		cmd.Stdin = strings.NewReader(buildClaudeBroadStdin(env.sharedBody))
 	case "kimi":
 		cmd = kimiBroadCmd(ctx, env)
@@ -844,8 +831,8 @@ func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (Revie
 	if err := cmd.Run(); err != nil {
 		dumpPathErr := filepath.Join(env.tempDir, fmt.Sprintf("%s.err", provider))
 		dumpPathOut := filepath.Join(env.tempDir, fmt.Sprintf("%s.out", provider))
-		os.WriteFile(dumpPathErr, errBuf.Bytes(), 0644)
-		os.WriteFile(dumpPathOut, outBuf.Bytes(), 0644)
+		_ = os.WriteFile(dumpPathErr, errBuf.Bytes(), 0644)
+		_ = os.WriteFile(dumpPathOut, outBuf.Bytes(), 0644)
 		return ReviewResponse{}, fmt.Errorf("%s failed: %v\nStdout dumped to %s\nStderr dumped to %s", provider, err, dumpPathOut, dumpPathErr)
 	}
 
@@ -862,7 +849,7 @@ func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (Revie
 		// not the answer. Keep the raw stream for debugging and reduce it to
 		// the final assistant message before the shared normalize/parse path.
 		streamPath := filepath.Join(env.tempDir, "kimi.stream")
-		os.WriteFile(streamPath, outBuf.Bytes(), 0644)
+		_ = os.WriteFile(streamPath, outBuf.Bytes(), 0644)
 		text, err := kimiTextFromStreamJSON(rawOutput)
 		if err != nil {
 			return ReviewResponse{}, fmt.Errorf("kimi produced no final assistant message: %v\nRaw stream dumped to %s", err, streamPath)
@@ -871,9 +858,9 @@ func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (Revie
 	}
 
 	dumpPath := filepath.Join(env.tempDir, fmt.Sprintf("%s.raw", provider))
-	os.WriteFile(dumpPath, []byte(rawOutput), 0644)
+	_ = os.WriteFile(dumpPath, []byte(rawOutput), 0644)
 	errDumpPath := filepath.Join(env.tempDir, fmt.Sprintf("%s.err", provider))
-	os.WriteFile(errDumpPath, errBuf.Bytes(), 0644)
+	_ = os.WriteFile(errDumpPath, errBuf.Bytes(), 0644)
 
 	rawJSON := normalizeProviderJSON(provider, rawOutput)
 
@@ -900,7 +887,7 @@ func normalizeProviderJSON(provider, rawOutput string) string {
 					rawJSON = strings.TrimSpace(envelope.Text)
 				}
 			}
-		} else if provider == "claude" {
+		} else if provider == "claude" || provider == "deepseek" {
 			var envelope struct {
 				Result json.RawMessage `json:"result"`
 			}
@@ -1161,8 +1148,8 @@ func buildClaudeBroadStdin(sharedBody string) string {
 // diff, WITHOUT the role. The role (reviewer.md) now rides the claude system
 // prompt (see reviewEnv.roleText) so it's a cacheable shared prefix; keeping it
 // out of stdin is what lets the cache actually hit across seats/panels.
-func buildSharedBody(inputCtx ReviewInputContext, diff string) string {
-	preloaded := preloadSourceFiles(inputCtx.Worktree, inputCtx.ChangedFiles)
+func buildSharedBody(inputCtx ReviewInputContext, diff string, filter preloadFilter) string {
+	preloaded := preloadSourceFiles(inputCtx.Worktree, inputCtx.ChangedFiles, nil)
 	return fmt.Sprintf("%s\n\n%s\n\n## Review Request\n\n### Diff\n%s",
 		formatReviewContext(inputCtx),
 		preloaded,
@@ -1221,11 +1208,28 @@ func formatReviewContext(ctx ReviewInputContext) string {
 	return b.String()
 }
 
+// stripGoComments removes Go-style line and block comments from source data,
+// collapsing runs of blank lines. It is a lossy preload-only scanner —
+// reviewers still read the real file with tools when they need precision.
+func stripGoComments(data []byte) []byte {
+	reLine := regexp.MustCompile(`//.*`)
+	data = reLine.ReplaceAll(data, nil)
+	reBlock := regexp.MustCompile(`/\*[\s\S]*?\*/`)
+	data = reBlock.ReplaceAll(data, nil)
+	reBlank := regexp.MustCompile(`\n{3,}`)
+	data = reBlank.ReplaceAll(data, []byte("\n\n"))
+	return bytes.TrimSpace(data)
+}
+
+// preloadFilter is a predicate that decides whether a file path should be
+// preloaded. nil means "preload everything preloadable."
+type preloadFilter func(path string) bool
+
 // preloadSourceFiles reads the full contents of high-signal changed source files
 // (new or modified, excluding lockfiles, generated code, test fixtures, and
 // deleted files). Each file is truncated at 64KB, total output capped at 512KB.
 // This lets reviewers skip file-reading tool turns and go straight to analysis.
-func preloadSourceFiles(cwd string, files []ChangedFile) string {
+func preloadSourceFiles(cwd string, files []ChangedFile, filter preloadFilter) string {
 	var b strings.Builder
 	b.WriteString("### Pre-loaded Source Files\n\n")
 	b.WriteString("The full contents of key changed files are included below. ")
@@ -1240,6 +1244,9 @@ func preloadSourceFiles(cwd string, files []ChangedFile) string {
 			continue
 		}
 		if !isPreloadableFile(f.Path) {
+			continue
+		}
+		if filter != nil && !filter(f.Path) {
 			continue
 		}
 		if totalBytes >= maxTotalBytes {
@@ -1261,6 +1268,9 @@ func preloadSourceFiles(cwd string, files []ChangedFile) string {
 			b.WriteString(fmt.Sprintf("#### `%s` (%s, %d bytes)\n\n", f.Path, f.Status, n))
 		}
 
+		if strings.HasSuffix(f.Path, ".go") {
+			data = stripGoComments(data)
+		}
 		ext := strings.TrimPrefix(filepath.Ext(f.Path), ".")
 		if ext == "" {
 			ext = "text"
@@ -1291,8 +1301,11 @@ func isPreloadableFile(path string) bool {
 		return false
 	}
 
-	// Skip generated code
-	genSuffixes := []string{"_pb.ts", "_pb.d.ts", ".gen.go", ".generated.ts", ".pb.go", ".sqlc.go"}
+	// Skip mock directories and generated code
+	if strings.Contains(path, "/mock/") || strings.Contains(path, "/mocks/") {
+		return false
+	}
+	genSuffixes := []string{"_pb.ts", "_pb.d.ts", ".gen.go", ".generated.ts", ".pb.go", ".pb.gw.go", ".pb.validate.go", ".sqlc.go"}
 	for _, s := range genSuffixes {
 		if strings.HasSuffix(base, s) {
 			return false
@@ -1424,18 +1437,6 @@ func findingSchema() map[string]any {
 	)
 }
 
-func focusedFindingsSchema() map[string]any {
-	return objectSchema(
-		map[string]any{
-			"findings": map[string]any{
-				"type":  "array",
-				"items": findingSchema(),
-			},
-		},
-		[]string{"findings"},
-	)
-}
-
 func objectSchema(properties map[string]any, required []string) map[string]any {
 	return map[string]any{
 		"type":                 "object",
@@ -1460,7 +1461,7 @@ func readReviewerRole(cwd string) (string, string, error) {
 		errs = append(errs, fmt.Sprintf("%s: %v", path, err))
 	}
 
-	return "", "", fmt.Errorf(strings.Join(errs, "; "))
+	return "", "", fmt.Errorf("%s", strings.Join(errs, "; "))
 }
 
 func emptyDash(s string) string {
@@ -1502,25 +1503,6 @@ func grokEffort(risk string) string {
 	return "high"
 }
 
-// deepseekMaxTurns returns the investigation turn ceiling for a deepseek seat,
-// risk-tiered so complex reviews get more room to investigate. Scouts get +5
-// turns on top of the base because their narrower scope exploits fewer turns
-// per file but needs more files read.
-func deepseekMaxTurns(risk string, isScout bool) int {
-	base := 20
-	if isScout {
-		base = 25
-	}
-	switch risk {
-	case "critical":
-		return base * 2
-	case "high":
-		return base + 10
-	default:
-		return base
-	}
-}
-
 // claudeCmd builds a headless claude invocation hardened for panel review:
 // pinned model (no inheritance of user-settings variants), explicit effort,
 // --safe-mode to strip plugins/hooks/MCP/skills (measured: ~26k → ~3.6k tokens
@@ -1558,36 +1540,6 @@ func claudeCmd(ctx context.Context, cwd, effort, schemaStr, systemPrompt, model 
 	return cmd
 }
 
-// deepseekBroadCmd builds a headless deepseek CLI invocation for the broad
-// (single-seat full-reviewer.md) review. The deepseek binary handles its own
-// tool-use loop + forced-JSON final turn internally. risk tiers the turn budget;
-// temperature varies the investigation-phase temperature (retries use a higher
-// value for a different reasoning path).
-func deepseekBroadCmd(ctx context.Context, cwd, model, schemaStr, systemPrompt, risk string, temperature float64) *exec.Cmd {
-	if model == "" {
-		model = "deepseek-v4-flash"
-	}
-	args := []string{
-		"--model", model,
-		"--json-schema", schemaStr,
-		"--cwd", cwd,
-		"--max-turns", strconv.Itoa(deepseekMaxTurns(risk, false)),
-		"--timeout", "19m",
-		"--temperature", strconv.FormatFloat(temperature, 'f', 2, 64),
-	}
-	if systemPrompt != "" {
-		args = append(args, "--system-prompt", systemPrompt)
-	}
-	exePath, _ := os.Executable()
-	deepseekBin := filepath.Join(filepath.Dir(exePath), "deepseek")
-	if _, err := os.Stat(deepseekBin); os.IsNotExist(err) {
-		deepseekBin = filepath.Join(filepath.Dir(exePath), "..", "deepseek", "deepseek")
-	}
-	cmd := exec.CommandContext(ctx, deepseekBin, args...)
-	cmd.Dir = cwd
-	return cmd
-}
-
 // kimiBroadCmd builds a headless kimi CLI invocation for the broad seat.
 // Unlike claude, the kimi CLI has no --json-schema, no --append-system-prompt,
 // and no stdin prompt mode (-p takes the prompt as an argv string, capped by
@@ -1605,7 +1557,7 @@ func deepseekBroadCmd(ctx context.Context, cwd, model, schemaStr, systemPrompt, 
 // in the user's kimi home (no --no-session-persistence equivalent exists).
 func kimiBroadCmd(ctx context.Context, env reviewEnv) *exec.Cmd {
 	skillsDir := filepath.Join(env.tempDir, "kimi-no-skills")
-	os.MkdirAll(skillsDir, 0755)
+	_ = os.MkdirAll(skillsDir, 0755)
 	args := []string{
 		"-p", kimiBroadPrompt(env),
 		"--output-format", "stream-json",
@@ -1669,151 +1621,31 @@ func kimiTextFromStreamJSON(raw string) (string, error) {
 	return last, nil
 }
 
-// focusedScope mirrors a Tier-1 mandatory scope from roles/reviewer.md Step
-// 0.5. Triggers are content-based regexes over the diff, matching the role's
-// "based on code content" table.
-type focusedScope struct {
-	name    string
-	concern string
-	re      *regexp.Regexp
-}
-
-var focusedScopes = []focusedScope{
-	{
-		name:    "db-query",
-		concern: "Verify parameterized inputs on every query, check for N+1 patterns, validate index coverage for new queries, check migration idempotency.",
-		re:      regexp.MustCompile(`(?i)\b(select|insert|update|delete)\b|sqlc|migration|create table|alter table|\.Query|\.Exec`),
-	},
-	{
-		name:    "financial-integrity",
-		concern: "Trace every arithmetic path for overflow, verify ledger entries exist for every balance mutation, check rounding consistency.",
-		re:      regexp.MustCompile(`(?i)balance|amount|payout|\bbets?\b|wager|stake|ledger|\bcredit|\bdebit`),
-	},
-	{
-		name:    "auth-permissions",
-		concern: "Map every endpoint/mutation to its auth check, verify no path skips authorization, check token validation and expiry handling.",
-		re:      regexp.MustCompile(`(?i)\bauth|authoriz|token|session|permission|jwt|login|credential`),
-	},
-	{
-		name:    "concurrency",
-		concern: "Identify all shared mutable state and verify every access is protected; authorization/precondition checks execute inside the same lock/tx as the mutation they gate; check lock ordering, TOCTOU windows, and context cancellation. Races are Correctness FAILs regardless of likelihood.",
-		re:      regexp.MustCompile(`go func|sync\.|Mutex|\bchan\b|atomic\.|WaitGroup|FOR UPDATE|goroutine`),
-	},
-}
-
-// dispatchClaudeFocusedScopes selects Tier-1 scopes whose content triggers
-// match the diff and runs one focused claude reviewer per scope, all in
-// parallel. Returns a channel that yields the merged findings exactly once.
-func dispatchClaudeFocusedScopes(diff, cwd, risk, tempDir, model string) <-chan []Finding {
-	out := make(chan []Finding, 1)
-	go func() {
-		defer close(out)
-
-		// Regex triage is a cost-saving heuristic and its failure mode is a
-		// false negative (a payout variable named `value`, a shared map
-		// mutated without the word Mutex). At critical/high the tier itself
-		// says the change matters — dispatch every scope unconditionally and
-		// let irrelevant ones return empty. Triage only gates medium.
-		var matched []focusedScope
-		if risk == "critical" || risk == "high" {
-			matched = focusedScopes
-		} else {
-			for _, s := range focusedScopes {
-				if s.re.MatchString(diff) {
-					matched = append(matched, s)
-				}
+// matchPathFilter returns a preloadFilter that accepts files whose path
+// contains any of the given keywords. Empty/nil keywords = accept all.
+func matchPathFilter(keywords []string) preloadFilter {
+	if len(keywords) == 0 {
+		return nil
+	}
+	return func(path string) bool {
+		for _, kw := range keywords {
+			if strings.Contains(path, kw) {
+				return true
 			}
 		}
-		if len(matched) == 0 {
-			out <- nil
-			return
-		}
-		var names []string
-		for _, s := range matched {
-			names = append(names, s.name)
-		}
-		log.Printf("claude: dispatching %d focused scope reviewer(s): %s\n", len(matched), strings.Join(names, ", "))
-
-		var mu sync.Mutex
-		var all []Finding
-		var wg sync.WaitGroup
-		for _, s := range matched {
-			wg.Add(1)
-			go func(s focusedScope) {
-				defer wg.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
-				defer cancel()
-				fs, err := runClaudeFocusedScope(ctx, s, diff, cwd, risk, tempDir, model)
-				if err != nil {
-					log.Printf("claude focused scope %s failed (non-fatal): %v\n", s.name, err)
-					return
-				}
-				log.Printf("claude focused scope %s completed: %d finding(s)\n", s.name, len(fs))
-				mu.Lock()
-				all = append(all, fs...)
-				mu.Unlock()
-			}(s)
-		}
-		wg.Wait()
-		out <- all
-	}()
-	return out
+		return false
+	}
 }
 
-func runClaudeFocusedScope(ctx context.Context, s focusedScope, diff, cwd, risk, tempDir, model string) ([]Finding, error) {
-	// Focused scopes are narrow; high effort suffices except on Critical.
-	effort := "high"
-	if risk == "critical" {
-		effort = "xhigh"
-	}
-
-	schemaBytes, err := json.Marshal(focusedFindingsSchema())
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal focused schema: %w", err)
-	}
-
-	prompt := fmt.Sprintf(`You are a focused code reviewer. Your scope is strictly: %s.
-Do not comment on anything outside this scope.
-
-Concern: %s
-
-Use your tools to read the full files behind the diff and grep sibling call sites in the repository. Do NOT edit any files.
-
-Severity calibration: severity is the worst plausible production impact assuming an adversarial user and unlucky timing — never discounted by likelihood. CRITICAL = exploitable now (money loss/duplication, data corruption, auth bypass, compliance breach). HIGH = reachable correctness defect (race, missing auth on a mutation, spec violation). MEDIUM = robustness gap with no incorrect behavior today. LOW = style/docs. Set blocking=true only on CRITICAL/HIGH findings.
-
-Your FINAL message must be ONLY a raw JSON object matching the provided schema: {"findings": [...]}. If the scope is clean, return {"findings": []}. Do the analysis in intermediate turns; the final message is JSON only.
-
-## Diff
-%s`, s.name, s.concern, diff)
-
-	// Focused scopes are self-contained (they do not carry the full reviewer.md),
-	// so no shared system-prompt role — the cross-seat cache win is on the broad
-	// review + scouts, which do carry it.
-	cmd := claudeCmd(ctx, cwd, effort, string(schemaBytes), "", model)
-	cmd.Stdin = strings.NewReader(prompt)
-
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-
-	runErr := cmd.Run()
-	os.WriteFile(filepath.Join(tempDir, fmt.Sprintf("claude-%s.raw", s.name)), outBuf.Bytes(), 0644)
-	os.WriteFile(filepath.Join(tempDir, fmt.Sprintf("claude-%s.err", s.name)), errBuf.Bytes(), 0644)
-	if runErr != nil {
-		return nil, fmt.Errorf("claude focused scope %s failed: %v (raw output in %s)", s.name, runErr, tempDir)
-	}
-
-	rawJSON := normalizeProviderJSON("claude", outBuf.String())
-	var wrapper struct {
-		Findings []Finding `json:"findings"`
-	}
-	if err := json.Unmarshal([]byte(rawJSON), &wrapper); err != nil {
-		return nil, fmt.Errorf("failed to parse focused scope %s JSON: %v (raw output in %s)", s.name, err, tempDir)
-	}
-	for i := range wrapper.Findings {
-		wrapper.Findings[i].Source = fmt.Sprintf("focused agent: %s", s.name)
-	}
-	return wrapper.Findings, nil
+// buildScoutBody constructs the full prompt body for a single scout:
+// shared metadata + scope-filtered preloaded files + diff.
+func buildScoutBody(env reviewEnv, pathKeywords []string) string {
+	preloaded := preloadSourceFiles(env.cwd, env.inputCtx.ChangedFiles, matchPathFilter(pathKeywords))
+	return fmt.Sprintf("%s\n\n%s\n\n## Review Request\n\n### Diff\n%s",
+		formatReviewContext(env.inputCtx),
+		preloaded,
+		env.diff,
+	)
 }
 
 // --- claude-scouts: fully decomposed review slot ----------------------------
@@ -1829,60 +1661,164 @@ Your FINAL message must be ONLY a raw JSON object matching the provided schema: 
 // scores across the scout set — reduceScoutResults fails closed if it doesn't.
 
 type scout struct {
-	name   string
-	dims   []string // critical dimensions this scout owns (pass/fail)
-	scores []string // quality scores this scout owns (1-5)
-	extras []string // extra required string fields in its output schema
-	scope  string
-	model  string // per-scout model override (deepseek-chat or deepseek-reasoner)
+	name         string
+	dims         []string // critical dimensions this scout owns (pass/fail)
+	scores       []string // quality scores this scout owns (1-5)
+	extras       []string // extra required string fields in its output schema
+	scope        string
+	model        string   // per-scout model override (deepseek-v4-pro or deepseek-v4-flash)
+	pathKeywords []string // path substrings for scope-relevant file preloading; empty = all
+	// roleSections are the reviewer.md heading prefixes this scout needs. Only
+	// these sections (plus commonRoleSections) are sent to the scout instead of
+	// the full 52KB role — each scout uses ~1/7 of it, so slicing cuts the
+	// dominant input cost. Matched by exact-or-prefix against heading titles.
+	roleSections []string
+}
+
+// commonRoleSections are the reviewer.md sections every scout needs regardless
+// of scope: framing, how to grade severity, and how to turn dimension results
+// into a verdict. Prepended to each scout's own sections.
+var commonRoleSections = []string{
+	"Mindset",
+	"Severity Calibration",
+	"Verdict Rules",
+	"Critical Dimension Judgment Calls",
+	"Common Review Mistakes",
+	"Output Constraints",
 }
 
 var reviewScouts = []scout{
 	{
-		name:   "dataflow-spec",
-		dims:   []string{"correctness"},
-		extras: []string{"data_flow_trace"},
-		scope:  "Spec-vs-implementation correctness and the seams between components: run reviewer.md Step 1 (Understand the Spec), Step 2 (Trace the Data Flow) and Step 2.5 (Sibling-Surface Trace) in full. Trace every entry point's inputs to storage/response/error paths, run the sentinel audit, enumerate sibling surfaces for every touched symbol, check lifecycle symmetry and legacy-path supersession. Summarize your trace in the data_flow_trace field. You own the Correctness pass/fail verdict from the logic side.",
-		model:  "deepseek-v4-pro",
+		name:         "dataflow-spec",
+		dims:         []string{"correctness"},
+		extras:       []string{"data_flow_trace"},
+		scope:        "Spec-vs-implementation correctness and the seams between components: run reviewer.md Step 1 (Understand the Spec), Step 2 (Trace the Data Flow) and Step 2.5 (Sibling-Surface Trace) in full. Trace every entry point's inputs to storage/response/error paths, run the sentinel audit, enumerate sibling surfaces for every touched symbol, check lifecycle symmetry and legacy-path supersession. Summarize your trace in the data_flow_trace field. You own the Correctness pass/fail verdict from the logic side.",
+		model:        "deepseek-v4-pro",
+		pathKeywords: nil, // all files
+		roleSections: []string{"Step 1:", "Step 2:", "Step 2.5:", "1. Correctness"},
 	},
 	{
-		name:  "db-compliance",
-		dims:  []string{"compliance"},
-		scope: "Database and compliance: parameterized inputs on every query, N+1 patterns, index coverage for new queries, the full migration checklist (idempotency, down migration, FK indexes, NOT NULL/DEFAULT strategy, version ordering, schema qualification, writers for new projections), immutable audit records, ledger entries for money movement, soft-delete rules, and the responsible-gambling checks. You own the Compliance pass/fail verdict.",
-		model: "deepseek-v4-pro",
+		name:         "db-compliance",
+		dims:         []string{"compliance"},
+		scope:        "Database and compliance: parameterized inputs on every query, N+1 patterns, index coverage for new queries, the full migration checklist (idempotency, down migration, FK indexes, NOT NULL/DEFAULT strategy, version ordering, schema qualification, writers for new projections), immutable audit records, ledger entries for money movement, soft-delete rules, and the responsible-gambling checks. You own the Compliance pass/fail verdict.",
+		model:        "deepseek-v4-pro",
+		pathKeywords: []string{"/db/", "/store/", ".sql", "wallet", "ledger", "liability"},
+		roleSections: []string{"3. Compliance"},
 	},
 	{
-		name:  "financial-fairness",
-		dims:  []string{"exploitability"},
-		scope: "Financial integrity and exploitability/fairness: trace every arithmetic path for overflow, integer-only money math, rounding consistency and direction across debit/credit, ledger entries for every balance mutation, CSPRNG for game outcomes, server-anchored time for time-gated mechanics, and no client-side outcome/paytable/RTP leakage. You own the Exploitability & Fairness pass/fail verdict.",
-		model: "deepseek-v4-pro",
+		name:         "financial-fairness",
+		dims:         []string{"exploitability"},
+		scope:        "Financial integrity and exploitability/fairness: trace every arithmetic path for overflow, integer-only money math, rounding consistency and direction across debit/credit, ledger entries for every balance mutation, CSPRNG for game outcomes, server-anchored time for time-gated mechanics, and no client-side outcome/paytable/RTP leakage. You own the Exploitability & Fairness pass/fail verdict.",
+		model:        "deepseek-v4-pro",
+		pathKeywords: []string{"wallet", "funds", "balance", "mapper", "compose"},
+		roleSections: []string{"4. Exploitability"},
 	},
 	{
-		name:  "auth-security",
-		dims:  []string{"security"},
-		scope: "Security and authorization: map every endpoint/mutation to its auth check, all-writers enumeration for every gate/lock enum touched, gate parity on mutate-after-accept paths, fail-closed proof for gated capability decisions, input validation at every trust boundary, injection, PII in code or logs, token validation and expiry. You own the Security pass/fail verdict.",
-		model: "deepseek-v4-pro",
+		name:         "auth-security",
+		dims:         []string{"security"},
+		scope:        "Security and authorization: map every endpoint/mutation to its auth check, all-writers enumeration for every gate/lock enum touched, gate parity on mutate-after-accept paths, fail-closed proof for gated capability decisions, input validation at every trust boundary, injection, PII in code or logs, token validation and expiry. You own the Security pass/fail verdict.",
+		model:        "deepseek-v4-pro",
+		pathKeywords: []string{"auth", "token", "server/", "validator", "interceptor", "proto/"},
+		roleSections: []string{"2. Security"},
 	},
 	{
-		name:   "concurrency-resilience",
-		scores: []string{"resilience", "idempotency"},
-		scope:  "Concurrency, idempotency, and resilience: shared mutable state protection, precondition checks inside the same lock/tx as the mutation they gate, TOCTOU windows, lock ordering, context cancellation; idempotency keys inside transactions, dual-write convergence (the 4-cell outcome table), reserve-first CAS ordering, replay returning the original result; timeouts, retries with backoff, error-guard specificity, graceful degradation. Score Resilience and Idempotency 1-5 per reviewer.md anchors. Races are Correctness-grade defects — report them as CRITICAL/HIGH findings regardless of likelihood.",
-		model:  "deepseek-v4-flash",
+		name:         "concurrency-resilience",
+		scores:       []string{"resilience", "idempotency"},
+		scope:        "Concurrency, idempotency, and resilience: shared mutable state protection, precondition checks inside the same lock/tx as the mutation they gate, TOCTOU windows, lock ordering, context cancellation; idempotency keys inside transactions, dual-write convergence (the 4-cell outcome table), reserve-first CAS ordering, replay returning the original result; timeouts, retries with backoff, error-guard specificity, graceful degradation. Score Resilience and Idempotency 1-5 per reviewer.md anchors. Races are Correctness-grade defects — report them as CRITICAL/HIGH findings regardless of likelihood.",
+		model:        "deepseek-v4-flash",
+		pathKeywords: []string{"funds", "roster", "session", "playerfunds", "xwalletfunds", "errgroup", "goroutine", "mutex", "lock"},
+		roleSections: []string{"4. Resilience", "5. Idempotency"},
 	},
 	{
-		name:   "test-docs",
-		dims:   []string{"correctness"},
-		extras: []string{"test_quality_assessment"},
-		scope:  "Test quality and docs truth: run reviewer.md Step 4 in full (behavior vs implementation coupling, the litmus test, vacuous/false-passing seals, sleep-as-synchronization, RED-then-GREEN proof for regression seals, mock-contract drift) and Step 4.5 (assert every comment/docstring/PR claim against the final code). Summarize in the test_quality_assessment field. You own the Correctness pass/fail verdict from the testing side: a spec'd edge case with no test, or tests that pass without proving correctness, is a Correctness FAIL.",
-		model:  "deepseek-v4-flash",
+		name:         "test-docs",
+		dims:         []string{"correctness"},
+		extras:       []string{"test_quality_assessment"},
+		scope:        "Test quality and docs truth: run reviewer.md Step 4 in full (behavior vs implementation coupling, the litmus test, vacuous/false-passing seals, sleep-as-synchronization, RED-then-GREEN proof for regression seals, mock-contract drift) and Step 4.5 (assert every comment/docstring/PR claim against the final code). Summarize in the test_quality_assessment field. You own the Correctness pass/fail verdict from the testing side: a spec'd edge case with no test, or tests that pass without proving correctness, is a Correctness FAIL.",
+		model:        "deepseek-v4-flash",
+		pathKeywords: []string{"_test.go", ".spec.", "/test/", "mock", "fake", "test", "Test"},
+		roleSections: []string{"Step 4:", "Step 4.5:", "1. Correctness"},
 	},
 	{
-		name:   "quality-scores",
-		scores: []string{"observability", "performance", "maintainability"},
-		extras: []string{"design_coherence"},
-		scope:  "Observability (the 3am test, correlation IDs, silent failures, best-effort steps that downstream invariants depend on), Performance (N+1, unbounded queries, pagination, locks across I/O, missing indexes), Maintainability (complexity hard caps and the named override patterns, project conventions, naming, magic numbers), and Design Coherence (does this change fit the system's existing patterns — summarize in the design_coherence field). Score those three dimensions 1-5 per reviewer.md anchors.",
-		model:  "deepseek-v4-flash",
+		name:         "quality-scores",
+		scores:       []string{"observability", "performance", "maintainability"},
+		extras:       []string{"design_coherence"},
+		scope:        "Observability (the 3am test, correlation IDs, silent failures, best-effort steps that downstream invariants depend on), Performance (N+1, unbounded queries, pagination, locks across I/O, missing indexes), Maintainability (complexity hard caps and the named override patterns, project conventions, naming, magic numbers), and Design Coherence (does this change fit the system's existing patterns — summarize in the design_coherence field). Score those three dimensions 1-5 per reviewer.md anchors.",
+		model:        "deepseek-v4-flash",
+		pathKeywords: nil, // all files
+		roleSections: []string{"6. Observability", "7. Performance", "8. Maintainability", "Design Coherence"},
 	},
+}
+
+// headingLevel reports the ATX heading level of a markdown line (1 for "# ",
+// 2 for "## ", …) and the trimmed title text. ok is false for non-heading
+// lines. A run of '#'s must be followed by a space to count as a heading.
+func headingLevel(line string) (level int, title string, ok bool) {
+	t := strings.TrimRight(line, " \t")
+	n := 0
+	for n < len(t) && t[n] == '#' {
+		n++
+	}
+	if n == 0 || n > 6 || n >= len(t) || t[n] != ' ' {
+		return 0, "", false
+	}
+	return n, strings.TrimSpace(t[n+1:]), true
+}
+
+// extractRoleSlice returns only the reviewer.md sections whose heading title
+// exactly-equals or is prefixed by one of `wanted`, each captured through the
+// line before the next heading at the same-or-higher level (so an H2 pulls its
+// H3 children). Sections are emitted in document order. A `wanted` entry that
+// matches nothing is silently skipped — TestScoutRoleSlices guards against that
+// so a reviewer.md rename fails the build, not a live review.
+func extractRoleSlice(role string, wanted []string) string {
+	lines := strings.Split(role, "\n")
+	type hd struct {
+		line, level int
+		title       string
+	}
+	var hds []hd
+	for i, ln := range lines {
+		if lvl, title, ok := headingLevel(ln); ok {
+			hds = append(hds, hd{i, lvl, title})
+		}
+	}
+	matches := func(title string) bool {
+		for _, w := range wanted {
+			if title == w || strings.HasPrefix(title, w) {
+				return true
+			}
+		}
+		return false
+	}
+	var b strings.Builder
+	for hi, h := range hds {
+		if !matches(h.title) {
+			continue
+		}
+		end := len(lines)
+		for _, h2 := range hds[hi+1:] {
+			if h2.level <= h.level {
+				end = h2.line
+				break
+			}
+		}
+		for _, ln := range lines[h.line:end] {
+			b.WriteString(ln)
+			b.WriteByte('\n')
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// scoutRole builds the sliced reviewer.md a single scout receives: the shared
+// common sections plus the scout's own. Falls back to the full role if slicing
+// somehow yields nothing (defensive — never send a scout an empty role).
+func scoutRole(role string, s scout) string {
+	slice := extractRoleSlice(role, append(append([]string{}, commonRoleSections...), s.roleSections...))
+	if strings.TrimSpace(slice) == "" {
+		return role
+	}
+	return "# Code Reviewer Role — scoped slice for the " + s.name + " scout\n\n" + slice
 }
 
 type scoutOutput struct {
@@ -1974,13 +1910,20 @@ func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error)
 			failed = append(failed, fmt.Sprintf("%s: %v", reviewScouts[i].name, e))
 		}
 	}
-	// A missing scout means a dimension has no owner — fail the whole slot
-	// rather than emit a verdict with silent coverage gaps.
+	// Degrade, don't fail closed: one slow scout (the long-pole dataflow-spec /
+	// test-docs scouts are the ones that time out under a heavier model) used to
+	// error the WHOLE slot, discarding the other six good scouts. Now a failed
+	// scout's owned dimensions are marked UNVERIFIED and the verdict is held
+	// below APPROVE (fail-safe) with a loud coverage-gap finding — the six that
+	// completed still count. Only a total wipe-out fails the slot.
+	if len(failed) == len(reviewScouts) {
+		return ReviewResponse{}, fmt.Errorf("claude-scouts: all %d scouts failed: %s", len(reviewScouts), strings.Join(failed, "; "))
+	}
 	if len(failed) > 0 {
-		return ReviewResponse{}, fmt.Errorf("claude-scouts incomplete (%d/%d scouts failed): %s", len(failed), len(reviewScouts), strings.Join(failed, "; "))
+		log.Printf("claude-scouts: %d/%d scouts failed — degrading (dimensions flagged UNVERIFIED, not silently dropped): %s", len(failed), len(reviewScouts), strings.Join(failed, "; "))
 	}
 
-	return reduceScoutResults(outputs)
+	return reduceScoutResultsWithStatus(outputs, errs)
 }
 
 func runOneScout(ctx context.Context, s scout, env reviewEnv) (scoutOutput, error) {
@@ -1994,17 +1937,20 @@ func runOneScout(ctx context.Context, s scout, env reviewEnv) (scoutOutput, erro
 		return scoutOutput{}, fmt.Errorf("failed to marshal scout schema: %w", err)
 	}
 
+	scopedBody := buildScoutBody(env, s.pathKeywords)
 	prompt := fmt.Sprintf(`You are one focused scout in a decomposed code review panel. Your scope is strictly: %s.
 
 %s
 
-Apply ONLY the sections of the reviewer role (provided in your system instructions) that fall inside your scope — other scouts own the rest. Do not report findings outside your scope. For pass/fail dimensions you own, apply the role's PASS checklists literally with no partial credit. For scores you own, use the role's anchors. Rate severity per the role's Severity Calibration table; set blocking=true only on CRITICAL/HIGH findings.
+Your review instructions — the reviewer-role sections for your scope, with scoring anchors, the Severity Calibration table, and verdict rules — are in your system prompt. Apply them exactly. Do NOT edit any files.
+
+Apply ONLY the sections that fall inside your scope — other scouts own the rest. Do not report findings outside your scope. For pass/fail dimensions you own, apply the role's PASS checklists literally with no partial credit. For scores you own, use the role's anchors. Rate severity per the Severity Calibration table; set blocking=true only on CRITICAL/HIGH findings.
 
 Use your tools: read the changed files in full, grep sibling call sites, and read the repository's CLAUDE.md for conventions. Do NOT edit any files. Do the deep analysis in intermediate turns — your FINAL message must be ONLY a raw JSON object matching the provided schema.
 
-%s`, s.name, s.scope, env.sharedBody)
+%s`, s.name, s.scope, scopedBody)
 
-	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), env.roleText, env.claudeModel)
+	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), scoutRole(env.roleText, s), env.claudeModel)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	var outBuf, errBuf bytes.Buffer
@@ -2012,8 +1958,8 @@ Use your tools: read the changed files in full, grep sibling call sites, and rea
 	cmd.Stderr = &errBuf
 
 	runErr := cmd.Run()
-	os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("claude-scout-%s.raw", s.name)), outBuf.Bytes(), 0644)
-	os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("claude-scout-%s.err", s.name)), errBuf.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("claude-scout-%s.raw", s.name)), outBuf.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("claude-scout-%s.err", s.name)), errBuf.Bytes(), 0644)
 	if runErr != nil {
 		return scoutOutput{}, fmt.Errorf("scout %s failed: %v (raw output in %s)", s.name, runErr, env.tempDir)
 	}
@@ -2029,10 +1975,32 @@ Use your tools: read the changed files in full, grep sibling call sites, and rea
 	return out, nil
 }
 
-// reduceScoutResults is the deterministic reduce: it holds no opinions, only
-// applies reviewer.md's verdict rules to what the scouts reported. It cannot
-// drop or downgrade a finding.
+// sortedKeys returns the keys of a set in deterministic order (report stability).
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// reduceScoutResults is the deterministic reduce over a fully-successful scout
+// set (used by tests and callers that have no per-scout error state). It holds
+// no opinions, only applies reviewer.md's verdict rules to what the scouts
+// reported. It cannot drop or downgrade a finding.
 func reduceScoutResults(outputs []scoutOutput) (ReviewResponse, error) {
+	return reduceScoutResultsWithStatus(outputs, make([]error, len(outputs)))
+}
+
+// reduceScoutResultsWithStatus is the deterministic reduce with degrade
+// semantics: errs[i] != nil means scout i failed (timed out / errored after
+// retries). A failed scout's owned dimensions are marked UNVERIFIED and held
+// FAIL (fail-safe), its owned scores forced below floor, and a loud
+// coverage-gap finding is emitted — but the scouts that DID complete are still
+// reduced normally. Unverified alone never yields REJECT (the code isn't proven
+// bad, just unproven); it holds the verdict at REQUEST_CHANGES for a human.
+func reduceScoutResultsWithStatus(outputs []scoutOutput, errs []error) (ReviewResponse, error) {
 	var resp ReviewResponse
 	resp.Status = statusReviewComplete
 
@@ -2043,6 +2011,10 @@ func reduceScoutResults(outputs []scoutOutput) (ReviewResponse, error) {
 	var summaries []string
 	for i, out := range outputs {
 		s := reviewScouts[i]
+		if i < len(errs) && errs[i] != nil {
+			summaries = append(summaries, fmt.Sprintf("[%s] ⚠ UNVERIFIED — scout failed/timed out", s.name))
+			continue // don't fold a zero-value output into the aggregate
+		}
 		summaries = append(summaries, fmt.Sprintf("[%s] %s", s.name, out.Summary))
 
 		for dim, dr := range out.Dimensions {
@@ -2069,8 +2041,37 @@ func reduceScoutResults(outputs []scoutOutput) (ReviewResponse, error) {
 		}
 	}
 
+	// Degrade failed scouts: for each dimension/score a failed scout owned that
+	// NO surviving scout covered, mark it unverified (fail-safe) rather than
+	// leaving a silent gap. A dimension co-owned by a scout that DID complete
+	// (e.g. correctness: dataflow-spec + test-docs) stays verified.
+	degradedDims := map[string]bool{}
+	degradedScores := map[string]bool{}
+	var degradedScouts []string
+	for i, e := range errs {
+		if e == nil || i >= len(reviewScouts) {
+			continue
+		}
+		s := reviewScouts[i]
+		degradedScouts = append(degradedScouts, s.name)
+		for _, d := range s.dims {
+			if _, ok := dimPass[d]; !ok {
+				dimPass[d] = false
+				degradedDims[d] = true
+				dimNotes[d] = append(dimNotes[d], fmt.Sprintf("[%s] UNVERIFIED — owning scout failed/timed out; treated as FAIL pending human review", s.name))
+			}
+		}
+		for _, sc := range s.scores {
+			if _, ok := scoreMin[sc]; !ok {
+				scoreMin[sc] = 0 // below floor → blocks APPROVE
+				degradedScores[sc] = true
+			}
+		}
+	}
+
 	// Fail closed on coverage gaps: every dimension and score must have at
-	// least one scout owner that actually reported it.
+	// least one owner (a completed report OR a degraded placeholder). A gap
+	// here means a scout completed but silently omitted a dimension it owns.
 	for _, dim := range []string{"correctness", "security", "compliance", "exploitability"} {
 		if _, ok := dimPass[dim]; !ok {
 			return ReviewResponse{}, fmt.Errorf("claude-scouts: no scout reported critical dimension %q", dim)
@@ -2098,9 +2099,23 @@ func reduceScoutResults(outputs []scoutOutput) (ReviewResponse, error) {
 	resp.QualityScore = resp.QualityScores.Resilience + resp.QualityScores.Idempotency +
 		resp.QualityScores.Observability + resp.QualityScores.Performance + resp.QualityScores.Maintainability
 
+	unverified := len(degradedDims) > 0 || len(degradedScores) > 0
+	if unverified {
+		resp.Findings = append(resp.Findings, Finding{
+			Severity: "HIGH",
+			Title:    "Review coverage gap — scout(s) failed",
+			Problem: fmt.Sprintf("%d of %d scouts failed or timed out (%s). Unverified dimensions: [%s]; unverified scores: [%s]. These were held FAIL/0 as a fail-safe — a human must review the affected areas before this can APPROVE.",
+				len(degradedScouts), len(reviewScouts), strings.Join(degradedScouts, ", "), strings.Join(sortedKeys(degradedDims), ", "), strings.Join(sortedKeys(degradedScores), ", ")),
+			Source:   "claude-scouts (degraded)",
+			Blocking: true,
+		})
+	}
+
+	// Genuine reported FAILs (not degraded placeholders) drive REJECT. An
+	// unverified dimension holds the verdict at REQUEST_CHANGES, never REJECT.
 	failCount := 0
-	for _, pass := range dimPass {
-		if !pass {
+	for dim, pass := range dimPass {
+		if !pass && !degradedDims[dim] {
 			failCount++
 		}
 	}
@@ -2112,8 +2127,8 @@ func reduceScoutResults(outputs []scoutOutput) (ReviewResponse, error) {
 		}
 	}
 	lowScore := false
-	for _, v := range scoreMin {
-		if v < 4 {
+	for score, v := range scoreMin {
+		if v < 4 && !degradedScores[score] {
 			lowScore = true
 			break
 		}
@@ -2121,32 +2136,37 @@ func reduceScoutResults(outputs []scoutOutput) (ReviewResponse, error) {
 	switch {
 	case failCount >= 2:
 		resp.Verdict = verdictReject
-	case failCount == 1 || blocking || lowScore:
+	case failCount == 1 || blocking || lowScore || unverified:
 		resp.Verdict = verdictRequestChanges
 	default:
 		resp.Verdict = verdictApprove
 	}
 
-	resp.Summary = fmt.Sprintf("Decomposed review: %d parallel scouts, verdict computed mechanically (dimension = AND of owners, score = min of owners, reviewer.md verdict rules).\n%s",
-		len(outputs), strings.Join(summaries, "\n"))
+	degradeNote := ""
+	if unverified {
+		degradeNote = fmt.Sprintf(" ⚠ DEGRADED: %d/%d scouts failed — verdict held below APPROVE pending human review of unverified areas.", len(degradedScouts), len(reviewScouts))
+	}
+	resp.Summary = fmt.Sprintf("Decomposed review: %d parallel scouts, verdict computed mechanically (dimension = AND of owners, score = min of owners, reviewer.md verdict rules).%s\n%s",
+		len(outputs), degradeNote, strings.Join(summaries, "\n"))
 
 	return resp, nil
 }
 
-// --- deepseek-scouts: decomposed review via DeepSeek API --------------------
+// --- deepseek-scouts: decomposed review via claude CLI (DeepSeek model) -----
 //
 // The "deepseek-scouts" provider mirrors claude-scouts but dispatches scouts
-// through the headless deepseek CLI (cmd/deepseek) instead of claude. Each
-// scout gets its own model via the scout.model field: deepseek-reasoner (R1)
-// for hard dimensions (dataflow-spec, auth-security, financial-fairness,
-// db-compliance) and deepseek-chat (V3) for the rest.
+// through the claude CLI with a DeepSeek model (deepseek-v4-pro or
+// deepseek-v4-flash) instead of a Claude model. Each scout gets its own model
+// via the scout.model field: deepseek-v4-pro for hard dimensions
+// (dataflow-spec, auth-security, financial-fairness, db-compliance) and
+// deepseek-v4-flash for the rest.
 //
 // The deterministic reduce (reduceScoutResults) is shared with claude-scouts
 // — dimension = AND of owners, score = min of owners, verdict = reviewer.md
 // mechanical rules. No LLM sits in the merge path.
 
 func runDeepseekScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error) {
-	log.Printf("deepseek-scouts: dispatching %d scouts in parallel\n", len(reviewScouts))
+	log.Printf("deepseek-scouts: dispatching %d scouts in parallel (via claude CLI + DeepSeek models)\n", len(reviewScouts))
 
 	outputs := make([]scoutOutput, len(reviewScouts))
 	errs := make([]error, len(reviewScouts))
@@ -2158,12 +2178,8 @@ func runDeepseekScouts(ctx context.Context, env reviewEnv) (ReviewResponse, erro
 			var out scoutOutput
 			var err error
 			for attempt := 1; attempt <= 2; attempt++ {
-				temp := 0.1
-				if attempt == 2 {
-					temp = 0.2 // different reasoning path on retry
-				}
 				attemptCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
-				out, err = runOneDeepseekScout(attemptCtx, s, env, temp)
+				out, err = runOneDeepseekScout(attemptCtx, s, env)
 				cancel()
 				if err == nil {
 					break
@@ -2188,17 +2204,25 @@ func runDeepseekScouts(ctx context.Context, env reviewEnv) (ReviewResponse, erro
 			failed = append(failed, fmt.Sprintf("%s: %v", reviewScouts[i].name, e))
 		}
 	}
+	if len(failed) == len(reviewScouts) {
+		return ReviewResponse{}, fmt.Errorf("deepseek-scouts: all %d scouts failed: %s", len(reviewScouts), strings.Join(failed, "; "))
+	}
 	if len(failed) > 0 {
-		return ReviewResponse{}, fmt.Errorf("deepseek-scouts incomplete (%d/%d scouts failed): %s", len(failed), len(reviewScouts), strings.Join(failed, "; "))
+		log.Printf("deepseek-scouts: %d/%d scouts failed — degrading (dimensions flagged UNVERIFIED): %s", len(failed), len(reviewScouts), strings.Join(failed, "; "))
 	}
 
-	return reduceScoutResults(outputs)
+	return reduceScoutResultsWithStatus(outputs, errs)
 }
 
-func runOneDeepseekScout(ctx context.Context, s scout, env reviewEnv, temperature float64) (scoutOutput, error) {
+func runOneDeepseekScout(ctx context.Context, s scout, env reviewEnv) (scoutOutput, error) {
 	model := s.model
 	if model == "" {
 		model = "deepseek-v4-flash"
+	}
+
+	effort := "high"
+	if env.risk == "critical" {
+		effort = "xhigh"
 	}
 
 	schemaBytes, err := json.Marshal(scoutSchema(s))
@@ -2206,17 +2230,20 @@ func runOneDeepseekScout(ctx context.Context, s scout, env reviewEnv, temperatur
 		return scoutOutput{}, fmt.Errorf("failed to marshal scout schema: %w", err)
 	}
 
+	scopedBody := buildScoutBody(env, s.pathKeywords)
 	prompt := fmt.Sprintf(`You are one focused scout in a decomposed code review panel. Your scope is strictly: %s.
 
 %s
 
-Apply ONLY the sections of the reviewer role (provided in your system instructions) that fall inside your scope — other scouts own the rest. Do not report findings outside your scope. For pass/fail dimensions you own, apply the role's PASS checklists literally with no partial credit. For scores you own, use the role's anchors. Rate severity per the role's Severity Calibration table; set blocking=true only on CRITICAL/HIGH findings.
+Your review instructions — the reviewer-role sections for your scope, with scoring anchors, the Severity Calibration table, and verdict rules — are in your system prompt. Apply them exactly. Do NOT edit any files.
+
+Apply ONLY the sections that fall inside your scope — other scouts own the rest. Do not report findings outside your scope. For pass/fail dimensions you own, apply the role's PASS checklists literally with no partial credit. For scores you own, use the role's anchors. Rate severity per the Severity Calibration table; set blocking=true only on CRITICAL/HIGH findings.
 
 Use your tools: read the changed files in full, grep sibling call sites, and list directories to explore the codebase. Do NOT edit any files. Do the deep analysis in intermediate turns — your FINAL message must be ONLY a raw JSON object matching the provided schema.
 
-%s`, s.name, s.scope, env.sharedBody)
+%s`, s.name, s.scope, scopedBody)
 
-	cmd := deepseekCmd(ctx, env.cwd, model, string(schemaBytes), env.roleText, env.risk, temperature)
+	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), scoutRole(env.roleText, s), model)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	var outBuf, errBuf bytes.Buffer
@@ -2224,13 +2251,13 @@ Use your tools: read the changed files in full, grep sibling call sites, and lis
 	cmd.Stderr = &errBuf
 
 	runErr := cmd.Run()
-	os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("deepseek-scout-%s.raw", s.name)), outBuf.Bytes(), 0644)
-	os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("deepseek-scout-%s.err", s.name)), errBuf.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("deepseek-scout-%s.raw", s.name)), outBuf.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("deepseek-scout-%s.err", s.name)), errBuf.Bytes(), 0644)
 	if runErr != nil {
 		return scoutOutput{}, fmt.Errorf("deepseek scout %s failed: %v (raw output in %s)", s.name, runErr, env.tempDir)
 	}
 
-	rawJSON := normalizeProviderJSON("deepseek", outBuf.String())
+	rawJSON := normalizeProviderJSON("claude", outBuf.String())
 	var out scoutOutput
 	if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
 		return scoutOutput{}, fmt.Errorf("failed to parse deepseek scout %s JSON: %v (raw output in %s)", s.name, err, env.tempDir)
@@ -2239,33 +2266,4 @@ Use your tools: read the changed files in full, grep sibling call sites, and lis
 		out.Findings[i].Source = fmt.Sprintf("deepseek-scout: %s", s.name)
 	}
 	return out, nil
-}
-
-// deepseekCmd builds a headless deepseek CLI invocation. The deepseek binary
-// implements its own tool-use loop against the DeepSeek HTTP API — no
-// external agent framework needed. risk tiers the turn budget; temperature
-// varies the investigation-phase temperature (retries use a higher value for
-// a different reasoning path).
-func deepseekCmd(ctx context.Context, cwd, model, schemaStr, systemPrompt, risk string, temperature float64) *exec.Cmd {
-	args := []string{
-		"--model", model,
-		"--json-schema", schemaStr,
-		"--cwd", cwd,
-		"--max-turns", strconv.Itoa(deepseekMaxTurns(risk, true)),
-		"--timeout", "11m",
-		"--temperature", strconv.FormatFloat(temperature, 'f', 2, 64),
-	}
-	if systemPrompt != "" {
-		args = append(args, "--system-prompt", systemPrompt)
-	}
-	// Resolve the deepseek binary relative to the reviewer binary.
-	exePath, _ := os.Executable()
-	deepseekBin := filepath.Join(filepath.Dir(exePath), "deepseek")
-	if _, err := os.Stat(deepseekBin); os.IsNotExist(err) {
-		// Fallback: sibling cmd/deepseek directory
-		deepseekBin = filepath.Join(filepath.Dir(exePath), "..", "deepseek", "deepseek")
-	}
-	cmd := exec.CommandContext(ctx, deepseekBin, args...)
-	cmd.Dir = cwd
-	return cmd
 }

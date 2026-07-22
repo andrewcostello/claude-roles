@@ -474,3 +474,146 @@ func TestFirstLinesTruncatesOverlongMatchLines(t *testing.T) {
 		t.Fatalf("short lines must pass through unchanged: %q, %q", got[0], got[2])
 	}
 }
+
+// --- role slicing (token-efficiency: each scout gets ~1/7 of reviewer.md) ---
+
+func loadRole(t *testing.T) string {
+	t.Helper()
+	role, _, err := readReviewerRole("../..")
+	if err != nil {
+		t.Fatalf("could not load reviewer.md: %v", err)
+	}
+	return role
+}
+
+func TestExtractRoleSliceHierarchy(t *testing.T) {
+	role := "# Root\nintro\n\n## A\nabody\n### A1\na1body\n## B\nbbody\n### B1\nb1body\n"
+	// H2 "A" must pull its H3 child A1 but stop at H2 "B".
+	got := extractRoleSlice(role, []string{"A"})
+	if !strings.Contains(got, "abody") || !strings.Contains(got, "a1body") {
+		t.Fatalf("slice of A must include its body and child:\n%s", got)
+	}
+	if strings.Contains(got, "bbody") || strings.Contains(got, "b1body") {
+		t.Fatalf("slice of A must NOT bleed into sibling B:\n%s", got)
+	}
+	// H3 "B1" alone captures only itself.
+	if s := extractRoleSlice(role, []string{"B1"}); strings.Contains(s, "bbody") {
+		t.Fatalf("H3 slice must not include parent body:\n%s", s)
+	}
+}
+
+func TestScoutRoleSlicesResolve(t *testing.T) {
+	role := loadRole(t)
+	// Every declared section prefix must match a real reviewer.md heading, else
+	// a rename would silently ship scouts an empty/partial role.
+	for _, s := range reviewScouts {
+		for _, sec := range s.roleSections {
+			if extractRoleSlice(role, []string{sec}) == "" {
+				t.Errorf("scout %q: roleSection %q matches no reviewer.md heading", s.name, sec)
+			}
+		}
+	}
+	for _, sec := range commonRoleSections {
+		if extractRoleSlice(role, []string{sec}) == "" {
+			t.Errorf("commonRoleSection %q matches no reviewer.md heading", sec)
+		}
+	}
+}
+
+func TestScoutRoleSlicesAreSmallerAndScoped(t *testing.T) {
+	role := loadRole(t)
+	for _, s := range reviewScouts {
+		slice := scoutRole(role, s)
+		if strings.TrimSpace(slice) == "" {
+			t.Errorf("scout %q got an empty role slice", s.name)
+			continue
+		}
+		if len(slice) >= len(role) {
+			t.Errorf("scout %q slice (%d) is not smaller than full role (%d)", s.name, len(slice), len(role))
+		}
+		// Common framing must always be present.
+		if !strings.Contains(slice, "Severity Calibration") {
+			t.Errorf("scout %q slice missing shared Severity Calibration", s.name)
+		}
+	}
+}
+
+// --- degrade-don't-fail-closed ---
+
+func TestDegradeUnverifiedHoldsRequestChanges(t *testing.T) {
+	outputs := fullScoutOutputs()
+	i := scoutIndex(t, "db-compliance") // sole owner of "compliance"
+	outputs[i] = scoutOutput{}          // failed scout returns nothing
+	errs := make([]error, len(outputs))
+	errs[i] = context_deadline()
+
+	resp, err := reduceScoutResultsWithStatus(outputs, errs)
+	if err != nil {
+		t.Fatalf("degrade must not error on a partial failure: %v", err)
+	}
+	if resp.Verdict != verdictRequestChanges {
+		t.Errorf("verdict = %q, want REQUEST_CHANGES (unverified holds below APPROVE, never REJECT)", resp.Verdict)
+	}
+	if resp.CriticalDimensions.Compliance.Pass {
+		t.Error("unverified compliance dimension must be held FAIL (fail-safe)")
+	}
+	if !strings.Contains(resp.Summary, "DEGRADED") {
+		t.Error("summary must announce the degraded state")
+	}
+	var gotGap bool
+	for _, f := range resp.Findings {
+		if strings.Contains(f.Source, "degraded") {
+			gotGap = true
+		}
+	}
+	if !gotGap {
+		t.Error("a coverage-gap finding must be emitted for the failed scout")
+	}
+}
+
+func TestDegradeCoOwnedDimensionStaysVerified(t *testing.T) {
+	// correctness is owned by BOTH dataflow-spec and test-docs. If one fails
+	// but the other completes, correctness stays verified — no degrade.
+	outputs := fullScoutOutputs()
+	i := scoutIndex(t, "dataflow-spec")
+	outputs[i] = scoutOutput{}
+	errs := make([]error, len(outputs))
+	errs[i] = context_deadline()
+
+	resp, err := reduceScoutResultsWithStatus(outputs, errs)
+	if err != nil {
+		t.Fatalf("reduce errored: %v", err)
+	}
+	if !resp.CriticalDimensions.Correctness.Pass {
+		t.Error("correctness must stay verified via its surviving co-owner test-docs")
+	}
+	if resp.Verdict != verdictApprove {
+		t.Errorf("verdict = %q, want APPROVE (no dimension left unverified)", resp.Verdict)
+	}
+}
+
+func TestDegradeNeverRejectsFromUnverifiedAlone(t *testing.T) {
+	// Fail two score-owning scouts; unverified scores must not manufacture a REJECT.
+	outputs := fullScoutOutputs()
+	errs := make([]error, len(outputs))
+	for _, name := range []string{"db-compliance", "auth-security"} {
+		i := scoutIndex(t, name)
+		outputs[i] = scoutOutput{}
+		errs[i] = context_deadline()
+	}
+	resp, err := reduceScoutResultsWithStatus(outputs, errs)
+	if err != nil {
+		t.Fatalf("reduce errored: %v", err)
+	}
+	if resp.Verdict == verdictReject {
+		t.Error("two UNVERIFIED critical dims must not yield REJECT — only genuine reported FAILs do")
+	}
+}
+
+func context_deadline() error { return errDeadlineForTest }
+
+var errDeadlineForTest = deadlineErr{}
+
+type deadlineErr struct{}
+
+func (deadlineErr) Error() string { return "scout timed out" }
