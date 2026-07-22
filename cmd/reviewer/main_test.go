@@ -617,3 +617,36 @@ var errDeadlineForTest = deadlineErr{}
 type deadlineErr struct{}
 
 func (deadlineErr) Error() string { return "scout timed out" }
+
+// TestScoutRoleSectionsCoverAllDimensions guards the one residual coupling in
+// role slicing: if someone adds a NEW dimension section to reviewer.md, this
+// fails until a scout's roleSections claims it — so a scout can never silently
+// stop covering a dimension because the role grew.
+func TestScoutRoleSectionsCoverAllDimensions(t *testing.T) {
+	role := loadRole(t)
+	var union []string
+	union = append(union, commonRoleSections...)
+	for _, s := range reviewScouts {
+		union = append(union, s.roleSections...)
+	}
+	slice := extractRoleSlice(role, union)
+
+	var dims []string
+	for _, ln := range strings.Split(role, "\n") {
+		lvl, title, ok := headingLevel(ln)
+		if !ok || lvl > 3 {
+			continue
+		}
+		if strings.Contains(title, "PASS / FAIL") || strings.Contains(title, "(1-5)") || title == "Design Coherence" {
+			dims = append(dims, title)
+		}
+	}
+	if len(dims) == 0 {
+		t.Fatal("no dimension headings found in reviewer.md — heading pattern drifted")
+	}
+	for _, d := range dims {
+		if !strings.Contains(slice, d) {
+			t.Errorf("reviewer.md dimension %q is covered by no scout's roleSections — assign it to a scout", d)
+		}
+	}
+}

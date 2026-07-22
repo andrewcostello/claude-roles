@@ -123,6 +123,9 @@ func main() {
 	claudeModelFlag := flag.String("claude-model", "claude-fable-5", "Model for the claude broad seat + all scouts + focused scopes (e.g. claude-fable-5, claude-opus-4-8). For model-tiering A/B.")
 	deepseekModelFlag := flag.String("deepseek-model", "deepseek-v4-flash", "Model for the deepseek broad seat (deepseek-v4-flash or deepseek-v4-pro). For A/B testing.")
 	kimiModelFlag := flag.String("kimi-model", "", "Model alias for the kimi broad seat (e.g. moonshot-ai/kimi-k3). Empty inherits the kimi CLI's configured default_model.")
+	scoutPreloadFlag := flag.String("scout-preload", "none", "Scout file-preload mode. \"none\" (default): preload no file contents — each scout tool-reads what it needs from the full diff + Changed Files table it always receives (robust: coverage never keyed on guessed paths, and it can't exceed the context window). \"all\": paste every high-signal changed file into every scout — measured to OVERFLOW the context window on a 26-file PR (209k > 200k tokens) and is expensive elsewhere; only safe for small diffs.")
+	changeMapFlag := flag.Bool("scout-change-map", false, "EXPERIMENTAL: before dispatching scouts, run one cheap map-model pass over the diff to produce a per-file orientation map, injected as a shared cached prefix in every scout's system prompt. Aims to cut scout investigation turns. The map orients only — scouts still read code for verdicts.")
+	mapModelFlag := flag.String("map-model", "claude-haiku-4-5-20251001", "Model for the -scout-change-map orientation pass (cheap by design).")
 	flag.Parse()
 
 	log.Println("Starting Multi-Agent Code Review Orchestrator...")
@@ -206,6 +209,13 @@ func main() {
 		risk:          risk,
 		diff:          diff,
 		inputCtx:      inputCtx,
+		scoutPreload:  strings.ToLower(strings.TrimSpace(*scoutPreloadFlag)),
+		changeMapOn:   *changeMapFlag,
+		mapModel:      *mapModelFlag,
+	}
+	log.Printf("Scout preload mode: %s\n", env.scoutPreload)
+	if env.changeMapOn {
+		log.Printf("EXPERIMENTAL: scout change-map ENABLED (map model: %s)\n", env.mapModel)
 	}
 	log.Printf("Claude seats model: %s\n", *claudeModelFlag)
 	log.Printf("DeepSeek broad model: %s\n", *deepseekModelFlag)
@@ -282,6 +292,10 @@ type reviewEnv struct {
 	risk          string
 	diff          string
 	inputCtx      ReviewInputContext
+	scoutPreload  string // "all" or "none" (default) — see buildScoutBody
+	changeMapOn   bool   // EXPERIMENTAL: generate + inject the change-map (see runClaudeScouts)
+	mapModel      string // model for the change-map pass
+	changeMap     string // generated orientation map, injected into scout system prompts
 }
 
 // providerTimeout is the per-attempt ceiling for one reviewer. Bake-off data
@@ -1530,7 +1544,9 @@ func claudeCmd(ctx context.Context, cwd, effort, schemaStr, systemPrompt, model 
 		"--disallowedTools", "Edit,Write,NotebookEdit,Task,Agent",
 		"--dangerously-skip-permissions",
 		"--output-format", "json",
-		"--json-schema", schemaStr,
+	}
+	if schemaStr != "" {
+		args = append(args, "--json-schema", schemaStr)
 	}
 	if systemPrompt != "" {
 		args = append(args, "--append-system-prompt", systemPrompt)
@@ -1621,26 +1637,24 @@ func kimiTextFromStreamJSON(raw string) (string, error) {
 	return last, nil
 }
 
-// matchPathFilter returns a preloadFilter that accepts files whose path
-// contains any of the given keywords. Empty/nil keywords = accept all.
-func matchPathFilter(keywords []string) preloadFilter {
-	if len(keywords) == 0 {
-		return nil
-	}
-	return func(path string) bool {
-		for _, kw := range keywords {
-			if strings.Contains(path, kw) {
-				return true
-			}
-		}
-		return false
-	}
-}
-
 // buildScoutBody constructs the full prompt body for a single scout:
 // shared metadata + scope-filtered preloaded files + diff.
-func buildScoutBody(env reviewEnv, pathKeywords []string) string {
-	preloaded := preloadSourceFiles(env.cwd, env.inputCtx.ChangedFiles, matchPathFilter(pathKeywords))
+// buildScoutBody assembles a scout's prompt body. Coverage is deliberately NOT
+// keyed on guessed path keywords: a static per-scout keyword filter silently
+// under-covers any new package whose name doesn't match (it returns a healthy
+// non-zero set that just omits the new files, so a "fall back when empty" guard
+// never fires). Instead every scout ALWAYS receives the full Changed Files
+// table and the full diff, so it sees the entire change surface and can
+// tool-read any file. scoutPreload only tunes how much file CONTENT is pasted
+// up front: "all" pastes every high-signal changed file (skip tool-reads, more
+// input tokens); "none" pastes nothing (scout reads what it needs, fewer input
+// tokens, more tool turns). This is the cost A/B — neither mode can drop a file
+// from the scout's awareness.
+func buildScoutBody(env reviewEnv, s scout) string {
+	preloaded := ""
+	if env.scoutPreload != "none" {
+		preloaded = preloadSourceFiles(env.cwd, env.inputCtx.ChangedFiles, nil)
+	}
 	return fmt.Sprintf("%s\n\n%s\n\n## Review Request\n\n### Diff\n%s",
 		formatReviewContext(env.inputCtx),
 		preloaded,
@@ -1661,13 +1675,12 @@ func buildScoutBody(env reviewEnv, pathKeywords []string) string {
 // scores across the scout set — reduceScoutResults fails closed if it doesn't.
 
 type scout struct {
-	name         string
-	dims         []string // critical dimensions this scout owns (pass/fail)
-	scores       []string // quality scores this scout owns (1-5)
-	extras       []string // extra required string fields in its output schema
-	scope        string
-	model        string   // per-scout model override (deepseek-v4-pro or deepseek-v4-flash)
-	pathKeywords []string // path substrings for scope-relevant file preloading; empty = all
+	name   string
+	dims   []string // critical dimensions this scout owns (pass/fail)
+	scores []string // quality scores this scout owns (1-5)
+	extras []string // extra required string fields in its output schema
+	scope  string
+	model  string // per-scout model override (deepseek-v4-pro or deepseek-v4-flash)
 	// roleSections are the reviewer.md heading prefixes this scout needs. Only
 	// these sections (plus commonRoleSections) are sent to the scout instead of
 	// the full 52KB role — each scout uses ~1/7 of it, so slicing cuts the
@@ -1694,7 +1707,6 @@ var reviewScouts = []scout{
 		extras:       []string{"data_flow_trace"},
 		scope:        "Spec-vs-implementation correctness and the seams between components: run reviewer.md Step 1 (Understand the Spec), Step 2 (Trace the Data Flow) and Step 2.5 (Sibling-Surface Trace) in full. Trace every entry point's inputs to storage/response/error paths, run the sentinel audit, enumerate sibling surfaces for every touched symbol, check lifecycle symmetry and legacy-path supersession. Summarize your trace in the data_flow_trace field. You own the Correctness pass/fail verdict from the logic side.",
 		model:        "deepseek-v4-pro",
-		pathKeywords: nil, // all files
 		roleSections: []string{"Step 1:", "Step 2:", "Step 2.5:", "1. Correctness"},
 	},
 	{
@@ -1702,7 +1714,6 @@ var reviewScouts = []scout{
 		dims:         []string{"compliance"},
 		scope:        "Database and compliance: parameterized inputs on every query, N+1 patterns, index coverage for new queries, the full migration checklist (idempotency, down migration, FK indexes, NOT NULL/DEFAULT strategy, version ordering, schema qualification, writers for new projections), immutable audit records, ledger entries for money movement, soft-delete rules, and the responsible-gambling checks. You own the Compliance pass/fail verdict.",
 		model:        "deepseek-v4-pro",
-		pathKeywords: []string{"/db/", "/store/", ".sql", "wallet", "ledger", "liability"},
 		roleSections: []string{"3. Compliance"},
 	},
 	{
@@ -1710,7 +1721,6 @@ var reviewScouts = []scout{
 		dims:         []string{"exploitability"},
 		scope:        "Financial integrity and exploitability/fairness: trace every arithmetic path for overflow, integer-only money math, rounding consistency and direction across debit/credit, ledger entries for every balance mutation, CSPRNG for game outcomes, server-anchored time for time-gated mechanics, and no client-side outcome/paytable/RTP leakage. You own the Exploitability & Fairness pass/fail verdict.",
 		model:        "deepseek-v4-pro",
-		pathKeywords: []string{"wallet", "funds", "balance", "mapper", "compose"},
 		roleSections: []string{"4. Exploitability"},
 	},
 	{
@@ -1718,7 +1728,6 @@ var reviewScouts = []scout{
 		dims:         []string{"security"},
 		scope:        "Security and authorization: map every endpoint/mutation to its auth check, all-writers enumeration for every gate/lock enum touched, gate parity on mutate-after-accept paths, fail-closed proof for gated capability decisions, input validation at every trust boundary, injection, PII in code or logs, token validation and expiry. You own the Security pass/fail verdict.",
 		model:        "deepseek-v4-pro",
-		pathKeywords: []string{"auth", "token", "server/", "validator", "interceptor", "proto/"},
 		roleSections: []string{"2. Security"},
 	},
 	{
@@ -1726,7 +1735,6 @@ var reviewScouts = []scout{
 		scores:       []string{"resilience", "idempotency"},
 		scope:        "Concurrency, idempotency, and resilience: shared mutable state protection, precondition checks inside the same lock/tx as the mutation they gate, TOCTOU windows, lock ordering, context cancellation; idempotency keys inside transactions, dual-write convergence (the 4-cell outcome table), reserve-first CAS ordering, replay returning the original result; timeouts, retries with backoff, error-guard specificity, graceful degradation. Score Resilience and Idempotency 1-5 per reviewer.md anchors. Races are Correctness-grade defects — report them as CRITICAL/HIGH findings regardless of likelihood.",
 		model:        "deepseek-v4-flash",
-		pathKeywords: []string{"funds", "roster", "session", "playerfunds", "xwalletfunds", "errgroup", "goroutine", "mutex", "lock"},
 		roleSections: []string{"4. Resilience", "5. Idempotency"},
 	},
 	{
@@ -1735,7 +1743,6 @@ var reviewScouts = []scout{
 		extras:       []string{"test_quality_assessment"},
 		scope:        "Test quality and docs truth: run reviewer.md Step 4 in full (behavior vs implementation coupling, the litmus test, vacuous/false-passing seals, sleep-as-synchronization, RED-then-GREEN proof for regression seals, mock-contract drift) and Step 4.5 (assert every comment/docstring/PR claim against the final code). Summarize in the test_quality_assessment field. You own the Correctness pass/fail verdict from the testing side: a spec'd edge case with no test, or tests that pass without proving correctness, is a Correctness FAIL.",
 		model:        "deepseek-v4-flash",
-		pathKeywords: []string{"_test.go", ".spec.", "/test/", "mock", "fake", "test", "Test"},
 		roleSections: []string{"Step 4:", "Step 4.5:", "1. Correctness"},
 	},
 	{
@@ -1744,7 +1751,6 @@ var reviewScouts = []scout{
 		extras:       []string{"design_coherence"},
 		scope:        "Observability (the 3am test, correlation IDs, silent failures, best-effort steps that downstream invariants depend on), Performance (N+1, unbounded queries, pagination, locks across I/O, missing indexes), Maintainability (complexity hard caps and the named override patterns, project conventions, naming, magic numbers), and Design Coherence (does this change fit the system's existing patterns — summarize in the design_coherence field). Score those three dimensions 1-5 per reviewer.md anchors.",
 		model:        "deepseek-v4-flash",
-		pathKeywords: nil, // all files
 		roleSections: []string{"6. Observability", "7. Performance", "8. Maintainability", "Design Coherence"},
 	},
 }
@@ -1868,7 +1874,60 @@ func scoutSchema(s scout) map[string]any {
 	return objectSchema(props, required)
 }
 
+// buildChangeMap runs one cheap map-model pass over the diff to produce a
+// per-file orientation map for the scouts. It ORIENTS only — the prompt is
+// explicit that scouts read the code themselves for verdicts, so a lossy or
+// slightly-stale summary can't silently drive a PASS/FAIL. The raw envelope is
+// written to tempDir/change-map.raw for metric extraction. Failure is
+// non-fatal: the caller proceeds without a map.
+func buildChangeMap(ctx context.Context, env reviewEnv) (string, error) {
+	prompt := fmt.Sprintf(`You are a fast pre-reviewer producing an ORIENTATION MAP for a panel of specialist code-review scouts. For each file in the diff below, output one or two terse lines: what the file does and where the risk / entry points are (money, auth, concurrency, migrations, tests). Keep the WHOLE map short. This map only helps the scouts decide what to read — they will read the code themselves for their verdicts, so do not editorialize or make judgments. You may read a file with your tools if a hunk is ambiguous, but do not over-investigate: one quick pass.
+
+Output a markdown list keyed by file path. Final message = the map only.
+
+## Changed Files
+%s
+
+## Diff
+%s`, changedFilesList(env.inputCtx), env.diff)
+
+	cmd := claudeCmd(ctx, env.cwd, "medium", "", "", env.mapModel)
+	cmd.Stdin = strings.NewReader(prompt)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
+	runErr := cmd.Run()
+	_ = os.WriteFile(filepath.Join(env.tempDir, "change-map.raw"), outBuf.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(env.tempDir, "change-map.err"), errBuf.Bytes(), 0644)
+	if runErr != nil {
+		return "", fmt.Errorf("change-map pass failed: %v", runErr)
+	}
+	return strings.TrimSpace(normalizeProviderJSON("claude", outBuf.String())), nil
+}
+
+// changedFilesList renders a compact "path (status)" list for the map prompt.
+func changedFilesList(ctx ReviewInputContext) string {
+	var b strings.Builder
+	for _, f := range ctx.ChangedFiles {
+		fmt.Fprintf(&b, "- %s (%s)\n", f.Path, f.Status)
+	}
+	return b.String()
+}
+
 func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error) {
+	// Optional orientation pass: one cheap map-model call, serial before the
+	// fan-out (scouts need it), injected as a shared cached prefix by runOneScout.
+	if env.changeMapOn {
+		mapCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+		m, err := buildChangeMap(mapCtx, env)
+		cancel()
+		if err != nil {
+			log.Printf("change-map pass failed (proceeding without it): %v\n", err)
+		} else {
+			env.changeMap = m
+			log.Printf("change-map ready (%d bytes) — injecting into all %d scouts\n", len(m), len(reviewScouts))
+		}
+	}
+
 	log.Printf("claude-scouts: dispatching %d scouts in parallel\n", len(reviewScouts))
 
 	outputs := make([]scoutOutput, len(reviewScouts))
@@ -1937,7 +1996,7 @@ func runOneScout(ctx context.Context, s scout, env reviewEnv) (scoutOutput, erro
 		return scoutOutput{}, fmt.Errorf("failed to marshal scout schema: %w", err)
 	}
 
-	scopedBody := buildScoutBody(env, s.pathKeywords)
+	scopedBody := buildScoutBody(env, s)
 	prompt := fmt.Sprintf(`You are one focused scout in a decomposed code review panel. Your scope is strictly: %s.
 
 %s
@@ -1950,7 +2009,15 @@ Use your tools: read the changed files in full, grep sibling call sites, and rea
 
 %s`, s.name, s.scope, scopedBody)
 
-	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), scoutRole(env.roleText, s), env.claudeModel)
+	// The change-map (identical across all scouts) goes FIRST in the system
+	// prompt so it is a shared cacheable prefix; the per-scout role slice
+	// follows it.
+	sysPrompt := scoutRole(env.roleText, s)
+	if env.changeMap != "" {
+		sysPrompt = "## Change Map (orientation only — decide what to read; read the code yourself for verdicts)\n\n" + env.changeMap + "\n\n" + sysPrompt
+	}
+
+	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), sysPrompt, env.claudeModel)
 	cmd.Stdin = strings.NewReader(prompt)
 
 	var outBuf, errBuf bytes.Buffer
@@ -2230,7 +2297,7 @@ func runOneDeepseekScout(ctx context.Context, s scout, env reviewEnv) (scoutOutp
 		return scoutOutput{}, fmt.Errorf("failed to marshal scout schema: %w", err)
 	}
 
-	scopedBody := buildScoutBody(env, s.pathKeywords)
+	scopedBody := buildScoutBody(env, s)
 	prompt := fmt.Sprintf(`You are one focused scout in a decomposed code review panel. Your scope is strictly: %s.
 
 %s
