@@ -126,6 +126,7 @@ func main() {
 	scoutPreloadFlag := flag.String("scout-preload", "none", "Scout file-preload mode. \"none\" (default): preload no file contents — each scout tool-reads what it needs from the full diff + Changed Files table it always receives (robust: coverage never keyed on guessed paths, and it can't exceed the context window). \"all\": paste every high-signal changed file into every scout — measured to OVERFLOW the context window on a 26-file PR (209k > 200k tokens) and is expensive elsewhere; only safe for small diffs.")
 	changeMapFlag := flag.Bool("scout-change-map", false, "EXPERIMENTAL: before dispatching scouts, run one cheap map-model pass over the diff to produce a per-file orientation map, injected as a shared cached prefix in every scout's system prompt. Aims to cut scout investigation turns. The map orients only — scouts still read code for verdicts.")
 	mapModelFlag := flag.String("map-model", "claude-haiku-4-5-20251001", "Model for the -scout-change-map orientation pass (cheap by design).")
+	sharedContextFlag := flag.Bool("shared-context", false, "EXPERIMENTAL: move the review context (metadata, changed-file table, precomputed sibling trace) + the diff — all identical across scouts — into a SHARED cached system-prompt prefix instead of re-sending them in each scout's stdin. Content-addressed prompt caching then pays them once (cache-create) + N-1 cache-reads (~10% price) rather than 6x fresh. With -scout-preload all, the (capped) read-pack rides the same shared prefix. Off by default until A/B-validated.")
 	flag.Parse()
 
 	log.Println("Starting Multi-Agent Code Review Orchestrator...")
@@ -212,6 +213,7 @@ func main() {
 		scoutPreload:  strings.ToLower(strings.TrimSpace(*scoutPreloadFlag)),
 		changeMapOn:   *changeMapFlag,
 		mapModel:      *mapModelFlag,
+		sharedContext: *sharedContextFlag,
 	}
 	log.Printf("Scout preload mode: %s\n", env.scoutPreload)
 	if env.changeMapOn {
@@ -296,6 +298,7 @@ type reviewEnv struct {
 	changeMapOn   bool   // EXPERIMENTAL: generate + inject the change-map (see runClaudeScouts)
 	mapModel      string // model for the change-map pass
 	changeMap     string // generated orientation map, injected into scout system prompts
+	sharedContext bool   // EXPERIMENTAL: shared cached context+diff prefix (see buildScoutBody / runOneScout)
 }
 
 // providerTimeout is the per-attempt ceiling for one reviewer. Bake-off data
@@ -1655,15 +1658,23 @@ func kimiTextFromStreamJSON(raw string) (string, error) {
 // tokens, more tool turns). This is the cost A/B — neither mode can drop a file
 // from the scout's awareness.
 func buildScoutBody(env reviewEnv, s scout) string {
+	if env.sharedContext {
+		return "" // context + diff ride the shared cached system prompt instead
+	}
+	return buildSharedContextBlock(env)
+}
+
+// buildSharedContextBlock is the review metadata + changed-file table +
+// precomputed sibling trace + (optional) preload + diff — all IDENTICAL across
+// scouts. In -shared-context mode it rides the cached system-prompt prefix (paid
+// once + N-1 cheap cache-reads); otherwise each scout gets its own copy in stdin.
+func buildSharedContextBlock(env reviewEnv) string {
 	preloaded := ""
 	if env.scoutPreload != "none" {
 		preloaded = preloadSourceFiles(env.cwd, env.inputCtx.ChangedFiles, nil)
 	}
 	return fmt.Sprintf("%s\n\n%s\n\n## Review Request\n\n### Diff\n%s",
-		formatReviewContext(env.inputCtx),
-		preloaded,
-		env.diff,
-	)
+		formatReviewContext(env.inputCtx), preloaded, env.diff)
 }
 
 // --- claude-scouts: fully decomposed review slot ----------------------------
@@ -2063,6 +2074,9 @@ func runOneScout(ctx context.Context, s scout, env reviewEnv) (scoutOutput, erro
 	}
 
 	scopedBody := buildScoutBody(env, s)
+	if env.sharedContext {
+		scopedBody = "The review context (metadata, changed-file table, precomputed sibling trace) and the full diff are in your SYSTEM PROMPT, above your role instructions — read them there."
+	}
 	prompt := fmt.Sprintf(`You are one focused scout in a decomposed code review panel. Your scope is strictly: %s.
 
 %s
@@ -2071,14 +2085,17 @@ Your review instructions — the reviewer-role sections for your scope, with sco
 
 Apply ONLY the sections that fall inside your scope — other scouts own the rest. Do not report findings outside your scope. For pass/fail dimensions you own, apply the role's PASS checklists literally with no partial credit. For scores you own, use the role's anchors. Rate severity per the Severity Calibration table; set blocking=true only on CRITICAL/HIGH findings.
 
-Use your tools: read the changed files in full, grep sibling call sites, and read the repository's CLAUDE.md for conventions. Do NOT edit any files. Do the deep analysis in intermediate turns — your FINAL message must be ONLY a raw JSON object matching the provided schema.
+Use your tools: the Precomputed Sibling Surface Trace is already in your context — start from it and grep only to extend it, don't re-derive it. Read the changed files in full and the repository's CLAUDE.md for conventions. Do NOT edit any files. Do the deep analysis in intermediate turns — your FINAL message must be ONLY a raw JSON object matching the provided schema.
 
 %s`, s.name, s.scope, scopedBody)
 
-	// The change-map (identical across all scouts) goes FIRST in the system
-	// prompt so it is a shared cacheable prefix; the per-scout role slice
-	// follows it.
+	// Shared, identical-across-scouts content goes FIRST in the system prompt so
+	// it forms a cacheable prefix (change-map, then the shared context+diff);
+	// the per-scout role slice follows.
 	sysPrompt := scoutRole(env.roleText, s)
+	if env.sharedContext {
+		sysPrompt = buildSharedContextBlock(env) + "\n\n---\n\n" + sysPrompt
+	}
 	if env.changeMap != "" {
 		sysPrompt = "## Change Map (orientation only — decide what to read; read the code yourself for verdicts)\n\n" + env.changeMap + "\n\n" + sysPrompt
 	}
