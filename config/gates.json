@@ -92,12 +92,12 @@
       "note": "Project invariants. A missing rules file fails the gate rather than passing quietly — that file IS the gate."
     },
     "mutation": {
-      "command": "gremlins unleash --integration --threshold-efficacy {{min_score}} --tags=integration -o {{output_json}} ./...",
+      "command": "gremlins unleash --integration --threshold-efficacy {{min_score}} --tags=integration -o {{output_json}} .",
       "trigger": "financial",
       "scope": "module",
       "timeout_seconds": 5400,
       "zero_units_is_failure": true,
-      "note": "The binary is `gremlins`, NOT `gremlins-go` — role files said gremlins-go for months, which is command-not-found. Subcommand is `unleash` (aliases run/r) and it operates on a MODULE, not a ./pkg/... pattern. --threshold-efficacy makes gremlins itself exit nonzero, so the exit code is the gate; zero generated mutants is still a failure because a vacuous run reads as a pass."
+      "note": "Takes a PATH, not a Go package pattern: `gremlins unleash .` generates mutants, `gremlins unleash ./...` matches nothing, prints \"No results to report.\" and EXITS 0 — a vacuous pass, caught by running it for real on 2026-07-31. The binary is `gremlins`, NOT `gremlins-go` — role files said gremlins-go for months, which is command-not-found. Subcommand is `unleash` (aliases run/r) and it operates on a MODULE, not a ./pkg/... pattern. --threshold-efficacy does NOT affect the exit code (80.77% against a threshold of 95 still exits 0, verified 2026-07-31), so cmd/gates parses the efficacy and enforces mutation_min_score itself; an unparsable score fails closed. Zero generated mutants is also a failure, because a vacuous run reads as a pass."
     },
     "bench_relative": {
       "command": "go test -bench=. -count=10 -run=^$ ./...",

@@ -536,6 +536,8 @@ func TestDetectZeroUnits(t *testing.T) {
 		{"go no packages", "go: warning: \"./...\" matched no packages", true},
 		{"no test files", "?   pkg   [no test files]", true},
 		{"real run", "Mutation testing completed: 214 mutants generated\nTest efficacy: 84.10%", false},
+		// Verbatim from `gremlins unleash ./...` on 2026-07-31 — it exits 0.
+		{"gremlins matched no path", "Starting...\nGathering coverage... done in 120ms\n\nNo results to report.\n", true},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -1006,4 +1008,106 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// An unprepared worktree and broken code look identical to a compiler's exit
+// code and are opposite problems. Smoke-tested against evenplay-mono PR 1353,
+// where a bare `git worktree add` failed build, complexity, staticcheck and
+// gosec with one shared root cause.
+func TestDetectEnvironmentFailure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		out  string
+		want bool
+	}{
+		{
+			"missing generated protobuf",
+			"common/transactions/t.go:3:8: no required module provides package " +
+				"github.com/EvenPlay/evenplay-mono/apps/finance-domain/wallet/pb; to add it:",
+			true,
+		},
+		{
+			"missing sqlc output",
+			"db/x.go:10:2: no required module provides package " +
+				"github.com/EvenPlay/evenplay-mono/apps/finance-domain/wallet/db/sqlc; to add it:",
+			true,
+		},
+		{"missing embed asset dir", "docs/embed.go:7:12: pattern swagger/*: no matching files found", true},
+		{"empty package name", `could not import x/pb (invalid package name: "")`, true},
+		{
+			"a real compile error is NOT an environment failure",
+			"store/wager.go:42:5: undefined: computeAdjustment",
+			false,
+		},
+		{"a real test failure is not either", "--- FAIL: TestDebit (0.01s)\n    want 100, got 99", false},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := detectEnvironmentFailure(tt.out)
+			if (got != "") != tt.want {
+				t.Errorf("detectEnvironmentFailure = %q, want non-empty=%v", got, tt.want)
+			}
+			if tt.want && !strings.Contains(got, "worktree") {
+				t.Errorf("reason should name the worktree so it is actionable: %q", got)
+			}
+		})
+	}
+}
+
+func TestRunOne_RecordsEnvironmentCause(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := plan{Gate: "build", Spec: GateSpec{TimeoutSeconds: 30}}
+	cmd := `echo "x.go:3:8: no required module provides package a/b/pb; to add it:" >&2; exit 1`
+
+	g := runOne(p, cmd, dir, filepath.Join(dir, "b.log"))
+	if g.Status != "fail" {
+		t.Fatalf("status = %q, want fail", g.Status)
+	}
+	if _, ok := g.Metrics["environment"]; !ok {
+		t.Errorf("environment cause not recorded: %+v", g.Metrics)
+	}
+}
+
+// gremlins' --threshold-efficacy does not affect its exit code: 80.77% against
+// a threshold of 95 still exits 0 (verified against the real tool). So the
+// floor is ours to enforce, and an unreadable score fails closed.
+func TestEnforceMutationScore(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{MutationMinScore: 80}
+
+	pass := enforceMutationScore(cfg, Gate{Status: "pass", Metrics: map[string]any{"mutation_score": 83.33}})
+	if pass.Status != "pass" {
+		t.Errorf("83.33%% >= 80%% should pass: %+v", pass)
+	}
+
+	// The exact real-world case: gremlins scored 80.77% against
+	// --threshold-efficacy 95 and still exited 0. Gates must fail it.
+	strict := enforceMutationScore(&Config{MutationMinScore: 95},
+		Gate{Status: "pass", Metrics: map[string]any{"mutation_score": 80.77}})
+	if strict.Status != "fail" {
+		t.Errorf("80.77%% < 95%% floor must fail even though gremlins exits 0: %+v", strict)
+	}
+
+	// Boundary: exactly at the floor passes.
+	at := enforceMutationScore(cfg, Gate{Status: "pass", Metrics: map[string]any{"mutation_score": 80.0}})
+	if at.Status != "pass" {
+		t.Errorf("exactly at the floor should pass: %+v", at)
+	}
+
+	below := enforceMutationScore(cfg, Gate{Status: "pass", Metrics: map[string]any{"mutation_score": 62.5}})
+	if below.Status != "fail" {
+		t.Fatalf("62.5%% < 80%% must fail: %+v", below)
+	}
+	if v := toStrings(below.Metrics["violations"]); len(v) != 1 || !strings.Contains(v[0], "62.50%") {
+		t.Errorf("violation should name the score: %v", v)
+	}
+
+	unparsed := enforceMutationScore(cfg, Gate{Status: "pass", Metrics: map[string]any{}})
+	if unparsed.Status != "fail" {
+		t.Errorf("an unparsable score must fail closed: %+v", unparsed)
+	}
 }

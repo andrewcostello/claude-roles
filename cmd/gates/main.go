@@ -621,6 +621,9 @@ func executeOne(cfg *Config, state *RunState, p plan, ro runOpts, id gateID, tes
 			testOutputs[id.ModRel] = string(data)
 		}
 	}
+	if p.Gate == "mutation" && g.Status == "pass" {
+		return enforceMutationScore(cfg, g)
+	}
 	if p.Gate == "bench_relative" && g.Status == "pass" {
 		return evaluateBenchRelative(cfg, state, p, ro.OutDir, logPath)
 	}
@@ -708,6 +711,11 @@ func runOne(p plan, cmdStr, cwd, logPath string) Gate {
 	}
 
 	out := string(raw)
+	if g.Status == "fail" {
+		if why := detectEnvironmentFailure(out); why != "" {
+			g.Metrics["environment"] = why
+		}
+	}
 	if p.Spec.EmptyOutputIsFailure && strings.TrimSpace(out) == "" {
 		g.Status = "fail"
 		g.Metrics["no_op"] = "command produced no output — it tested nothing"
@@ -728,6 +736,63 @@ func runOne(p plan, cmdStr, cwd, logPath string) Gate {
 	return g
 }
 
+// enforceMutationScore applies the configured efficacy floor ourselves.
+//
+// gremlins' --threshold-efficacy does NOT affect its exit code: a run scoring
+// 80.77% against --threshold-efficacy 95 still exits 0 (verified 2026-07-31,
+// gremlins on cmd/classify). The gate is therefore ours to enforce, and an
+// unparsable score fails closed — a floor we cannot check is not a floor.
+func enforceMutationScore(cfg *Config, g Gate) Gate {
+	score, ok := g.Metrics["mutation_score"].(float64)
+	if !ok {
+		g.Status = "fail"
+		g.SkipReason = "no mutation efficacy score could be parsed from the output — the floor cannot be verified, so this fails closed"
+		return g
+	}
+	if score < cfg.MutationMinScore {
+		g.Status = "fail"
+		g.Metrics["violations"] = []string{
+			fmt.Sprintf("mutation efficacy %.2f%% < floor %.0f%% (gremlins exits 0 regardless; gates enforces)",
+				score, cfg.MutationMinScore),
+		}
+	}
+	return g
+}
+
+// detectEnvironmentFailure distinguishes "this worktree was never prepared"
+// from "this code is broken". They look identical in a compiler's exit code and
+// are opposite problems: the first is fixed by running codegen, the second by
+// the Coder. Reporting the first as a code failure sends an agent into a
+// pointless fix iteration.
+//
+// Smoke-tested on evenplay-mono PR 1353: a bare `git worktree add` has no
+// generated protobuf, no sqlc output and no swagger dir, so build, complexity,
+// staticcheck and gosec ALL failed with the same root cause.
+func detectEnvironmentFailure(out string) string {
+	lower := strings.ToLower(out)
+
+	if strings.Contains(lower, "no required module provides package") {
+		for _, marker := range []string{"/pb", "/sqlc", "/gen", "/generated", "/mocks", "/mock"} {
+			if strings.Contains(lower, marker+";") || strings.Contains(lower, marker+"\"") {
+				return "generated code absent from this worktree (missing " + strings.TrimPrefix(marker, "/") +
+					" package) — run the project's codegen (buf/sqlc/swagger) before gating; this is not a defect in the diff"
+			}
+		}
+	}
+	if embedPatternRE.MatchString(out) {
+		return "go:embed pattern matched no files — a generated asset directory is absent from this worktree; run codegen before gating"
+	}
+	if strings.Contains(lower, "invalid package name: \"\"") {
+		return "a dependency package resolved to an empty package — generated code is absent from this worktree; run codegen before gating"
+	}
+	if strings.Contains(lower, "go: downloading") && strings.Contains(lower, "dial tcp") {
+		return "module downloads failed (no network) — the worktree's dependencies are not vendored or cached"
+	}
+	return ""
+}
+
+var embedPatternRE = regexp.MustCompile(`pattern [^\s:]+: no matching files found`)
+
 // detectZeroUnits catches the vacuous run: the tool exited 0 having done no
 // work. That is the exact shape of the mutation gate that "passed" for months
 // while pointed at a directory that did not exist.
@@ -741,6 +806,10 @@ func detectZeroUnits(out string) (bool, string) {
 		"0 mutants",
 		"no mutants",
 		"nothing to do",
+		// gremlins' own phrasing when its path argument matches nothing. It
+		// exits 0 in that state — the exact vacuous pass this detector exists
+		// for, and it was missing until a real run produced it.
+		"no results to report",
 	} {
 		if strings.Contains(lower, marker) {
 			return true, "output reports no work performed: " + marker
@@ -1190,6 +1259,9 @@ func printReport(state *RunState, modules []Module, results []result, failed int
 		}
 		if v, ok := r.Outcome.Metrics["no_op"]; ok {
 			fmt.Printf("      NO-OP: %v\n", v)
+		}
+		if v, ok := r.Outcome.Metrics["environment"]; ok {
+			fmt.Printf("      ENVIRONMENT: %v\n", v)
 		}
 		if r.Outcome.Status == "fail" && r.Outcome.OutputPath != "" {
 			// #nosec G304 -- OutputPath was written by this process.
