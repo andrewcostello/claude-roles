@@ -130,6 +130,70 @@
       "components": ["bet-placement"]
     },
     {
+      "id": "shared-wallet-lib",
+      "note": "Shared money library used by every service. Found unclassified by the 60-PR validation sweep on 2026-07-31 — it was taking the fail-closed high tier with no component preset and no financial flag.",
+      "paths": ["libs/go/wallet/**"],
+      "risk": "critical",
+      "components": ["wallet"],
+      "financial": true
+    },
+    {
+      "id": "shared-authz-lib",
+      "note": "Shared authorization and capability gates — fail-open here is systemic.",
+      "paths": ["libs/go/authz/**", "libs/go/capability/**"],
+      "risk": "high"
+    },
+    {
+      "id": "shared-go-libs",
+      "note": "Remaining shared Go libraries: errcodes, logging, asyncfetch, workerpool, address.",
+      "paths": ["libs/go/**", "libs/messaging/**", "libs/analytics/**", "libs/**"],
+      "risk": "high"
+    },
+    {
+      "id": "client-money-ui",
+      "note": "Client-side withdrawal, wallet, deposit and card-entry surfaces. NOT presentation: these display balances and submit money movements, and PR 1294's escaped regression was a display bug. The 60-PR sweep found PR 1262 (40 files, native card tokenization) and PR 1350 (43 files, autoplay wager preference) both taking the single-reviewer carve-out because every path sat under src/ — this rule closes that.",
+      "paths": [
+        "apps/*/src/**/[Ww]allet/**",
+        "apps/*/src/**/withdraw*/**",
+        "apps/*/src/**/[Ww]ithdraw*/**",
+        "apps/*/src/**/deposit*/**",
+        "apps/*/src/**/[Dd]eposit*/**",
+        "apps/*/src/**/payment*/**",
+        "apps/*/src/**/*[Ww]allet*",
+        "apps/*/src/**/*[Ww]ithdraw*",
+        "apps/*/src/**/*[Dd]eposit*",
+        "apps/*/src/**/*[Cc]ard*",
+        "apps/*/src/**/*[Pp]ayment*",
+        "apps/*/src/**/*[Bb]alance*"
+      ],
+      "risk": "medium"
+    },
+    {
+      "id": "deploy-manifests",
+      "note": "Kubernetes manifests and environment config — a bad value here is a production incident.",
+      "paths": ["deploy/**", "terraform/**", "**/*.tfvars"],
+      "risk": "high"
+    },
+    {
+      "id": "generated-wire-clients",
+      "note": "Generated protobuf clients shipped into the mobile app. Wire contract, never presentation.",
+      "paths": ["apps/*/generated/**", "**/*_pb.ts", "**/*_connect.ts"],
+      "risk": "high"
+    },
+    {
+      "id": "analytics-and-modelling",
+      "note": "Backtesting and calibration for paylines/stake weighting. Not production-serving, but it is where game-math parameters are derived.",
+      "paths": ["analytics/**"],
+      "risk": "medium"
+    },
+    {
+      "id": "root-e2e-harness",
+      "note": "Repo-root Playwright cross-app suite (the apps/*/e2e rule below only covers per-app harnesses).",
+      "paths": ["tests/**"],
+      "risk": "low",
+      "presentation": true
+    },
+    {
       "id": "responsible-gambling",
       "note": "Bet limits, autoplay limits, confidence-bet limits, practice/tournament exclusion.",
       "paths": [
@@ -223,12 +287,10 @@
       "id": "client-presentation",
       "note": "Presentation-only client code. The ONLY reduced-panel carve-out — and only when no gate signal fires and nothing above matched.",
       "paths": [
-        "apps/skillstrike-mobile/src/**",
-        "apps/skillstrike-mobile/assets/**",
+        "apps/skillstrike-mobile/**",
         "apps/burrito-golf-web/**",
         "apps/partner-hub-web/**",
-        "apps/backoffice-web/src/**",
-        "apps/backoffice-web/public/**",
+        "apps/backoffice-web/**",
         "apps/evenplay-website/**"
       ],
       "risk": "low",
@@ -264,10 +326,23 @@
         "**/README*",
         "**/*.txt",
         "docs/**",
-        ".github/**"
+        ".gitignore",
+        "**/.gitignore",
+        ".editorconfig"
       ],
       "risk": "low",
       "presentation": true
+    },
+    {
+      "id": "ci-and-scripts",
+      "note": "CI workflows and repo scripts. Not presentation — scripts/check-migration-ordering.sh IS a gate, and a change here can disable a check rather than fail one.",
+      "paths": [
+        ".github/**",
+        "scripts/**",
+        "**/Makefile",
+        "**/*.mk"
+      ],
+      "risk": "medium"
     },
     {
       "id": "lockfiles",

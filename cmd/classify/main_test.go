@@ -90,6 +90,159 @@ func TestParseDiffFiles(t *testing.T) {
 	}
 }
 
+// evenplay-mono really contains
+// "apps/skillstrike-mobile/src/components/ SupportGuideHeader.tsx". Splitting
+// the `diff --git` header on whitespace yields "SupportGuideHeader.tsx", which
+// matches no rule and lands in unmatched_files — fail-closed, but wrong.
+func TestParseDiffFiles_PathWithSpace(t *testing.T) {
+	t.Parallel()
+	p := "apps/skillstrike-mobile/src/components/ SupportGuideHeader.tsx"
+	d := "diff --git a/" + p + " b/" + p + "\n--- a/" + p + "\n+++ b/" + p + "\n@@ -1 +1 @@\n-a\n+b\n"
+
+	got := parseDiffFiles(d)
+	if len(got) != 1 || got[0] != p {
+		t.Fatalf("parseDiffFiles = %#v, want [%q]", got, p)
+	}
+}
+
+func TestParseDiffFiles_AdditionDeletionRenameBinary(t *testing.T) {
+	t.Parallel()
+	d := strings.Join([]string{
+		// addition
+		"diff --git a/apps/x/new.go b/apps/x/new.go",
+		"new file mode 100644",
+		"--- /dev/null",
+		"+++ b/apps/x/new.go",
+		"@@ -0,0 +1 @@",
+		"+package x",
+		// deletion — the b-side is /dev/null, so the a-side names the file
+		"diff --git a/apps/x/old.go b/apps/x/old.go",
+		"deleted file mode 100644",
+		"--- a/apps/x/old.go",
+		"+++ /dev/null",
+		"@@ -1 +0,0 @@",
+		"-package x",
+		// rename — header sides differ; the +++ line is authoritative
+		"diff --git a/apps/x/from.go b/apps/x/to.go",
+		"similarity index 98%",
+		"rename from apps/x/from.go",
+		"rename to apps/x/to.go",
+		"--- a/apps/x/from.go",
+		"+++ b/apps/x/to.go",
+		// binary — no ---/+++ at all, so the header is the only source
+		"diff --git a/apps/x/logo.png b/apps/x/logo.png",
+		"Binary files a/apps/x/logo.png and b/apps/x/logo.png differ",
+		"",
+	}, "\n")
+
+	got := parseDiffFiles(d)
+	want := []string{"apps/x/new.go", "apps/x/old.go", "apps/x/to.go", "apps/x/logo.png"}
+	if len(got) != len(want) {
+		t.Fatalf("parseDiffFiles = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestHeaderPath(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"a/x.go b/x.go":                   "x.go",
+		"a/apps/w/s.go b/apps/w/s.go":     "apps/w/s.go",
+		"a/dir/ sp.tsx b/dir/ sp.tsx":     "dir/ sp.tsx",
+		"a/apps/x/from.go b/apps/x/to.go": "apps/x/to.go", // rename → last field
+	}
+	for rest, want := range tests {
+		if got := headerPath(rest); got != want {
+			t.Errorf("headerPath(%q) = %q, want %q", rest, got, want)
+		}
+	}
+}
+
+// Rules added after the 60-PR validation sweep on 2026-07-31. Each one closed a
+// real gap the sweep exposed, so each gets a test.
+func TestClassify_ValidationSweepGaps(t *testing.T) {
+	t.Parallel()
+	cfg := realConfig(t)
+	tests := []struct {
+		name       string
+		file       string
+		wantRisk   string
+		wantFin    bool
+		wantClient bool
+	}{
+		{"shared wallet lib", "libs/go/wallet/balance.go", "critical", true, false},
+		{"shared authz lib", "libs/go/authz/check.go", "high", false, false},
+		{"shared go lib", "libs/go/logging/log.go", "high", false, false},
+		{"messaging lib", "libs/messaging/pkg/bus.go", "high", false, false},
+		{"deploy manifest", "deploy/bay-session.yaml", "high", false, false},
+		{"terraform vars", "terraform/environments/production/production.tfvars", "high", false, false},
+		{"generated wire client", "apps/skillstrike-mobile/generated/smg_public_api_pb.ts", "high", false, false},
+		{"analytics model", "analytics/backtesting/paylines_v2_backtest.py", "medium", false, false},
+		{"root e2e harness", "tests/e2e/playwright/tests/cross-app/x.spec.ts", "low", false, true},
+		{"mobile app root", "apps/skillstrike-mobile/App.tsx", "low", false, true},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			d := diffFor(tt.file)
+			cls := classify(cfg, parseDiffFiles(d), d)
+			if len(cls.UnmatchedFiles) != 0 {
+				t.Errorf("%s is unclassified: %v", tt.file, cls.UnmatchedFiles)
+			}
+			if cls.Risk != tt.wantRisk {
+				t.Errorf("risk = %q, want %q", cls.Risk, tt.wantRisk)
+			}
+			if cls.FinancialPathsTouched != tt.wantFin {
+				t.Errorf("financial = %v, want %v", cls.FinancialPathsTouched, tt.wantFin)
+			}
+			if cls.ClientOnly != tt.wantClient {
+				t.Errorf("client_only = %v, want %v", cls.ClientOnly, tt.wantClient)
+			}
+		})
+	}
+}
+
+// PR 1262 (native card tokenization, 40 files) and PR 1350 (autoplay wager
+// preference, 43 files) both took the single-reviewer carve-out because every
+// changed path sat under apps/skillstrike-mobile/src/. Client withdrawal and
+// card-entry UI displays balances and submits money movements — PR 1294's
+// escaped regression was a display bug — so it is not presentation.
+func TestClassify_ClientMoneyUIIsNotPresentation(t *testing.T) {
+	t.Parallel()
+	cfg := realConfig(t)
+	for _, f := range []string{
+		"apps/skillstrike-mobile/src/modals/withdraw-flow/AmountStep.tsx",
+		"apps/skillstrike-mobile/src/screens/User/Account/Tabs/Wallet/AddCardInfoModal/index.tsx",
+		"apps/skillstrike-mobile/src/components/WalletBalance.tsx",
+		"apps/skillstrike-mobile/src/__tests__/modals/WithdrawFlow.test.tsx",
+	} {
+		f := f
+		t.Run(f, func(t *testing.T) {
+			t.Parallel()
+			d := diffFor(f)
+			cls := classify(cfg, parseDiffFiles(d), d)
+			if cls.ClientOnly {
+				t.Error("client_only = true — money UI must not qualify for the carve-out")
+			}
+			if cls.Panel.Reduced || cls.Panel.Seats != 5 {
+				t.Errorf("panel = %+v, want the full 5-seat panel", cls.Panel)
+			}
+		})
+	}
+
+	// A genuinely presentational mobile screen still gets the carve-out.
+	d := diffFor("apps/skillstrike-mobile/src/screens/Leaderboard/Row.tsx")
+	cls := classify(cfg, parseDiffFiles(d), d)
+	if !cls.Panel.Reduced {
+		t.Errorf("non-money mobile UI should still qualify: %+v", cls.Panel)
+	}
+}
+
 func TestClassify_WalletIsCriticalAndGated(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)

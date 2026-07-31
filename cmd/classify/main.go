@@ -415,27 +415,92 @@ func readAll(f *os.File) ([]byte, error) {
 	}
 }
 
-// parseDiffFiles returns the b-side path of every `diff --git` header, which is
-// present even for deletions.
+// parseDiffFiles returns the path of every file in the diff.
+//
+// Paths can contain spaces — evenplay-mono really has
+// "apps/skillstrike-mobile/src/components/ SupportGuideHeader.tsx" — so the
+// `diff --git a/X b/X` header cannot be split on whitespace. The `+++ b/X` and
+// `--- a/X` lines carry exactly one path each and are used as the authoritative
+// source; the header is the fallback for binary files, which have neither.
+//
+// This matters beyond tidiness: a mis-split path matches no rule, so it lands in
+// unmatched_files and takes the fail-closed tier. Safe, but it misreports which
+// file caused it and can't pick up the rule that should have applied.
 func parseDiffFiles(diff string) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, line := range strings.Split(diff, "\n") {
-		if !strings.HasPrefix(line, "diff --git ") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
-		}
-		p := trimDiffPath(fields[len(fields)-1])
+
+	add := func(p string) bool {
 		if p == "" || p == "/dev/null" || seen[p] {
-			continue
+			return p != "" && p != "/dev/null"
 		}
 		seen[p] = true
 		out = append(out, p)
+		return true
 	}
+
+	header, minus := "", ""
+	resolved := true
+
+	flush := func() {
+		if resolved {
+			return
+		}
+		// Neither +++ nor --- yielded a path (binary file, or mode-only change).
+		if minus != "" {
+			add(minus)
+		} else {
+			add(header)
+		}
+	}
+
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			flush()
+			header, minus, resolved = headerPath(line[len("diff --git "):]), "", false
+
+		case strings.HasPrefix(line, "--- "):
+			if p := trimDiffPath(strings.TrimRight(line[4:], " \t")); p != "/dev/null" {
+				minus = p
+			}
+
+		case strings.HasPrefix(line, "+++ "):
+			p := trimDiffPath(strings.TrimRight(line[4:], " \t"))
+			if p == "/dev/null" {
+				// Deletion: the a-side names the file.
+				if add(minus) {
+					resolved = true
+				}
+				continue
+			}
+			if add(p) {
+				resolved = true
+			}
+		}
+	}
+	flush()
 	return out
+}
+
+// headerPath extracts the path from the `a/X b/X` remainder of a `diff --git`
+// line. For a non-rename both sides are identical, so the split point is
+// determined by length rather than by whitespace — which is what makes it
+// space-safe. Renames (a/old b/new) fall back to the last field; the following
+// +++ line supersedes it anyway.
+func headerPath(rest string) string {
+	rest = strings.TrimRight(rest, " \t")
+	if n := (len(rest) - 5) / 2; n > 0 && len(rest) >= 5 {
+		a, b := rest[:2+n], rest[2+n+1:]
+		if strings.HasPrefix(a, "a/") && strings.HasPrefix(b, "b/") && a[2:] == b[2:] {
+			return a[2:]
+		}
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	return trimDiffPath(fields[len(fields)-1])
 }
 
 func trimDiffPath(p string) string {
