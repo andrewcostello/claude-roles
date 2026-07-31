@@ -6,9 +6,53 @@ Shared Claude agent role definitions and dispatcher-friendly workflow skills for
 claude-workflow/
 ├── roles/    # Agent role definitions — read by Claude as "be this role"
 ├── skills/   # Composable workflow skills the Tasker loads on demand
-├── config/   # Shared project-agnostic configuration
+├── cmd/      # Go orchestrators — deterministic control flow and verdicts
+├── config/   # Shared configuration, including the risk-path rule table
 └── docs/     # Supporting documentation
 ```
+
+**The division of labour:** `cmd/` owns control flow and truth — what runs, in what order, whether it passed, what runs next. `roles/` and `skills/` own discovery and judgment — reading code, finding defects, weighing designs. A decision that is a glob lookup, a regex scan, an exit code, or arithmetic belongs in `cmd/`; a decision that requires reading the code belongs in a role. When a role file recites a number or a path list that `cmd/` also knows, the two drift and the role loses.
+
+## Orchestrators (`cmd/`)
+
+Each is a standalone stdlib-only Go module. Build with `go build -o <name> .` in its directory.
+
+| Binary | Owns | Exit codes |
+|---|---|---|
+| `cmd/classify` | Diff → risk tier, component presets, panel shape, financial/migration flags, human-PR-gate decision, skill routing, and the argv for `cmd/reviewer`. Resolves `base_ref` once for the whole run and rejects a stale local base. Writes the run state. | 0 classified, 3 INVALID_INPUT |
+| `cmd/gates` | Deterministic verification gates: build, test, coverage, lint, complexity, gosec, staticcheck, semgrep, mutation, benchmarks. Derives the gate set from the classification, runs each **per Go module**, writes raw output to disk and status into the run state. A gate that cannot run FAILS unless waived by name with a reason. | 0 all pass, 1 a gate failed or could not run, 3 INVALID_INPUT |
+| `cmd/reviewer` | Parallel review panel: seat dispatch, per-scout role slicing, finding dedup, tier consensus floors, component dimension floors, merged verdict, `-findings-out` JSON | 0 complete, 2 REVIEW_UNAVAILABLE, 3 INVALID_INPUT |
+| `cmd/recheck` | Rounds 3+ targeted verification: verifies each prior at-or-above-floor finding as RESOLVED/STILL_OPEN/REGRESSED, hunts new findings in changed files only, computes the convergence verdict mechanically | 0 APPROVE, 1 ITERATE, 2 ESCALATE |
+| `cmd/repro` | Stack preflight and repeated-run bug reproduction with a JIRA-ready report | 0 reproduced / verdict per flags |
+| `cmd/deepseek` | DeepSeek provider shim used by the `deepseek-scouts` seat | — |
+
+Typical front of a run:
+
+```bash
+RUN_STATE=/tmp/run-$TASK_KEY.json
+
+# 1. Classify — risk, components, panel shape, gate flags, reviewer argv
+git -C "$WORKTREE" diff origin/main...HEAD | ~/Project/claude-workflow/cmd/classify/classify \
+  -worktree "$WORKTREE" -base origin/main -task "$TASK_KEY" -out "$RUN_STATE"
+
+# 2. Gates — deterministic checks, per module, before spending reviewer tokens
+~/Project/claude-workflow/cmd/gates/gates -run-state "$RUN_STATE" || exit 1
+
+# 3. Panel — argv comes from the classification; never hand-assemble -risk / -component
+git -C "$WORKTREE" diff origin/main...HEAD | ~/Project/claude-workflow/cmd/reviewer/main \
+  $(jq -r '.classification.reviewer_args | join(" ")' "$RUN_STATE") \
+  -findings-out "/tmp/findings-$TASK_KEY-r1.json"
+```
+
+Note `cmd/gates` runs each gate **inside the owning module**. This repo and `evenplay-mono` both have no root `go.mod`, so `go build ./...` from the repo root fails outright — gates discovers the module for every changed file and sets `cwd` accordingly. That is also why the binaries above are built per directory (`cd cmd/gates && go build -o gates .`).
+
+Configuration:
+
+| File | Owns |
+|---|---|
+| `config/risk-paths.json` | Path → risk/component/financial/presentation rules, plus the gate-signal patterns that revoke the reduced-panel carve-out |
+| `config/gates.json` | Gate commands, triggers, scopes, timeouts, coverage floors and exemptions, mutation/benchmark thresholds |
+| `config/run-state.schema.json` | The run-state contract and which node owns which field |
 
 ## Roles (`roles/`)
 
@@ -52,18 +96,21 @@ Composable workflow primitives the Tasker loads on demand. Each skill is self-co
 
 ## Prerequisites
 
-### Four-model review panel
+### Five-seat review panel
 
-The Tasker dispatches four independent reviewers in parallel for Critical/High risk:
+`cmd/reviewer` dispatches five independent seats in parallel (its `-reviewers` default is `claude,claude-scouts,codex,grok,agy`):
 
-| Slot | Model | Transport | Setup |
+| Seat | Model | Transport | Setup |
 |------|-------|-----------|--------|
-| **A** | Claude | Task / general-purpose subagent | Built-in |
-| **B** | Codex | `codex` CLI | Codex CLI + OpenAI auth |
-| **C** | Gemini | `agy` CLI | Antigravity / Gemini credentials |
-| **D** | Grok | `grok` CLI | [Grok CLI](https://grok.com) on `PATH`, `grok login` once per host |
+| **claude** | Claude — broad, full-context | `claude` CLI | Built-in |
+| **claude-scouts** | Claude — 8 parallel dimension scouts, fanned out and reduced to one verdict | `claude` CLI | Built-in |
+| **codex** | Codex | `codex` CLI | Codex CLI + OpenAI auth |
+| **grok** | Grok | `grok` CLI | [Grok CLI](https://grok.com) on `PATH`, `grok login` once per host |
+| **agy** | Gemini | `agy` CLI | Antigravity / Gemini credentials |
 
-**Fallback:** If any plugin or CLI is unavailable, the Tasker dispatches an additional Claude subagent as replacement and labels the gap. Consensus floors when the full panel is present: **4/4 Critical**, **3/4 High**.
+Optional additional seats: `deepseek-scouts`, `kimi`.
+
+**Consensus floors are computed, not recited** — `consensusFloor()` in `cmd/reviewer/main.go` scales the floor with panel size and risk tier: Critical demands the full panel, High tolerates one absence (`ceil(3N/4)`, min 2), Medium a majority, Low one. Completed reviews below the floor produce `REVIEW_UNAVAILABLE` (exit 2), not a verdict. Do not hardcode floor numbers in role files; read them from the CLI's output.
 
 Shared review tooling:
 
@@ -150,13 +197,16 @@ The Coder role uses placeholders — replace these here so subagents know the ac
 
 ### Risk Classification
 
+Do not classify by hand — run `cmd/classify`, which derives the tier from `config/risk-paths.json`:
+
 | Risk | Applies To | Review Depth |
 |------|-----------|--------------|
-| High | Wallet, payments, auth, state mutations | Full dual review |
-| Medium | Repos, validation, read-only services | Single review |
-| Low | Config, docs, migrations | Self-review only |
+| Critical | Balance mutations, bet settlement, payout calculations, outcome determination, withdrawals | 5-seat panel (full consensus) + Verification Agent + Security Linter + Design Agent |
+| High | Auth, session, state machines, audit trail, ledger, migrations, wire contracts | 5-seat panel (N−1 consensus) + Static Analysis Gate + Design Agent |
+| Medium | Repositories, validation, queries, read-only, dependency bumps | 5-seat panel (majority consensus) |
+| Low | Client-only presentation, docs, test helpers | Reduced single-reviewer panel — never zero |
 
-When in doubt, go one level higher.
+Risk is the MAX over every rule matched by every changed file, so adding a rule can only raise a tier. A path no rule covers fails closed to High. When in doubt, go one level higher — and add a rule so the next run doesn't need judgment.
 ```
 
 ### 3. Configure team settings
@@ -232,7 +282,7 @@ Read .claude/workflow/roles/tasker.md. Execute the plan at docs/plans/2025-01-01
 ```
 Human Request
      ↓
-[Tasker] reads tasker.md — classifies risk, breaks down, finds references
+[Tasker] reads tasker.md — breaks down, finds references, enumerates edge cases
      ↓
 (Critical/High) → [Design Agent] → 2-3 designs → Tasker selects one
      ↓
@@ -240,15 +290,24 @@ Human Request
      ↓
 Completion Report → Tasker strips self-assessment
      ↓
+cmd/classify  → risk · components · panel shape · gates · reviewer argv → run.json
+     ↓            (mechanical: no model judgment, base_ref resolved once)
 (Critical only) → [Security Linter] → PASS / FLAG / FAIL
      ↓
-[Reviewer A: Claude] + [B: Codex] + [C: Gemini/agy] + [D: Grok]
-     ↓                    ↓              ↓                 ↓
-                    Four-model merged verdict
-                           ↓
-    APPROVED ✅  |  ITERATE → fix CRITICAL/HIGH only → targeted re-review
-                 |  REJECT → escalate to human
+cmd/reviewer — 5 seats in parallel, argv from classification.reviewer_args
+  claude · claude-scouts (8 dimension scouts) · codex · grok · agy
+     ↓
+  dedup → tier consensus floor → component dimension floors → merged verdict
+     ↓
+    APPROVE ✅ → pr-raise (human gate iff classification.human_pr_gate)
+    ITERATE    → fix CRITICAL/HIGH only
+                   round 2:  full re-audit (cmd/reviewer)
+                   round 3+: targeted verification (cmd/recheck, -min-severity
+                             from classification.recheck_min_severity)
+    REJECT     → escalate to human
 ```
+
+Risk classification sits after the Coder because the diff is the input. The Tasker still classifies provisionally in Phase 1 to pick the Design Agent and Coder gates; `cmd/classify` is the authority once code exists, and it can raise the tier the Tasker guessed.
 
 **PR review workflow (human-partnered):**
 

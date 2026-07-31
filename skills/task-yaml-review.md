@@ -89,7 +89,7 @@ These rules ALWAYS hold, regardless of the optimisation target:
 | Rule | Trigger | Required model | Action on violation |
 |---|---|---|---|
 | Critical-risk → Opus | label or description mentions: balance mutation, settlement, payout, withdrawal, gambling outcome, idempotency key on financial flow | claude-opus-4-7 | upgrade and flag |
-| Financial paths → Opus | description references `apps/finance-domain/wallet`, `apps/finance-domain/settlement`, `apps/finance-domain/payout`, `apps/finance-domain/recovery` | claude-opus-4-7 | upgrade and flag |
+| Financial paths → Opus | description references any path matching a `financial: true` rule in `config/risk-paths.json` — `apps/finance-domain/wallet`, `apps/finance-domain/paygate`, the settlement/refund/wager/recovery files under `apps/platform-domain/bay-session`, or `payout*` under `platform-domain/core` / `game-domain/engine` | claude-opus-4-7 | upgrade and flag |
 | High-risk → Opus | label or description mentions: auth surface, JWT, session, state machine, audit trail, ledger, public API contract, RBAC | claude-opus-4-7 | upgrade and flag |
 | Foundation → Opus | task appears in ≥2 other tasks' blockedBy | claude-opus-4-7 | upgrade and flag |
 | Size XL → split | size:XL label | (none) | reject; ask user to split into multiple L |
