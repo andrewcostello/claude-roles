@@ -87,6 +87,7 @@ func main() {
 	risk := flag.String("risk", "", "Risk tier (default: taken from the findings file)")
 	maxNew := flag.Int("max-new", 0, "Escalate if NEW at-or-above-floor finding count is >= this (0 = any new finding escalates; pass prior round's new-count minus 1 to enforce strict decrease)")
 	minSeverity := flag.String("min-severity", "high", "Severity floor to converge to: critical|high|medium. \"high\" (default): verify prior CRITICAL/HIGH and hunt new CRITICAL/HIGH — the always-on bar. \"medium\": also verify prior MEDIUMs and hunt new MEDIUMs — for critical systems that must reach zero MEDIUM-or-higher. \"critical\": CRITICAL only.")
+	model := flag.String("model", "claude-opus-5", "Model for the recheck verifier. Default (and the model to keep) is claude-opus-5 — verification of money findings stays on the strong model. A budget model (e.g. claude-haiku-4-5-20251001) is available for A/B experiments only; low confidence, do not adopt for real iterations until proven.")
 	flag.Parse()
 
 	floor := normalizeFloor(*minSeverity)
@@ -130,7 +131,7 @@ func main() {
 	log.Printf("Verifying %d prior %s-or-higher finding(s) against %d changed file(s) (%s..%s)",
 		len(open), floor, len(changedFiles), short(export.ReviewedSHA), short(headSHA))
 
-	out, err := runVerifier(*worktree, tier, floor, open, iterDiff, changedFiles)
+	out, err := runVerifier(*worktree, tier, floor, *model, open, iterDiff, changedFiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "verifier failed: %v\n", err)
 		os.Exit(3)
@@ -293,7 +294,7 @@ Your FINAL message must be ONLY a raw JSON object matching the provided schema, 
 	return b.String()
 }
 
-func runVerifier(worktree, risk, floor string, findings []ExportFinding, iterDiff string, changedFiles []string) (verifierOutput, error) {
+func runVerifier(worktree, risk, floor, model string, findings []ExportFinding, iterDiff string, changedFiles []string) (verifierOutput, error) {
 	effort := "high"
 	if risk == "critical" {
 		effort = "xhigh"
@@ -309,7 +310,7 @@ func runVerifier(worktree, risk, floor string, findings []ExportFinding, iterDif
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		cmd := exec.CommandContext(ctx, "claude",
 			"-p",
-			"--model", "claude-fable-5",
+			"--model", model,
 			"--effort", effort,
 			"--safe-mode",
 			"--strict-mcp-config",

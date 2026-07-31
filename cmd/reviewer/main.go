@@ -120,7 +120,7 @@ func main() {
 	componentFlag := flag.String("component", "", "Comma-separated component presets applying hard dimension floors: wallet, bet-settlement, bet-placement, jackpot, responsible-gambling")
 	floorsFlag := flag.String("floors", "", "Explicit dimension floor overrides, e.g. \"idem=5,resil=5\" (dims: resil, idem, obs, perf, maint). Floors only raise, never lower.")
 	findingsOutFlag := flag.String("findings-out", "", "Write the deduplicated findings + review metadata as JSON to this path (machine input for cmd/recheck)")
-	claudeModelFlag := flag.String("claude-model", "claude-fable-5", "Model for the claude broad seat + all scouts + focused scopes (e.g. claude-fable-5, claude-opus-4-8). For model-tiering A/B.")
+	claudeModelFlag := flag.String("claude-model", "claude-opus-5", "Model for the claude broad seat + all scouts + focused scopes (e.g. claude-opus-5, claude-haiku-4-5-20251001). Default claude-opus-5 (cheaper than fable for this account; haiku for budget A/B).")
 	deepseekModelFlag := flag.String("deepseek-model", "deepseek-v4-flash", "Model for the deepseek broad seat (deepseek-v4-flash or deepseek-v4-pro). For A/B testing.")
 	kimiModelFlag := flag.String("kimi-model", "", "Model alias for the kimi broad seat (e.g. moonshot-ai/kimi-k3). Empty inherits the kimi CLI's configured default_model.")
 	scoutPreloadFlag := flag.String("scout-preload", "none", "Scout file-preload mode. \"none\" (default): preload no file contents — each scout tool-reads what it needs from the full diff + Changed Files table it always receives (robust: coverage never keyed on guessed paths, and it can't exceed the context window). \"all\": paste every high-signal changed file into every scout — measured to OVERFLOW the context window on a 26-file PR (209k > 200k tokens) and is expensive elsewhere; only safe for small diffs.")
@@ -306,7 +306,11 @@ type reviewEnv struct {
 // whole seat, so these ceilings are sized generously above observed runtimes.
 func providerTimeout(name string) time.Duration {
 	switch name {
-	case "claude", "claude-scouts", "deepseek-scouts":
+	case "claude-scouts":
+		// Room for one long first attempt (18m) by the heavy scouts
+		// (dataflow-spec, test-docs) plus a short transient-only retry.
+		return 24 * time.Minute
+	case "claude", "deepseek-scouts":
 		return 20 * time.Minute
 	default:
 		return 10 * time.Minute
@@ -1532,7 +1536,7 @@ func grokEffort(risk string) string {
 // to the broad seat + all 7 scouts on every panel.
 func claudeCmd(ctx context.Context, cwd, effort, schemaStr, systemPrompt, model string) *exec.Cmd {
 	if model == "" {
-		model = "claude-fable-5"
+		model = "claude-opus-5"
 	}
 	args := []string{
 		"-p",
@@ -1705,35 +1709,33 @@ var reviewScouts = []scout{
 		name:         "dataflow-spec",
 		dims:         []string{"correctness"},
 		extras:       []string{"data_flow_trace"},
-		scope:        "Spec-vs-implementation correctness and the seams between components: run reviewer.md Step 1 (Understand the Spec), Step 2 (Trace the Data Flow) and Step 2.5 (Sibling-Surface Trace) in full. Trace every entry point's inputs to storage/response/error paths, run the sentinel audit, enumerate sibling surfaces for every touched symbol, check lifecycle symmetry and legacy-path supersession. Summarize your trace in the data_flow_trace field. You own the Correctness pass/fail verdict from the logic side.",
+		scope:        "Correctness from the logic side: spec-vs-implementation and the seams between components. Apply Steps 1, 2, and 2.5 of your role in full (Step 2.5 covers siblings, callers two layers up, and the removed-cap / asymmetric-op reads). Record your trace in the data_flow_trace field. You own the Correctness pass/fail.",
 		model:        "deepseek-v4-pro",
 		roleSections: []string{"Step 1:", "Step 2:", "Step 2.5:", "1. Correctness"},
 	},
 	{
-		name:         "db-compliance",
-		dims:         []string{"compliance"},
-		scope:        "Database and compliance: parameterized inputs on every query, N+1 patterns, index coverage for new queries, the full migration checklist (idempotency, down migration, FK indexes, NOT NULL/DEFAULT strategy, version ordering, schema qualification, writers for new projections), immutable audit records, ledger entries for money movement, soft-delete rules, and the responsible-gambling checks. You own the Compliance pass/fail verdict.",
+		// Money & data integrity — merged from the former db-compliance and
+		// financial-fairness scouts, which read the SAME wallet/ledger surface
+		// and filed duplicate findings (both flagged the SMG-3966 leak). One
+		// agent owning both dimensions removes a redundant opus seat and the
+		// duplicate file-reading, and still reports a separate pass/fail per dim.
+		name:         "integrity",
+		dims:         []string{"compliance", "exploitability"},
+		scope:        "Money & data integrity. Apply the '3. Compliance' and '4. Exploitability & Fairness' sections of your role in full. You own BOTH pass/fail verdicts — report a separate result for each.",
 		model:        "deepseek-v4-pro",
-		roleSections: []string{"3. Compliance"},
-	},
-	{
-		name:         "financial-fairness",
-		dims:         []string{"exploitability"},
-		scope:        "Financial integrity and exploitability/fairness: trace every arithmetic path for overflow, integer-only money math, rounding consistency and direction across debit/credit, ledger entries for every balance mutation, CSPRNG for game outcomes, server-anchored time for time-gated mechanics, and no client-side outcome/paytable/RTP leakage. You own the Exploitability & Fairness pass/fail verdict.",
-		model:        "deepseek-v4-pro",
-		roleSections: []string{"4. Exploitability"},
+		roleSections: []string{"3. Compliance", "4. Exploitability"},
 	},
 	{
 		name:         "auth-security",
 		dims:         []string{"security"},
-		scope:        "Security and authorization: map every endpoint/mutation to its auth check, all-writers enumeration for every gate/lock enum touched, gate parity on mutate-after-accept paths, fail-closed proof for gated capability decisions, input validation at every trust boundary, injection, PII in code or logs, token validation and expiry. You own the Security pass/fail verdict.",
+		scope:        "Security & authorization. Apply the '2. Security' section of your role in full. You own the Security pass/fail.",
 		model:        "deepseek-v4-pro",
 		roleSections: []string{"2. Security"},
 	},
 	{
 		name:         "concurrency-resilience",
 		scores:       []string{"resilience", "idempotency"},
-		scope:        "Concurrency, idempotency, and resilience: shared mutable state protection, precondition checks inside the same lock/tx as the mutation they gate, TOCTOU windows, lock ordering, context cancellation; idempotency keys inside transactions, dual-write convergence (the 4-cell outcome table), reserve-first CAS ordering, replay returning the original result; timeouts, retries with backoff, error-guard specificity, graceful degradation. Score Resilience and Idempotency 1-5 per reviewer.md anchors. Races are Correctness-grade defects — report them as CRITICAL/HIGH findings regardless of likelihood.",
+		scope:        "Concurrency, idempotency, and resilience. Apply the Resilience and Idempotency sections of your role and score each 1-5 per the anchors. One emphasis: a data race is a Correctness-grade defect — report it CRITICAL/HIGH regardless of how unlikely the interleaving looks.",
 		model:        "deepseek-v4-flash",
 		roleSections: []string{"4. Resilience", "5. Idempotency"},
 	},
@@ -1741,7 +1743,7 @@ var reviewScouts = []scout{
 		name:         "test-docs",
 		dims:         []string{"correctness"},
 		extras:       []string{"test_quality_assessment"},
-		scope:        "Test quality and docs truth: run reviewer.md Step 4 in full (behavior vs implementation coupling, the litmus test, vacuous/false-passing seals, sleep-as-synchronization, RED-then-GREEN proof for regression seals, mock-contract drift) and Step 4.5 (assert every comment/docstring/PR claim against the final code). Summarize in the test_quality_assessment field. You own the Correctness pass/fail verdict from the testing side: a spec'd edge case with no test, or tests that pass without proving correctness, is a Correctness FAIL.",
+		scope:        "Test quality and docs-truth. Apply Step 4 (test quality) and Step 4.5 (docs-truth) of your role in full. Record your assessment in the test_quality_assessment field. You own the Correctness pass/fail from the testing side: a spec'd edge case with no test, or a test that passes without proving correctness, is a Correctness FAIL.",
 		model:        "deepseek-v4-flash",
 		roleSections: []string{"Step 4:", "Step 4.5:", "1. Correctness"},
 	},
@@ -1749,7 +1751,7 @@ var reviewScouts = []scout{
 		name:         "quality-scores",
 		scores:       []string{"observability", "performance", "maintainability"},
 		extras:       []string{"design_coherence"},
-		scope:        "Observability (the 3am test, correlation IDs, silent failures, best-effort steps that downstream invariants depend on), Performance (N+1, unbounded queries, pagination, locks across I/O, missing indexes), Maintainability (complexity hard caps and the named override patterns, project conventions, naming, magic numbers), and Design Coherence (does this change fit the system's existing patterns — summarize in the design_coherence field). Score those three dimensions 1-5 per reviewer.md anchors.",
+		scope:        "Observability, Performance, and Maintainability: score each 1-5 per the anchors in your role's dimension sections. Also judge Design Coherence — does this change fit the system's existing patterns — and summarize it in the design_coherence field.",
 		model:        "deepseek-v4-flash",
 		roleSections: []string{"6. Observability", "7. Performance", "8. Maintainability", "Design Coherence"},
 	},
@@ -1913,6 +1915,55 @@ func changedFilesList(ctx ReviewInputContext) string {
 	return b.String()
 }
 
+// logScoutContribution emits per-scout telemetry: how many findings each scout
+// produced and how many were UNIQUE (no other scout cited the same file:line).
+// A scout that consistently contributes few unique findings across many PRs is
+// a merge/removal candidate — this is the data behind decisions like folding
+// db-compliance + financial-fairness into `integrity`. Uniqueness is by exact
+// file:line, so near-duplicates count as unique — it under-reports overlap, a
+// deliberately conservative bias against over-merging.
+type scoutContribution struct {
+	name          string
+	total, unique int
+}
+
+// scoutContributions is the pure core of logScoutContribution: per scout, how
+// many findings it produced and how many were unique (sole owner of that
+// file:line across the set).
+func scoutContributions(outputs []scoutOutput) []scoutContribution {
+	type loc struct {
+		file string
+		line int
+	}
+	owners := map[loc]int{}
+	for _, out := range outputs {
+		for _, f := range out.Findings {
+			owners[loc{f.File, f.Line}]++
+		}
+	}
+	out := make([]scoutContribution, 0, len(outputs))
+	for i, o := range outputs {
+		unique := 0
+		for _, f := range o.Findings {
+			if owners[loc{f.File, f.Line}] == 1 {
+				unique++
+			}
+		}
+		name := ""
+		if i < len(reviewScouts) {
+			name = reviewScouts[i].name
+		}
+		out = append(out, scoutContribution{name: name, total: len(o.Findings), unique: unique})
+	}
+	return out
+}
+
+func logScoutContribution(outputs []scoutOutput) {
+	for _, c := range scoutContributions(outputs) {
+		log.Printf("scout-contribution %s: %d finding(s), %d unique\n", c.name, c.total, c.unique)
+	}
+}
+
 func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error) {
 	// Optional orientation pass: one cheap map-model call, serial before the
 	// fan-out (scouts need it), injected as a shared cached prefix by runOneScout.
@@ -1940,17 +1991,30 @@ func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error)
 			var out scoutOutput
 			var err error
 			for attempt := 1; attempt <= 2; attempt++ {
-				// Each attempt gets its own ceiling (within the provider
-				// context) so a retry isn't strangled by whatever the first
-				// attempt left on a shared clock.
-				attemptCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+				// The first attempt gets a generous window so the heavy scouts
+				// (dataflow-spec, test-docs) COMPLETE rather than being killed
+				// at a tight ceiling; the retry is short because it only exists
+				// for TRANSIENT failures (a killed scout wastes all its tokens).
+				d := 18 * time.Minute
+				if attempt == 2 {
+					d = 6 * time.Minute
+				}
+				attemptCtx, cancel := context.WithTimeout(ctx, d)
 				out, err = runOneScout(attemptCtx, s, env)
+				timedOut := attemptCtx.Err() != nil // deadline or provider-ctx cancel
 				cancel()
 				if err == nil {
 					break
 				}
+				// A timeout means the scout was working and ran out of clock —
+				// retrying from scratch just burns another long window to time
+				// out again. Only a transient error (exit 1, parse) earns a retry.
+				if timedOut {
+					log.Printf("scout %s timed out after %s; not retrying (would repeat) — degrading\n", s.name, d)
+					break
+				}
 				if attempt == 1 {
-					log.Printf("scout %s failed; retrying once: %v\n", s.name, err)
+					log.Printf("scout %s failed (transient); retrying once: %v\n", s.name, err)
 				}
 			}
 			if err != nil {
@@ -1962,6 +2026,8 @@ func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error)
 		}(i, s)
 	}
 	wg.Wait()
+
+	logScoutContribution(outputs)
 
 	var failed []string
 	for i, e := range errs {

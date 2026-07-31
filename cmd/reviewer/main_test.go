@@ -141,7 +141,7 @@ func TestReduceBlockingFindingForcesRequestChanges(t *testing.T) {
 func TestReduceTwoDimensionFailuresReject(t *testing.T) {
 	outputs := fullScoutOutputs()
 	outputs[scoutIndex(t, "auth-security")].Dimensions["security"] = DimensionResult{Pass: false, Notes: "injection"}
-	outputs[scoutIndex(t, "db-compliance")].Dimensions["compliance"] = DimensionResult{Pass: false, Notes: "no ledger entry"}
+	outputs[scoutIndex(t, "integrity")].Dimensions["compliance"] = DimensionResult{Pass: false, Notes: "no ledger entry"}
 
 	resp, err := reduceScoutResults(outputs)
 	if err != nil {
@@ -323,10 +323,9 @@ func TestDeepseekScoutModelAssignment(t *testing.T) {
 	}
 
 	hardScouts := map[string]bool{
-		"dataflow-spec":      true,
-		"auth-security":      true,
-		"financial-fairness": true,
-		"db-compliance":      true,
+		"dataflow-spec": true,
+		"auth-security": true,
+		"integrity":     true,
 	}
 	easyScouts := map[string]bool{
 		"concurrency-resilience": true,
@@ -350,9 +349,9 @@ func TestDeepseekScoutModelAssignment(t *testing.T) {
 }
 
 func TestDeepseekScoutCoverage(t *testing.T) {
-	// Verify all 7 scouts exist (TestScoutCoverage already checks dim/score coverage)
-	if len(reviewScouts) != 7 {
-		t.Errorf("reviewScouts count = %d, want 7", len(reviewScouts))
+	// Verify all 6 scouts exist (TestScoutCoverage already checks dim/score coverage)
+	if len(reviewScouts) != 6 {
+		t.Errorf("reviewScouts count = %d, want 6", len(reviewScouts))
 	}
 	seen := map[string]bool{}
 	for _, s := range reviewScouts {
@@ -542,8 +541,8 @@ func TestScoutRoleSlicesAreSmallerAndScoped(t *testing.T) {
 
 func TestDegradeUnverifiedHoldsRequestChanges(t *testing.T) {
 	outputs := fullScoutOutputs()
-	i := scoutIndex(t, "db-compliance") // sole owner of "compliance"
-	outputs[i] = scoutOutput{}          // failed scout returns nothing
+	i := scoutIndex(t, "integrity") // sole owner of "compliance"
+	outputs[i] = scoutOutput{}      // failed scout returns nothing
 	errs := make([]error, len(outputs))
 	errs[i] = context_deadline()
 
@@ -596,7 +595,7 @@ func TestDegradeNeverRejectsFromUnverifiedAlone(t *testing.T) {
 	// Fail two score-owning scouts; unverified scores must not manufacture a REJECT.
 	outputs := fullScoutOutputs()
 	errs := make([]error, len(outputs))
-	for _, name := range []string{"db-compliance", "auth-security"} {
+	for _, name := range []string{"integrity", "auth-security"} {
 		i := scoutIndex(t, name)
 		outputs[i] = scoutOutput{}
 		errs[i] = context_deadline()
@@ -648,5 +647,28 @@ func TestScoutRoleSectionsCoverAllDimensions(t *testing.T) {
 		if !strings.Contains(slice, d) {
 			t.Errorf("reviewer.md dimension %q is covered by no scout's roleSections — assign it to a scout", d)
 		}
+	}
+}
+
+func TestScoutContributions(t *testing.T) {
+	// Build outputs aligned to reviewScouts; give the first two scouts a shared
+	// finding (same file:line) and the first scout one extra unique finding.
+	outputs := make([]scoutOutput, len(reviewScouts))
+	outputs[0].Findings = []Finding{
+		{File: "a.go", Line: 10}, // shared with scout 1 → not unique
+		{File: "a.go", Line: 20}, // unique to scout 0
+	}
+	outputs[1].Findings = []Finding{
+		{File: "a.go", Line: 10}, // shared with scout 0 → not unique
+	}
+	got := scoutContributions(outputs)
+	if got[0].total != 2 || got[0].unique != 1 {
+		t.Errorf("scout 0 = %+v, want total 2 unique 1", got[0])
+	}
+	if got[1].total != 1 || got[1].unique != 0 {
+		t.Errorf("scout 1 = %+v, want total 1 unique 0 (shared line)", got[1])
+	}
+	if got[0].name != reviewScouts[0].name {
+		t.Errorf("contribution names must align to reviewScouts order")
 	}
 }
