@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/andrewcostello/claude-workflow/config/run-state.schema.json",
+  "title": "Task run state",
+  "description": "The graph blackboard for one task run. Every node reads it and writes back its own slice; no node recomputes another node's field. Replaces state currently scattered across /tmp/findings-$TASK-r$N.json, $SUMMARY_PATH markdown, Jira comments, and env vars.\n\nOWNERSHIP — the reason this file exists:\n  cmd/classify  writes repo, classification              (nothing else may write them)\n  cmd/gates     writes gates[*]\n  cmd/reviewer  writes rounds[*] for kind=full\n  cmd/recheck   writes rounds[*] for kind=recheck\n  the driver    writes task_key, round, verdict, status, pr, deferred_findings\n\nresolved-once fields: repo.base_ref and repo.base_sha are resolved exactly once, by classify, at run start. No later node re-derives a base. That is what makes the stale-local-main diff bug structurally impossible rather than a thing to remember.",
+
+  "type": "object",
+  "required": ["schema_version", "repo"],
+  "additionalProperties": false,
+
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "task_key": {
+      "type": "string",
+      "description": "e.g. SMG-3966. Written by the driver.",
+      "pattern": "^[A-Z]+-[0-9]+$"
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+
+    "repo": {
+      "type": "object",
+      "description": "Resolved ONCE by cmd/classify. Immutable for the rest of the run except head_sha/dirty, which classify refreshes on re-run.",
+      "required": ["worktree", "base_ref", "base_sha"],
+      "additionalProperties": false,
+      "properties": {
+        "worktree": { "type": "string", "description": "Absolute path to the task worktree." },
+        "base_ref": {
+          "type": "string",
+          "description": "The base to diff against. classify rejects a local branch name whose origin/ counterpart differs, so this is always the remote truth.",
+          "examples": ["origin/main"]
+        },
+        "base_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "dirty": { "type": "boolean", "description": "Uncommitted changes present in the worktree at classify time." },
+        "branch": { "type": "string" }
+      }
+    },
+
+    "classification": {
+      "type": "object",
+      "description": "Written by cmd/classify. Mechanical, from config/risk-paths.json + the diff. Never a model judgment.",
+      "required": ["risk", "panel", "config_path", "classified_at"],
+      "additionalProperties": false,
+      "properties": {
+        "risk": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "critical"],
+          "description": "MAX over every rule matched by every changed file. Feeds cmd/reviewer -risk."
+        },
+        "risk_reasons": {
+          "type": "array",
+          "description": "Human-auditable derivation: which rule raised the tier and which file triggered it.",
+          "items": { "type": "string" }
+        },
+        "components": {
+          "type": "array",
+          "description": "UNION of matched rule components. Feeds cmd/reviewer -component, which raises per-dimension floors. Validated at config load against cmd/reviewer's componentFloorPresets keys.",
+          "items": {
+            "type": "string",
+            "enum": ["wallet", "bet-settlement", "bet-placement", "jackpot", "responsible-gambling"]
+          },
+          "uniqueItems": true
+        },
+        "financial_paths_touched": {
+          "type": "boolean",
+          "description": "OR over matched rules' financial flag. Second deterministic check behind the human PR gate, independent of tier (pr-raise.md)."
+        },
+        "client_only": {
+          "type": "boolean",
+          "description": "True only when EVERY changed file matched at least one rule and ALL of its matched rules are presentation. Necessary but not sufficient for the reduced panel."
+        },
+        "server_surface": {
+          "type": "boolean",
+          "description": "Any changed file has a server_surface_extensions extension (.go/.java/.py/.sql/.proto/.tf)."
+        },
+        "migration": {
+          "type": "boolean",
+          "description": "Any matched rule sets migration. Drives deterministic loading of migration-checklist.md."
+        },
+        "gate_signals": {
+          "type": "array",
+          "description": "Content-derived, not path-derived: changed LINES matching a gate_signals pattern. Any hit disqualifies the reduced panel — a gate/guard/flag decides whether something is allowed, which is a correctness surface, not presentation (PR 1298 precedent).",
+          "items": {
+            "type": "object",
+            "required": ["signal", "file"],
+            "additionalProperties": false,
+            "properties": {
+              "signal": { "type": "string" },
+              "file": { "type": "string" },
+              "sample": { "type": "string", "description": "The matching changed line, truncated." }
+            }
+          }
+        },
+        "panel": {
+          "type": "object",
+          "description": "Retires the 20 lines of prose at tasker.md:195-215. required is ALWAYS true: no PR is ever raised with zero AI review.",
+          "required": ["required", "seats", "reduced"],
+          "additionalProperties": false,
+          "properties": {
+            "required": { "type": "boolean", "const": true },
+            "seats": { "type": "integer", "enum": [1, 5] },
+            "reduced": {
+              "type": "boolean",
+              "description": "True only when client_only AND NOT server_surface AND NOT financial_paths_touched AND no components AND no gate_signals AND risk <= low."
+            },
+            "reasons": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "human_pr_gate": {
+          "type": "boolean",
+          "description": "risk == critical OR financial_paths_touched. When true the driver stops at Prepared PR (pr-raise.md)."
+        },
+        "recheck_min_severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium"],
+          "description": "medium when components is non-empty (critical systems converge to zero MEDIUM-or-higher), else high. Feeds cmd/recheck -min-severity so rounds 3+ cannot silently run at the wrong bar."
+        },
+        "skills": {
+          "type": "array",
+          "description": "Deterministic resolution of the path-derived rows of tasker.md's skill-routing table.",
+          "items": { "type": "string" },
+          "examples": [["critical-review-dispatch", "migration-checklist"]]
+        },
+        "reviewer_args": {
+          "type": "array",
+          "description": "Ready-to-exec argv for cmd/reviewer. Invokers pass this through verbatim instead of assembling flags, so -risk and -component cannot be forgotten by a caller.",
+          "items": { "type": "string" }
+        },
+        "changed_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "risk"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string" },
+              "risk": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+              "rules": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "unmatched_files": {
+          "type": "array",
+          "description": "Changed files no rule covered. They took unmatched_risk (fail-closed). A non-empty list is a signal to add a rule, not to lower the tier.",
+          "items": { "type": "string" }
+        },
+        "config_path": { "type": "string" },
+        "classified_at": { "type": "string", "format": "date-time" }
+      }
+    },
+
+    "gates": {
+      "type": "object",
+      "description": "Written by cmd/gates. Deterministic checks with real exit codes — replaces prose phases that asked a model to run commands and paste output. A gate absent from this map has NOT run; there is no self-reported PASS.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status"],
+        "additionalProperties": false,
+        "properties": {
+          "status": { "type": "string", "enum": ["pass", "fail", "skipped", "unavailable"] },
+          "exit_code": { "type": "integer" },
+          "command": { "type": "string" },
+          "ran_at": { "type": "string", "format": "date-time" },
+          "duration_ms": { "type": "integer" },
+          "output_path": { "type": "string", "description": "Raw output on disk. The summary quotes this file, never a paraphrase." },
+          "skip_reason": { "type": "string" },
+          "metrics": {
+            "type": "object",
+            "description": "Parsed numbers a gate produced, e.g. coverage_pct, mutation_score, max_bench_regression_pct.",
+            "additionalProperties": { "type": ["number", "string"] }
+          }
+        }
+      },
+      "propertyNames": {
+        "enum": [
+          "build", "test", "lint", "complexity", "coverage",
+          "gosec", "staticcheck", "semgrep",
+          "mutation", "bench_relative", "bench_absolute", "differential",
+          "domain_suite"
+        ]
+      }
+    },
+
+    "rounds": {
+      "type": "array",
+      "description": "One entry per review round, appended by cmd/reviewer (kind=full) or cmd/recheck (kind=recheck). This array IS the iteration state — new_finding_count here is what the next round's -max-new is computed from, replacing the hand arithmetic at iteration-protocol.md:131.",
+      "items": {
+        "type": "object",
+        "required": ["round", "kind", "verdict"],
+        "additionalProperties": false,
+        "properties": {
+          "round": { "type": "integer", "minimum": 1 },
+          "kind": {
+            "type": "string",
+            "enum": ["full", "recheck"],
+            "description": "Rounds 1-2 are full (round 2's re-audit is deliberate); rounds 3+ are recheck."
+          },
+          "reviewed_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+          "status": { "type": "string", "enum": ["review_complete", "review_unavailable", "invalid_input"] },
+          "verdict": { "type": "string", "enum": ["approve", "iterate", "reject", "escalate"] },
+          "findings_path": { "type": "string", "description": "cmd/reviewer -findings-out JSON for this round." },
+          "reviewers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "score": { "type": "integer", "minimum": 0, "maximum": 25 },
+                "verdict": { "type": "string", "enum": ["approve", "iterate", "reject"] },
+                "error": { "type": "string" }
+              }
+            }
+          },
+          "prior_findings_resolved": { "type": "integer", "minimum": 0 },
+          "prior_findings_still_open": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Non-zero escalates IMMEDIATELY, any round. A finding surviving its one dedicated fix round is a design problem, not a patching problem."
+          },
+          "prior_findings_regressed": { "type": "integer", "minimum": 0 },
+          "new_finding_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "NEW at-or-above-floor findings. Must strictly decrease round over round; the next round runs with -max-new = this minus 1."
+          },
+          "max_new_allowed": { "type": "integer", "description": "The -max-new the driver passed, derived from the prior round. Recorded so the invariant is auditable." },
+          "at_or_above_floor_count": { "type": "integer", "minimum": 0 },
+          "completed_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+
+    "round": { "type": "integer", "minimum": 0, "description": "Current round. len(rounds) once a round has completed." },
+    "verdict": { "type": "string", "enum": ["approve", "iterate", "reject", "escalate"] },
+    "status": {
+      "type": "string",
+      "enum": ["in_progress", "done", "blocked", "escalated"],
+      "description": "Maps to the Phase 5 summary Status field. The summary becomes a rendering of this file, not a document composed from memory."
+    },
+    "escalation_reason": { "type": "string" },
+
+    "pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "human_gate_fired": { "type": "boolean" },
+        "raised": { "type": "boolean" },
+        "url": { "type": "string" },
+        "title": { "type": "string" },
+        "branch": { "type": "string" },
+        "lines_changed": { "type": "integer" },
+        "not_raised_reason": { "type": "string" }
+      }
+    },
+
+    "deferred_findings": {
+      "type": "array",
+      "description": "At-or-below-floor findings logged rather than iterated. Rendered into the summary's Deferred findings section.",
+      "items": {
+        "type": "object",
+        "required": ["severity", "summary"],
+        "additionalProperties": false,
+        "properties": {
+          "severity": { "type": "string", "enum": ["medium", "low"] },
+          "summary": { "type": "string" },
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "found_in_round": { "type": "integer" }
+        }
+      }
+    }
+  }
+}
