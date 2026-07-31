@@ -672,3 +672,31 @@ func TestScoutContributions(t *testing.T) {
 		t.Errorf("contribution names must align to reviewScouts order")
 	}
 }
+
+func TestScoutModelTiering(t *testing.T) {
+	env := reviewEnv{claudeModel: "claude-sonnet-5", softModel: "claude-haiku-4-5-20251001"}
+	hard := reviewScouts[scoutIndex(t, "dataflow-spec")]
+	soft := reviewScouts[scoutIndex(t, "quality-scores")]
+	if !soft.soft {
+		t.Fatal("quality-scores must be marked soft")
+	}
+	if hard.soft {
+		t.Fatal("dataflow-spec must NOT be soft (owns correctness)")
+	}
+	// tiering off: everyone on the main model
+	if got := scoutModel(env, soft); got != "claude-sonnet-5" {
+		t.Errorf("tiering off: soft scout = %q, want claude-sonnet-5", got)
+	}
+	// tiering on: soft → soft-model, hard → main
+	env.scoutTiering = true
+	if got := scoutModel(env, soft); got != "claude-haiku-4-5-20251001" {
+		t.Errorf("tiering on: soft scout = %q, want haiku", got)
+	}
+	if got := scoutModel(env, hard); got != "claude-sonnet-5" {
+		t.Errorf("tiering on: hard scout = %q, want claude-sonnet-5 (main)", got)
+	}
+	// concurrency-resilience must stay hard (races are correctness-grade)
+	if reviewScouts[scoutIndex(t, "concurrency-resilience")].soft {
+		t.Error("concurrency-resilience must stay hard")
+	}
+}

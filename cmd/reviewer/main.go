@@ -127,6 +127,8 @@ func main() {
 	changeMapFlag := flag.Bool("scout-change-map", false, "EXPERIMENTAL: before dispatching scouts, run one cheap map-model pass over the diff to produce a per-file orientation map, injected as a shared cached prefix in every scout's system prompt. Aims to cut scout investigation turns. The map orients only — scouts still read code for verdicts.")
 	mapModelFlag := flag.String("map-model", "claude-haiku-4-5-20251001", "Model for the -scout-change-map orientation pass (cheap by design).")
 	sharedContextFlag := flag.Bool("shared-context", false, "EXPERIMENTAL: move the review context (metadata, changed-file table, precomputed sibling trace) + the diff — all identical across scouts — into a SHARED cached system-prompt prefix instead of re-sending them in each scout's stdin. Content-addressed prompt caching then pays them once (cache-create) + N-1 cache-reads (~10% price) rather than 6x fresh. With -scout-preload all, the (capped) read-pack rides the same shared prefix. Off by default until A/B-validated.")
+	scoutTieringFlag := flag.Bool("scout-tiering", false, "EXPERIMENTAL: run the SOFT scouts (quality-scores — obs/perf/maint/design, which own no money/correctness/security verdict) on -soft-model while the money/correctness/security scouts stay on -claude-model. Validated on PR-1353: the hard scouts on Sonnet-5 catch the Critical + vacuous-seal that haiku missed; the soft scout is safe to drop to haiku. Off by default.")
+	softModelFlag := flag.String("soft-model", "claude-haiku-4-5-20251001", "Model for SOFT scouts when -scout-tiering is on.")
 	flag.Parse()
 
 	log.Println("Starting Multi-Agent Code Review Orchestrator...")
@@ -214,6 +216,11 @@ func main() {
 		changeMapOn:   *changeMapFlag,
 		mapModel:      *mapModelFlag,
 		sharedContext: *sharedContextFlag,
+		scoutTiering:  *scoutTieringFlag,
+		softModel:     *softModelFlag,
+	}
+	if env.scoutTiering {
+		log.Printf("EXPERIMENTAL: scout tiering ON — soft scouts on %s, hard scouts on %s\n", env.softModel, env.claudeModel)
 	}
 	log.Printf("Scout preload mode: %s\n", env.scoutPreload)
 	if env.changeMapOn {
@@ -299,6 +306,8 @@ type reviewEnv struct {
 	mapModel      string // model for the change-map pass
 	changeMap     string // generated orientation map, injected into scout system prompts
 	sharedContext bool   // EXPERIMENTAL: shared cached context+diff prefix (see buildScoutBody / runOneScout)
+	scoutTiering  bool   // EXPERIMENTAL: soft scouts on softModel, hard scouts on claudeModel
+	softModel     string // model for soft scouts when scoutTiering is on
 }
 
 // providerTimeout is the per-attempt ceiling for one reviewer. Bake-off data
@@ -1701,6 +1710,20 @@ type scout struct {
 	// the full 52KB role — each scout uses ~1/7 of it, so slicing cuts the
 	// dominant input cost. Matched by exact-or-prefix against heading titles.
 	roleSections []string
+	// soft marks a scout that owns NO money/correctness/security verdict (only
+	// quality scores), so -scout-tiering may run it on the cheaper soft-model.
+	// The money/correctness/security scouts (incl. concurrency-resilience, since
+	// races are correctness-grade) are NOT soft and stay on the main model.
+	soft bool
+}
+
+// scoutModel is the effective claude model for a scout: the cheaper soft-model
+// when tiering is on and the scout is soft, else the main claude model.
+func scoutModel(env reviewEnv, s scout) string {
+	if env.scoutTiering && s.soft {
+		return env.softModel
+	}
+	return env.claudeModel
 }
 
 // commonRoleSections are the reviewer.md sections every scout needs regardless
@@ -1765,6 +1788,7 @@ var reviewScouts = []scout{
 		scope:        "Observability, Performance, and Maintainability: score each 1-5 per the anchors in your role's dimension sections. Also judge Design Coherence — does this change fit the system's existing patterns — and summarize it in the design_coherence field.",
 		model:        "deepseek-v4-flash",
 		roleSections: []string{"6. Observability", "7. Performance", "8. Maintainability", "Design Coherence"},
+		soft:         true, // only quality scores; safe to run on the cheap tier
 	},
 }
 
@@ -2100,7 +2124,7 @@ Use your tools: the Precomputed Sibling Surface Trace is already in your context
 		sysPrompt = "## Change Map (orientation only — decide what to read; read the code yourself for verdicts)\n\n" + env.changeMap + "\n\n" + sysPrompt
 	}
 
-	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), sysPrompt, env.claudeModel)
+	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), sysPrompt, scoutModel(env, s))
 	cmd.Stdin = strings.NewReader(prompt)
 
 	var outBuf, errBuf bytes.Buffer
