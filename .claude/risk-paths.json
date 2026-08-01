@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+
+  "_comment": [
+    "Risk-path rule table for claude-workflow itself. This repo ships no product",
+    "and moves no money, so there are no financial rules — but the tools in cmd/",
+    "DECIDE what gets reviewed everywhere else, and config/ plus .claude/ hold the",
+    "rule tables that are the gate. A wrong change here disables review silently",
+    "across every project that uses it, which is why cmd/ and the configs are the",
+    "highest tier in this repo rather than the lowest.",
+    "",
+    "Semantics are the same everywhere: risk is the MAX over matched rules,",
+    "components the UNION, financial an OR, and a file is presentational only if",
+    "every rule it matched is. Adding a rule can only ever raise risk.",
+    "",
+    "scaffold is false: these paths have been reviewed by a human."
+  ],
+
+  "scaffold": false,
+  "unmatched_risk": "high",
+
+  "server_surface_extensions": [".go", ".sql", ".proto"],
+
+  "rules": [
+    {
+      "id": "orchestrator-tools",
+      "note": "The binaries that decide risk tiers, run the gates and drive the iteration loop. A defect here is not a local bug — it changes what gets reviewed in every consuming project.",
+      "paths": ["cmd/**"],
+      "risk": "high"
+    },
+    {
+      "id": "rule-tables",
+      "note": "The gate itself. config/gates.json decides which checks run; a project's risk-paths.json decides what counts as money. Editing these is editing the safety net.",
+      "paths": ["config/**", ".claude/risk-paths.json", ".claude/gates.json"],
+      "risk": "high"
+    },
+    {
+      "id": "agent-instructions",
+      "note": "Role and skill definitions are executed by agents against production code. Wrong instructions produce wrong work at scale, but unlike cmd/ a human reads them at each use.",
+      "paths": ["roles/**", "skills/**"],
+      "risk": "medium"
+    },
+    {
+      "id": "ci-and-scripts",
+      "note": "A change here can DISABLE a check rather than fail one, so it is never presentation.",
+      "paths": [".github/**", "scripts/**", "**/Makefile"],
+      "risk": "medium"
+    },
+    {
+      "id": "dependency-manifests",
+      "note": "Supply-chain surface.",
+      "paths": ["**/go.mod", "**/go.sum"],
+      "risk": "medium"
+    },
+    {
+      "id": "test-fixtures",
+      "note": "Fixtures encode the assertions the tools are verified against. Weakening one weakens the verification, so this is not presentation.",
+      "paths": ["**/testdata/**"],
+      "risk": "medium"
+    },
+    {
+      "id": "docs-and-meta",
+      "paths": [
+        "**/*.md",
+        "**/README*",
+        "docs/**",
+        ".gitignore",
+        "**/.gitignore",
+        "**/*.txt"
+      ],
+      "risk": "low",
+      "presentation": true
+    }
+  ],
+
+  "gate_signals": [
+    {
+      "id": "env-gate",
+      "note": "Environment-driven behaviour switch in tooling that gates other repos.",
+      "pattern": "os\\.Getenv\\(|process\\.env\\."
+    },
+    {
+      "id": "gate-disable",
+      "note": "Anything that can turn a check off. In this repo specifically, a skip or waiver path is the highest-value thing to review.",
+      "pattern": "skipAuth|skipCheck|allowAll|[Bb]ypass|-waive|SkipReason"
+    },
+    {
+      "id": "fail-open",
+      "note": "Defaults that let a missing answer read as a passing one.",
+      "pattern": "return true, nil|StatusPass|defaultAllow"
+    }
+  ]
+}

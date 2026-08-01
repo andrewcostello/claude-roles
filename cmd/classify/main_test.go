@@ -7,24 +7,53 @@ import (
 	"testing"
 )
 
-// realConfig loads the shipped config so the tests assert the actual rule table,
-// not a fixture that can drift from it.
+// realConfig loads the example-monorepo fixture: the evenplay-mono rule table
+// as validated against 98 real PR merges. It is a fixture rather than the live
+// config because the live one now lives in the project it describes — the rule
+// table is project-specific and does not belong in this shared tooling repo.
+//
+// liveConfigStillMatches below guards the drift that split introduces.
 func realConfig(t *testing.T) *Config {
 	t.Helper()
-	for _, p := range []string{
-		"../../config/risk-paths.json",
-		filepath.Join(os.Getenv("HOME"), "Project/claude-workflow/config/risk-paths.json"),
+	data, err := os.ReadFile("testdata/example-monorepo.json")
+	if err != nil {
+		t.Skipf("fixture unavailable: %v", err)
+	}
+	cfg, err := parseConfig(data)
+	if err != nil {
+		t.Fatalf("fixture invalid: %v", err)
+	}
+	return cfg
+}
+
+// The live config lives in the project. If this machine has that checkout, it
+// must still parse and still classify the money paths the fixture asserts —
+// otherwise the fixture is quietly testing a config nobody runs.
+func TestLiveProjectConfigStillClassifiesMoney(t *testing.T) {
+	t.Parallel()
+	live := filepath.Join(os.Getenv("HOME"), "Project/evenplay-mono/.claude/risk-paths.json")
+	data, err := os.ReadFile(live)
+	if err != nil {
+		t.Skipf("live project config not on this machine: %v", err)
+	}
+	cfg, err := parseConfig(data)
+	if err != nil {
+		t.Fatalf("LIVE config is invalid: %v", err)
+	}
+	if cfg.Scaffold {
+		t.Error("live config is still marked scaffold — its money paths were never reviewed")
+	}
+	for _, f := range []string{
+		"apps/finance-domain/wallet/service/debit.go",
+		"apps/platform-domain/bay-session/store/admin_bet_force_refund.go",
+		"libs/go/wallet/balance.go",
 	} {
-		if data, err := os.ReadFile(p); err == nil {
-			cfg, err := parseConfig(data)
-			if err != nil {
-				t.Fatalf("shipped config invalid: %v", err)
-			}
-			return cfg
+		d := diffFor(f)
+		cls := classify(cfg, parseDiffFiles(d), d)
+		if !cls.FinancialPathsTouched {
+			t.Errorf("live config: %s is not financial — the human PR gate would not fire", f)
 		}
 	}
-	t.Skip("config/risk-paths.json not found")
-	return nil
 }
 
 func TestShippedConfigIsValid(t *testing.T) {

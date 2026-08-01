@@ -9,22 +9,19 @@ import (
 	"testing"
 )
 
+// realConfig loads the example-gates fixture. The LIVE table lives in the
+// project it describes — its commands and coverage floors are project-specific.
 func realConfig(t *testing.T) *Config {
 	t.Helper()
-	for _, p := range []string{
-		"../../config/gates.json",
-		filepath.Join(os.Getenv("HOME"), "Project/claude-workflow/config/gates.json"),
-	} {
-		if data, err := os.ReadFile(p); err == nil {
-			cfg, err := parseConfig(data)
-			if err != nil {
-				t.Fatalf("shipped config invalid: %v", err)
-			}
-			return cfg
-		}
+	data, err := os.ReadFile("testdata/example-gates.json")
+	if err != nil {
+		t.Skipf("fixture unavailable: %v", err)
 	}
-	t.Skip("config/gates.json not found")
-	return nil
+	cfg, err := parseConfig(data)
+	if err != nil {
+		t.Fatalf("fixture invalid: %v", err)
+	}
+	return cfg
 }
 
 func TestShippedConfigIsValid(t *testing.T) {
@@ -866,7 +863,7 @@ func TestPrepare_InvalidInputs(t *testing.T) {
 	if err := os.WriteFile(p, []byte(`{"schema_version":1,"repo":{"worktree":"/wt","base_ref":"origin/main","base_sha":"a"}}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, problems := prepare(options{runState: p})
+	_, _, _, problems := prepare(options{runState: p, config: "testdata/example-gates.json"})
 	if len(problems) == 0 || !strings.Contains(problems[0], "classification") {
 		t.Errorf("problems = %v, want one naming the missing classification", problems)
 	}
@@ -882,7 +879,9 @@ func TestPrepare_NoGoModulesIsInvalid(t *testing.T) {
 	if err := os.WriteFile(p, []byte(state), 0644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, problems := prepare(options{runState: p})
+	// An explicit -config is required here: config resolution now precedes
+	// module discovery, since module_marker comes from the config.
+	_, _, _, problems := prepare(options{runState: p, config: "testdata/example-gates.json"})
 	if len(problems) == 0 || !strings.Contains(problems[0], "no Go modules") {
 		t.Errorf("problems = %v, want the no-Go-modules refusal", problems)
 	}
@@ -1109,5 +1108,45 @@ func TestEnforceMutationScore(t *testing.T) {
 	unparsed := enforceMutationScore(cfg, Gate{Status: "pass", Metrics: map[string]any{}})
 	if unparsed.Status != "fail" {
 		t.Errorf("an unparsable score must fail closed: %+v", unparsed)
+	}
+}
+
+// A gate table from another project would run the wrong commands and grade
+// coverage against directories that do not exist here, so a missing config is
+// an error rather than a fallback.
+func TestPrepare_MissingGatesConfigIsInvalid(t *testing.T) {
+	t.Parallel()
+	wt := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wt, "go.mod"), []byte("module x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "run.json")
+	state := `{"schema_version":1,"repo":{"worktree":"` + wt + `","base_ref":"origin/main","base_sha":"a"},
+	  "classification":{"risk":"high","changed_files":[{"path":"main.go"}]}}`
+	if err := os.WriteFile(p, []byte(state), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, problems := prepare(options{runState: p})
+	if len(problems) == 0 || !strings.Contains(problems[0], "project-specific") {
+		t.Fatalf("problems = %v, want the missing-config refusal", problems)
+	}
+	joined := strings.Join(problems, " ")
+	if !strings.Contains(joined, "example-gates.json") {
+		t.Error("the message should say how to create one")
+	}
+}
+
+func TestGatesConfigCandidates_NoCrossProjectFallback(t *testing.T) {
+	t.Parallel()
+	got := gatesConfigCandidates("/some/project")
+	for _, c := range got {
+		if strings.Contains(c, "claude-workflow") {
+			t.Errorf("candidate %q reaches into the tooling repo — that is the cross-project bug", c)
+		}
+	}
+	if len(got) == 0 || !strings.HasPrefix(got[0], "/some/project") {
+		t.Errorf("candidates = %v, want the project first", got)
 	}
 }

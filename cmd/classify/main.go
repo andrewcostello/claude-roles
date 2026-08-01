@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -60,7 +61,14 @@ var riskRank = map[string]int{"low": 1, "medium": 2, "high": 3, "critical": 4}
 // ─── config ──────────────────────────────────────────────────────────────────
 
 type Config struct {
-	SchemaVersion           int          `json:"schema_version"`
+	SchemaVersion int `json:"schema_version"`
+	// Scaffold marks a config produced by `classify init` that a human has not
+	// yet completed. While set, classify refuses to certify a diff as
+	// money-free: it forces the human PR gate and the full panel. A rule table
+	// nobody has reviewed cannot prove anything is safe, and the alternative —
+	// silently reporting financial_paths_touched=false — is how a generated
+	// config becomes a footgun. Set it to false once the money paths are named.
+	Scaffold                bool         `json:"scaffold,omitempty"`
 	UnmatchedRisk           string       `json:"unmatched_risk"`
 	ServerSurfaceExtensions []string     `json:"server_surface_extensions"`
 	Rules                   []Rule       `json:"rules"`
@@ -130,6 +138,7 @@ type Classification struct {
 	ReviewerArgs          []string    `json:"reviewer_args,omitempty"`
 	ChangedFiles          []FileClass `json:"changed_files,omitempty"`
 	UnmatchedFiles        []string    `json:"unmatched_files,omitempty"`
+	ConfigScaffold        bool        `json:"config_scaffold,omitempty"`
 	ConfigPath            string      `json:"config_path"`
 	ClassifiedAt          string      `json:"classified_at"`
 }
@@ -165,7 +174,30 @@ type options struct {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "init":
+			os.Exit(cmdInit(os.Args[2:]))
+		case "help", "-h", "--help":
+			usage()
+			os.Exit(0)
+		}
+	}
 	os.Exit(run(parseFlags()))
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `classify — turn a diff into a risk classification
+
+  classify [flags] [diff-file]   classify a diff (reads stdin when no file given)
+  classify init [-worktree D]    scaffold this project's .claude/risk-paths.json
+
+The rule table is PROJECT-SPECIFIC and lives in the project, not in this repo:
+it names one repository's money, auth and client paths. Applied to a different
+repository it would classify confidently and wrongly, so there is no default.
+
+Exit codes: 0 classified, 3 INVALID_INPUT
+`)
 }
 
 func parseFlags() options {
@@ -194,7 +226,13 @@ func parseFlags() options {
 }
 
 func run(opts options) int {
-	cfg, diff, files, err := loadInputs(opts)
+	cfgPath, ok := resolveConfigPath(opts)
+	if !ok {
+		printInvalidInput(Repo{Worktree: opts.worktree}, missingConfigMessage(opts.worktree))
+		return exitInvalid
+	}
+
+	cfg, diff, files, err := loadInputs(opts, cfgPath)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
@@ -205,16 +243,20 @@ func run(opts options) int {
 		return exitInvalid
 	}
 
-	cls := buildClassification(cfg, files, diff, repo, opts.configPath)
+	cls := buildClassification(cfg, files, diff, repo, cfgPath)
 	emit(repo, cls, opts.json)
 	return persist(opts, repo, cls)
 }
 
-func loadInputs(opts options) (*Config, string, []string, error) {
-	cfgPath := opts.configPath
-	if cfgPath == "" {
-		cfgPath = defaultConfigPath()
+// resolveConfigPath honours an explicit -config, else searches this project.
+func resolveConfigPath(opts options) (string, bool) {
+	if opts.configPath != "" {
+		return opts.configPath, true
 	}
+	return findConfig(opts.worktree)
+}
+
+func loadInputs(opts options, cfgPath string) (*Config, string, []string, error) {
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("config: %w", err)
@@ -227,9 +269,6 @@ func loadInputs(opts options) (*Config, string, []string, error) {
 }
 
 func buildClassification(cfg *Config, files []string, diff string, repo Repo, cfgPath string) *Classification {
-	if cfgPath == "" {
-		cfgPath = defaultConfigPath()
-	}
 	cls := classify(cfg, files, diff)
 	cls.ConfigPath = cfgPath
 	cls.ClassifiedAt = time.Now().UTC().Format(time.RFC3339)
@@ -281,20 +320,75 @@ func emit(repo Repo, cls *Classification, asJSON bool) {
 
 // ─── config loading ──────────────────────────────────────────────────────────
 
-func defaultConfigPath() string {
-	exe, err := os.Executable()
-	if err == nil {
-		// cmd/classify/classify → ../../config/risk-paths.json
-		if p := path.Join(path.Dir(exe), "..", "..", "config", "risk-paths.json"); fileExists(p) {
-			return p
+// configCandidates lists where a project's rule table may live, in order.
+//
+// There is deliberately NO fallback to another checkout's config. The rule
+// table names one repository's money, auth and client paths; applied to a
+// different repository it produces confidently wrong answers — a diff certified
+// as touching no financial path because the paths it names do not exist here.
+// A missing config is INVALID_INPUT, not a default.
+func configCandidates(worktree string) []string {
+	var out []string
+	if env := os.Getenv("RISK_PATHS_CONFIG"); env != "" {
+		out = append(out, env)
+	}
+	if worktree != "" {
+		out = append(out,
+			filepath.Join(worktree, ".claude", "risk-paths.json"),
+			filepath.Join(worktree, ".claude", "workflow", "risk-paths.json"),
+		)
+	}
+	out = append(out, filepath.Join(".claude", "risk-paths.json"))
+
+	seen := map[string]bool{}
+	var uniq []string
+	for _, c := range out {
+		if abs, err := filepath.Abs(c); err == nil && !seen[abs] {
+			seen[abs] = true
+			uniq = append(uniq, c)
 		}
 	}
-	if home := os.Getenv("HOME"); home != "" {
-		if p := path.Join(home, "Project/claude-workflow/config/risk-paths.json"); fileExists(p) {
-			return p
+	return uniq
+}
+
+func findConfig(worktree string) (string, bool) {
+	for _, c := range configCandidates(worktree) {
+		if fileExists(c) {
+			return c, true
 		}
 	}
-	return "config/risk-paths.json"
+	return "", false
+}
+
+// missingConfigMessage is what a caller sees instead of a wrong answer.
+func missingConfigMessage(worktree string) []string {
+	msg := []string{
+		"no risk-paths config found — classification needs a rule table for THIS project",
+		"",
+		"  Looked in:",
+	}
+	for _, c := range configCandidates(worktree) {
+		msg = append(msg, "    "+c)
+	}
+	return append(msg,
+		"",
+		"  The rule table is project-specific: it names this repository's money, auth,",
+		"  migration and client paths. Another project's table would classify this diff",
+		"  confidently and wrongly, so there is no default.",
+		"",
+		"  Create one:",
+		"    classify init -worktree "+emptyDot(worktree),
+		"",
+		"  That scaffolds .claude/risk-paths.json from what is actually in the repo. It",
+		"  is marked scaffold:true until a human names the money paths, and while marked",
+		"  it forces the human PR gate and the full panel on every change.")
+}
+
+func emptyDot(s string) string {
+	if s == "" {
+		return "."
+	}
+	return s
 }
 
 func fileExists(p string) bool {
@@ -636,8 +730,17 @@ func classify(cfg *Config, files []string, diff string) *Classification {
 		}
 	}
 
+	// A scaffold config has never had its money paths named by a human, so a
+	// "financial_paths_touched: false" from it is an absence of evidence, not
+	// evidence of absence. Refuse to certify: force the gate and the full panel
+	// until someone completes the table and clears the flag.
+	cls.ConfigScaffold = cfg.Scaffold
+
 	cls.Panel = decidePanel(cls)
 	cls.HumanPRGate = cls.Risk == "critical" || cls.FinancialPathsTouched
+	if cfg.Scaffold {
+		cls.HumanPRGate = true
+	}
 	cls.RecheckMinSeverity = "high"
 	if len(cls.Components) > 0 {
 		// Critical systems converge to zero MEDIUM-or-higher (tasker.md:233).
@@ -751,6 +854,9 @@ func decidePanel(cls *Classification) Panel {
 	}
 	if len(cls.UnmatchedFiles) > 0 {
 		blockers = append(blockers, fmt.Sprintf("%d unclassified path(s) — fail closed", len(cls.UnmatchedFiles)))
+	}
+	if cls.ConfigScaffold {
+		blockers = append(blockers, "risk-paths config is still a scaffold — its money paths have not been reviewed, so nothing can be certified safe")
 	}
 
 	if len(blockers) == 0 {
@@ -910,6 +1016,12 @@ func printInvalidInput(repo Repo, problems []string) {
 	fmt.Printf("Worktree: %s\n", repo.Worktree)
 	fmt.Printf("Base:     %s\n\n", repo.BaseRef)
 	for _, p := range problems {
+		// Continuation and blank lines are prose belonging to the problem above;
+		// marking each one as its own failure reads as a wall of errors.
+		if p == "" || strings.HasPrefix(p, " ") {
+			fmt.Println(p)
+			continue
+		}
 		fmt.Printf("  ✗ %s\n", p)
 	}
 	fmt.Println("\nFix the input and re-run. Do not proceed to review with an unclassified diff.")
@@ -942,6 +1054,13 @@ func printReport(repo Repo, cls *Classification) {
 		for _, h := range cls.GateSignals {
 			fmt.Printf("  [%s] %s\n      %s\n", h.Signal, h.File, h.Sample)
 		}
+	}
+
+	if cls.ConfigScaffold {
+		fmt.Printf("\n⚠ SCAFFOLD CONFIG (%s)\n", cls.ConfigPath)
+		fmt.Println("  Its money/auth paths have not been reviewed by a human, so this run")
+		fmt.Println("  forces the human PR gate and the full panel. Name the financial paths,")
+		fmt.Println("  then set \"scaffold\": false to get proportionate classification.")
 	}
 
 	if len(cls.UnmatchedFiles) > 0 {

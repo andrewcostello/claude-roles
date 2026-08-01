@@ -1,0 +1,56 @@
+# These tools decide what gets reviewed in every consuming project. Nothing was
+# checking them. This is that check.
+name: gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  modules:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [classify, gates, iterate, recheck, repro, deepseek, reviewer]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: cmd/${{ matrix.module }}/go.sum
+
+      # Each cmd/ tool is its own module — there is no root go.mod, so every
+      # step runs with the module as its working directory.
+      - name: gofmt
+        working-directory: cmd/${{ matrix.module }}
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt: $unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: vet
+        working-directory: cmd/${{ matrix.module }}
+        run: go vet ./...
+
+      - name: test
+        working-directory: cmd/${{ matrix.module }}
+        run: go test -race -cover ./...
+
+  configs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: rule tables and schema parse
+        run: |
+          for f in cmd/classify/testdata/*.json cmd/gates/testdata/*.json \
+                   config/run-state.schema.json .claude/risk-paths.json; do
+            [ -f "$f" ] || continue
+            python3 -c "import json,sys; json.load(open('$f'))" \
+              || { echo "::error::$f is not valid JSON"; exit 1; }
+            echo "ok $f"
+          done

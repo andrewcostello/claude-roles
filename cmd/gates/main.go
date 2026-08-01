@@ -261,7 +261,15 @@ func prepare(opts options) (*Config, *RunState, []Module, []string) {
 		return nil, nil, nil, []string{"run state has no repo.worktree"}
 	}
 
-	cfg, err := loadConfig(configPathOrDefault(opts.config))
+	cfgPath := opts.config
+	if cfgPath == "" {
+		found, ok := findGatesConfig(state.Repo.Worktree)
+		if !ok {
+			return nil, nil, nil, missingGatesConfigMessage(state.Repo.Worktree)
+		}
+		cfgPath = found
+	}
+	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		return nil, nil, nil, []string{fmt.Sprintf("config: %v", err)}
 	}
@@ -305,21 +313,72 @@ func finish(opts options, state *RunState, modules []Module, results []result) i
 
 // ─── config loading ──────────────────────────────────────────────────────────
 
-func configPathOrDefault(p string) string {
-	if p != "" {
-		return p
+// gatesConfigCandidates lists where a project's gate table may live, in order.
+//
+// As with risk-paths, there is deliberately NO fallback to another checkout's
+// config: gates.json names this project's build commands and — critically — its
+// coverage floors, keyed to its own paths. Another project's table would run the
+// wrong commands and grade coverage against directories that do not exist here.
+func gatesConfigCandidates(worktree string) []string {
+	var out []string
+	if env := os.Getenv("GATES_CONFIG"); env != "" {
+		out = append(out, env)
 	}
-	if exe, err := os.Executable(); err == nil {
-		if c := filepath.Join(filepath.Dir(exe), "..", "..", "config", "gates.json"); fileExists(c) {
-			return c
+	if worktree != "" {
+		out = append(out,
+			filepath.Join(worktree, ".claude", "gates.json"),
+			filepath.Join(worktree, ".claude", "workflow", "gates.json"),
+		)
+	}
+	out = append(out, filepath.Join(".claude", "gates.json"))
+
+	seen := map[string]bool{}
+	var uniq []string
+	for _, c := range out {
+		if abs, err := filepath.Abs(c); err == nil && !seen[abs] {
+			seen[abs] = true
+			uniq = append(uniq, c)
 		}
 	}
-	if home := os.Getenv("HOME"); home != "" {
-		if c := filepath.Join(home, "Project/claude-workflow/config/gates.json"); fileExists(c) {
-			return c
+	return uniq
+}
+
+func findGatesConfig(worktree string) (string, bool) {
+	for _, c := range gatesConfigCandidates(worktree) {
+		if fileExists(c) {
+			return c, true
 		}
 	}
-	return "config/gates.json"
+	return "", false
+}
+
+func missingGatesConfigMessage(worktree string) []string {
+	msg := []string{
+		"no gates config found — the gate table is project-specific",
+		"",
+		"  Looked in:",
+	}
+	for _, c := range gatesConfigCandidates(worktree) {
+		msg = append(msg, "    "+c)
+	}
+	return append(msg,
+		"",
+		"  gates.json names this project's build/test/lint commands and its coverage",
+		"  floors, keyed to its own paths. Another project's table would run the wrong",
+		"  commands and grade coverage against directories that do not exist here, so",
+		"  there is no default.",
+		"",
+		"  Copy the reference table and edit it for this project:",
+		"    mkdir -p "+filepath.Join(emptyDot(worktree), ".claude"),
+		"    cp <claude-workflow>/cmd/gates/testdata/example-gates.json "+
+			filepath.Join(emptyDot(worktree), ".claude", "gates.json"))
+}
+
+func emptyDot(s string) string {
+	if s == "" {
+		return "."
+	}
+	return s
 }
 
 func fileExists(p string) bool {
@@ -654,12 +713,25 @@ func resolveCommand(cfg *Config, state *RunState, p plan, ro runOpts, key string
 		"output_json":  filepath.Join(ro.OutDir, sanitize(key)+".results.json"),
 		"rules":        filepath.Join(state.Repo.Worktree, p.Spec.RequiresFile),
 		"min_score":    trimFloat(cfg.MutationMinScore),
+		"base":         baseRefFor(state),
 	})
 
 	if _, err := exec.LookPath(firstWord(cmdStr)); err != nil {
 		return "", waiveOrFail(ro.Waivers, p.Gate, fmt.Sprintf("%s not on PATH", firstWord(cmdStr))), false
 	}
 	return cmdStr, Gate{}, true
+}
+
+// baseRefFor is the diff base, used to scope mutation testing to the change.
+// Without it the mutation gate is module-scoped: bay-session alone generates
+// 3400 runnable mutants, which with --integration is a multi-hour job requiring
+// a database. A gate that expensive is a gate that always gets waived, which is
+// indistinguishable from not having one.
+func baseRefFor(state *RunState) string {
+	if state.Repo.BaseSHA != "" {
+		return state.Repo.BaseSHA
+	}
+	return state.Repo.BaseRef
 }
 
 func gateCwd(state *RunState, p plan) string {
@@ -1209,6 +1281,10 @@ func mergeGates(p string, results []result) error {
 func printInvalid(problems []string) {
 	fmt.Println("=== GATES: INVALID_INPUT ===")
 	for _, p := range problems {
+		if p == "" || strings.HasPrefix(p, " ") {
+			fmt.Println(p)
+			continue
+		}
 		fmt.Printf("  ✗ %s\n", p)
 	}
 }
