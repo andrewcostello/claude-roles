@@ -31,7 +31,7 @@
     {
       "id": "rule-tables",
       "note": "The gate itself. config/gates.json decides which checks run; a project's risk-paths.json decides what counts as money. Editing these is editing the safety net.",
-      "paths": ["config/**", ".claude/risk-paths.json", ".claude/gates.json"],
+      "paths": ["config/**", ".agent/risk-paths.json", ".agent/gates.json"],
       "risk": "high"
     },
     {

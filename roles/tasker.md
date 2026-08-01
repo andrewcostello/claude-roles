@@ -138,7 +138,7 @@ Study `[path/to/similar/file.go]`. Patterns to follow: context propagation, erro
 | Mutation testing | Critical financial: yes | Score ≥ 80% |
 | Benchmark — relative | If change touches benched pkgs | No regression > 10% |
 | Benchmark — absolute SLO | Critical/High new endpoint | p99 __; throughput __ |
-| Differential testing | From Phase 1 | Two implementations, property-test agreement |
+| Differential testing | From Phase 1 | **Two isolated Coders** — see below. Not one Coder writing twice. |
 
 ### Definition of Done
 - [ ] All inputs validated at entry point
@@ -157,6 +157,24 @@ A stub is NOT a completion unless the task description explicitly says "create a
 ### Approved Design Spec (Critical/High only)
 [Paste the design selected from `critical-review-dispatch.md`. Design takes precedence over the original spec; meaningful conflicts return to Tasker for human escalation, not to Coder.]
 ```
+
+### Differential Testing Dispatch (when Phase 1 set it to yes)
+
+This is the one gate the Tasker cannot delegate to a single Coder. Spawn **two Coders in separate worktrees**, each given the same spec verbatim, and **neither told the other exists**:
+
+```
+worktree A: coder.md + spec           →  implementation
+worktree B: coder.md + the same spec  →  implementation
+                    ↓  (Tasker fan-in)
+   place both in one package (primary exported, shadow unexported),
+   write the rapid agreement property, run it
+```
+
+One Coder writing both produces *correlated* implementations: having just written the closed form, its "iterative" version carries the same mental model, so the same off-by-one survives in both and the agreement property passes vacuously. Independence is the entire mechanism.
+
+**A disagreement is an ESCALATION, not an iteration.** Two independent implementations of one spec disagreeing means the spec is ambiguous at that input. Do not send it back to a Coder to reconcile — that resolves it by guessing. Escalate for a spec decision, and record the divergent input; finding it before production is this protocol's highest-value output.
+
+Fallback when worktree isolation is unavailable: an adversarial second implementer (second agent sees the spec *and* the primary, told to differ and hunt divergences). Anchored, therefore weaker — note the mode used in the summary.
 
 **If `type: Fix`** also load `bug-fix-protocol.md` and include the RED-first protocol.
 

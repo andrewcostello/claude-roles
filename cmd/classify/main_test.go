@@ -570,3 +570,25 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+// These tables are consumed by Go binaries, not by any one assistant:
+// risk-paths.json says which paths are money, gates.json says which checks run.
+// Naming the directory after an assistant implies they only matter to it.
+func TestConfigCandidates_PrefersVendorNeutralDir(t *testing.T) {
+	t.Parallel()
+	got := configCandidates("/some/project")
+	if len(got) < 2 {
+		t.Fatalf("candidates = %v", got)
+	}
+	if got[0] != "/some/project/.agent/risk-paths.json" {
+		t.Errorf("candidates[0] = %q, want .agent first", got[0])
+	}
+	if got[1] != "/some/project/.claude/risk-paths.json" {
+		t.Errorf("candidates[1] = %q, want .claude as the compatibility fallback", got[1])
+	}
+	for _, c := range got {
+		if strings.Contains(c, "claude-workflow") {
+			t.Errorf("candidate %q reaches into the tooling repo — that is the cross-project bug", c)
+		}
+	}
+}

@@ -47,7 +47,7 @@ func cmdInit(args []string) int {
 
 	target := *out
 	if target == "" {
-		target = filepath.Join(*worktree, ".claude", "risk-paths.json")
+		target = filepath.Join(*worktree, agentConfigDirs[0], "risk-paths.json")
 	}
 	if fileExists(target) && !*force {
 		fmt.Printf("=== CLASSIFY INIT: REFUSING TO OVERWRITE ===\n")

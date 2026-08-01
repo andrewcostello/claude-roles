@@ -202,6 +202,19 @@ Run with `-race`. A concurrent test that passes without `-race` proves nothing.
 
 For any function that takes numeric inputs and produces numeric outputs, write at least one property test asserting the core invariant. Hand-written table tests cover cases you thought of; property tests find the ones you didn't.
 
+**On money and outcome paths, one invariant is not enough — cover all four classes that apply.** Differential testing (Phase 4.5.4) only fires on *novel* calculations, which is rare; properties are the always-on defence and are cheap. Work through this list explicitly and state in the Completion Report which apply and which you asserted:
+
+| Class | Asks | Example |
+|---|---|---|
+| **Bounds** | Can the output leave its legal range? | payout ≤ stake × max multiplier; balance never negative; no value exceeds the column's width |
+| **Monotonicity** | Does the output move the right way when an input moves? | larger stake never yields a smaller payout; a later timestamp never settles earlier |
+| **Conservation** | Does the total hold across the operation? | debits + credits + fees == 0 across a settlement; no money created or destroyed by a refund |
+| **Round-trip / idempotence** | Does applying it twice, or reversing it, behave? | settle→reverse→settle leaves the original balance; replaying the same idempotency key returns the original result, not a second effect |
+
+A property that only asserts "does not panic" or "returns non-nil" is not a property test — it asserts nothing about correctness and will pass against a function that returns a constant. The litmus test: **could this property fail against an implementation that is wrong in a way a user would notice?** If not, it is not pulling its weight.
+
+Integer-overflow narrowing (int64 → int32 on a money or sequence value) belongs under **Bounds** and is worth an explicit property: it is a real finding class in this codebase.
+
 ```go
 // Go example using pgregory.net/rapid
 func TestWallet_BalanceNeverNegative(t *testing.T) {
@@ -441,12 +454,26 @@ Run a benchmark or `k6`/`vegeta` load test that demonstrates both targets are me
 
 A "novel calculation" is one where the Tasker's Phase 1 analysis found no reference implementation in the codebase. This typically applies to: a new payline formula, a new bonus-conversion rule, a new payout multiplier, a new fee calculation. The Task Assignment will state explicitly: `Differential testing required: yes`.
 
+**You do not write both implementations.** This is the one place the workflow deliberately splits the work across two agents, and the reason is the whole mechanism:
+
+> One agent writing both implementations in one context produces **correlated** implementations. Having just written the closed form, the "iterative" version is a transcription of the same mental model. The failure modes LLM-written math actually has — off-by-one on edge zones, operator precedence on compound multipliers — reproduce identically in both, the agreement property passes, and the task has paid double for a test that proves the code agrees with itself. Independence *is* the guarantee; shared context destroys it.
+
+**Dispatch protocol (Tasker-owned).** On `Differential testing required: yes`, the Tasker spawns two Coders in **separate worktrees**:
+
+| Agent | Receives | Does not receive |
+|---|---|---|
+| Primary | The spec | Any knowledge that a second implementation exists |
+| Shadow | The same spec, verbatim | The primary's code, its approach, or its existence |
+
+Neither is told which is which. The Tasker then runs a third, fan-in step that places both in one package (primary exported, shadow unexported), writes the agreement property, and runs it.
+
+**When they disagree, that is a finding — not a merge conflict.** Two independent implementations of the same spec disagreeing means the *spec* is ambiguous at that input. Do not "make them agree": picking a side resolves the symptom by guessing, possibly wrongly and silently. Report the divergent input to the Tasker, who escalates for a spec decision. That escalation is the highest-value output this protocol produces — it found an ambiguity before production did.
+
+If two-agent isolation is unavailable, the fallback is an **adversarial second implementer**: a second agent gets the spec plus the primary and is told to implement it differently and hunt for divergent inputs. Weaker (it is anchored by seeing the primary) but far better than one agent writing both. Record in the Completion Report which mode was used.
+
 When triggered:
 
-1. **Implement the calculation twice using different approaches.** Approaches must be genuinely different — not the same code copy-pasted. Examples:
-   - Closed-form vs iterative
-   - Table-driven vs algorithmic
-   - Top-down vs bottom-up
+1. **Two independent implementations exist** (per the dispatch protocol above), using genuinely different approaches — closed-form vs iterative, table-driven vs algorithmic, top-down vs bottom-up.
 2. **Write a property test asserting agreement** across the input domain using `pgregory.net/rapid`:
    ```go
    func TestPayoutCalc_DifferentialAgreement(t *testing.T) {

@@ -1139,6 +1139,17 @@ func TestPrepare_MissingGatesConfigIsInvalid(t *testing.T) {
 	}
 }
 
+func TestGatesConfigCandidates_PrefersVendorNeutralDir(t *testing.T) {
+	t.Parallel()
+	got := gatesConfigCandidates("/some/project")
+	if len(got) < 2 || got[0] != "/some/project/.agent/gates.json" {
+		t.Errorf("candidates = %v, want .agent first", got)
+	}
+	if got[1] != "/some/project/.claude/gates.json" {
+		t.Errorf("candidates = %v, want .claude as the compatibility fallback", got)
+	}
+}
+
 func TestGatesConfigCandidates_NoCrossProjectFallback(t *testing.T) {
 	t.Parallel()
 	got := gatesConfigCandidates("/some/project")

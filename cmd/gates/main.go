@@ -324,13 +324,12 @@ func gatesConfigCandidates(worktree string) []string {
 	if env := os.Getenv("GATES_CONFIG"); env != "" {
 		out = append(out, env)
 	}
-	if worktree != "" {
-		out = append(out,
-			filepath.Join(worktree, ".claude", "gates.json"),
-			filepath.Join(worktree, ".claude", "workflow", "gates.json"),
-		)
+	for _, dir := range agentConfigDirs {
+		if worktree != "" {
+			out = append(out, filepath.Join(worktree, dir, "gates.json"))
+		}
 	}
-	out = append(out, filepath.Join(".claude", "gates.json"))
+	out = append(out, filepath.Join(agentConfigDirs[0], "gates.json"))
 
 	seen := map[string]bool{}
 	var uniq []string
@@ -342,6 +341,11 @@ func gatesConfigCandidates(worktree string) []string {
 	}
 	return uniq
 }
+
+// agentConfigDirs is the search order for agent-tooling config, preferring the
+// vendor-neutral directory. These tables are consumed by Go binaries, not by any
+// one assistant. `.claude/` stays supported because projects already have one.
+var agentConfigDirs = []string{".agent", ".claude"}
 
 func findGatesConfig(worktree string) (string, bool) {
 	for _, c := range gatesConfigCandidates(worktree) {
@@ -369,9 +373,9 @@ func missingGatesConfigMessage(worktree string) []string {
 		"  there is no default.",
 		"",
 		"  Copy the reference table and edit it for this project:",
-		"    mkdir -p "+filepath.Join(emptyDot(worktree), ".claude"),
+		"    mkdir -p "+filepath.Join(emptyDot(worktree), agentConfigDirs[0]),
 		"    cp <claude-workflow>/cmd/gates/testdata/example-gates.json "+
-			filepath.Join(emptyDot(worktree), ".claude", "gates.json"))
+			filepath.Join(emptyDot(worktree), agentConfigDirs[0], "gates.json"))
 }
 
 func emptyDot(s string) string {

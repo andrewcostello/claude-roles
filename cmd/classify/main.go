@@ -332,23 +332,37 @@ func configCandidates(worktree string) []string {
 	if env := os.Getenv("RISK_PATHS_CONFIG"); env != "" {
 		out = append(out, env)
 	}
-	if worktree != "" {
-		out = append(out,
-			filepath.Join(worktree, ".claude", "risk-paths.json"),
-			filepath.Join(worktree, ".claude", "workflow", "risk-paths.json"),
-		)
-	}
-	out = append(out, filepath.Join(".claude", "risk-paths.json"))
-
-	seen := map[string]bool{}
-	var uniq []string
-	for _, c := range out {
-		if abs, err := filepath.Abs(c); err == nil && !seen[abs] {
-			seen[abs] = true
-			uniq = append(uniq, c)
+	for _, dir := range agentConfigDirs {
+		if worktree != "" {
+			out = append(out, filepath.Join(worktree, dir, "risk-paths.json"))
 		}
 	}
-	return uniq
+	out = append(out, filepath.Join(agentConfigDirs[0], "risk-paths.json"))
+	return dedupePaths(out)
+}
+
+// agentConfigDirs is the search order for agent-tooling config, preferring the
+// vendor-neutral directory.
+//
+// These tables are consumed by Go binaries, not by Claude: risk-paths.json says
+// which paths are money and gates.json says which checks run. Naming them after
+// one assistant implies they only matter to that assistant, and the next tool to
+// need them would reasonably put its own copy somewhere else. `.claude/` stays
+// supported because projects already have one.
+var agentConfigDirs = []string{".agent", ".claude"}
+
+func dedupePaths(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range in {
+		abs, err := filepath.Abs(c)
+		if err != nil || seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 func findConfig(worktree string) (string, bool) {
