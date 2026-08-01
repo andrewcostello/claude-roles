@@ -908,6 +908,7 @@ func TestFinish_ExitCodeReflectsFailures(t *testing.T) {
 	}
 	opts := options{runState: p}
 	state := &RunState{Classification: &Classification{Risk: "high"}}
+	_ = state
 
 	if code := finish(opts, state, nil, []result{{Key: "build", Gate: "build", Outcome: Gate{Status: "pass"}}}); code != 0 {
 		t.Errorf("all-pass exit = %d, want 0", code)
@@ -1148,5 +1149,76 @@ func TestGatesConfigCandidates_NoCrossProjectFallback(t *testing.T) {
 	}
 	if len(got) == 0 || !strings.HasPrefix(got[0], "/some/project") {
 		t.Errorf("candidates = %v, want the project first", got)
+	}
+}
+
+// The schema was documentation only, so a node writing a malformed state
+// produced a confusing failure three steps later instead of a clear one here.
+func TestValidateRunState(t *testing.T) {
+	t.Parallel()
+	ok := &RunState{SchemaVersion: 1, Repo: Repo{Worktree: "/wt"},
+		Classification: &Classification{Risk: "critical", Components: []string{"wallet"}},
+		Gates:          map[string]Gate{"test": {Status: "pass"}}}
+	if p := validateRunState(ok); len(p) != 0 {
+		t.Errorf("valid state rejected: %v", p)
+	}
+
+	tests := []struct {
+		name  string
+		state *RunState
+		want  string
+	}{
+		{"wrong schema version", &RunState{SchemaVersion: 99, Repo: Repo{Worktree: "/wt"}}, "schema_version"},
+		{"no worktree", &RunState{SchemaVersion: 1}, "repo.worktree"},
+		{
+			"bad risk",
+			&RunState{SchemaVersion: 1, Repo: Repo{Worktree: "/wt"},
+				Classification: &Classification{Risk: "extreme"}},
+			"is not low|medium|high|critical",
+		},
+		{
+			"unknown component would be rejected downstream",
+			&RunState{SchemaVersion: 1, Repo: Repo{Worktree: "/wt"},
+				Classification: &Classification{Risk: "high", Components: []string{"wallett"}}},
+			"cmd/reviewer would reject",
+		},
+		{
+			"bad gate status",
+			&RunState{SchemaVersion: 1, Repo: Repo{Worktree: "/wt"},
+				Gates: map[string]Gate{"test": {Status: "probably-fine"}}},
+			"is not pass|fail|skipped|unavailable",
+		},
+		{
+			"skip with no reason is the silent-pass shape",
+			&RunState{SchemaVersion: 1, Repo: Repo{Worktree: "/wt"},
+				Gates: map[string]Gate{"semgrep": {Status: "skipped"}}},
+			"indistinguishable from a pass",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			problems := validateRunState(tt.state)
+			if len(problems) == 0 {
+				t.Fatalf("expected a problem containing %q", tt.want)
+			}
+			if !strings.Contains(strings.Join(problems, " "), tt.want) {
+				t.Errorf("problems = %v, want one containing %q", problems, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadRunState_RejectsMalformed(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "run.json")
+	bad := `{"schema_version":1,"repo":{"worktree":"/wt"},
+	  "gates":{"semgrep":{"status":"skipped"}}}`
+	if err := os.WriteFile(p, []byte(bad), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRunState(p); err == nil {
+		t.Fatal("expected a reasonless skip to be rejected at load")
 	}
 }

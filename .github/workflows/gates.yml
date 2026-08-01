@@ -1,11 +1,18 @@
-# These tools decide what gets reviewed in every consuming project. Nothing was
-# checking them. This is that check.
+# These tools decide what gets reviewed in every consuming project, and nothing
+# was checking them. This is that check.
+#
+# Each cmd/ tool is its own module — there is no root go.mod — so every step
+# runs with the module as its working directory. That is the same constraint
+# cmd/gates enforces for consuming projects.
 name: gates
 
 on:
   push:
     branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   modules:
@@ -16,19 +23,19 @@ jobs:
         module: [classify, gates, iterate, recheck, repro, deepseek, reviewer]
     steps:
       - uses: actions/checkout@v4
+      # No cache-dependency-path: these modules are stdlib-only and have no
+      # go.sum, and setup-go fails outright when pointed at a missing one.
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          cache-dependency-path: cmd/${{ matrix.module }}/go.sum
+          cache: false
 
-      # Each cmd/ tool is its own module — there is no root go.mod, so every
-      # step runs with the module as its working directory.
       - name: gofmt
         working-directory: cmd/${{ matrix.module }}
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
-            echo "::error::gofmt: $unformatted"
+            echo "::error::gofmt would reformat: $unformatted"
             gofmt -d .
             exit 1
           fi
@@ -45,12 +52,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false
+
+      # A malformed rule table is a silent loss of classification: cmd/classify
+      # exits INVALID_INPUT, and a caller that ignores the exit code proceeds
+      # with an unclassified diff. Parse every table on every push.
       - name: rule tables and schema parse
         run: |
-          for f in cmd/classify/testdata/*.json cmd/gates/testdata/*.json \
-                   config/run-state.schema.json .claude/risk-paths.json; do
+          status=0
+          for f in cmd/classify/testdata/*.json \
+                   cmd/gates/testdata/*.json \
+                   config/run-state.schema.json \
+                   .claude/risk-paths.json; do
             [ -f "$f" ] || continue
-            python3 -c "import json,sys; json.load(open('$f'))" \
-              || { echo "::error::$f is not valid JSON"; exit 1; }
-            echo "ok $f"
+            if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"; then
+              echo "ok   $f"
+            else
+              echo "::error file=$f::not valid JSON"
+              status=1
+            fi
           done
+          exit $status
+
+      # Valid JSON is not enough: a rule can name an unknown component, a
+      # presentation rule can be marked financial, ids can collide. The
+      # classifier rejects all of those at load, so run that validation here too
+      # — it catches a bad table edited without touching any Go code.
+      - name: rule tables are semantically valid
+        working-directory: cmd/classify
+        run: go test -run 'TestShippedConfigIsValid|TestParseConfig|TestLiveProjectConfig' ./...

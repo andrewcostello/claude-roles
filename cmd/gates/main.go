@@ -1251,8 +1251,63 @@ func readRunState(p string) (*RunState, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
+	if problems := validateRunState(&s); len(problems) > 0 {
+		return nil, fmt.Errorf("run state is not valid: %s", strings.Join(problems, "; "))
+	}
 	return &s, nil
 }
+
+// validateRunState enforces the invariants config/run-state.schema.json
+// documents. The schema was documentation only, which meant a node writing a
+// malformed state produced a confusing failure three steps later instead of a
+// clear one here. This checks what matters for the handoff — the fields one
+// node writes and another reads — rather than reimplementing JSON Schema.
+func validateRunState(s *RunState) []string {
+	var problems []string
+
+	if s.SchemaVersion != schemaVersion {
+		problems = append(problems, fmt.Sprintf(
+			"schema_version %d unsupported (want %d) — written by a different generation of these tools",
+			s.SchemaVersion, schemaVersion))
+	}
+	if s.Repo.Worktree == "" {
+		problems = append(problems, "repo.worktree is empty")
+	}
+	if c := s.Classification; c != nil {
+		if _, ok := validRisk[c.Risk]; !ok {
+			problems = append(problems, fmt.Sprintf("classification.risk %q is not low|medium|high|critical", c.Risk))
+		}
+		for _, comp := range c.Components {
+			if !knownComponents[comp] {
+				problems = append(problems, fmt.Sprintf(
+					"classification.components has %q, which cmd/reviewer would reject", comp))
+			}
+		}
+	}
+	for name, g := range s.Gates {
+		if _, ok := validGateStatus[g.Status]; !ok {
+			problems = append(problems, fmt.Sprintf(
+				"gates[%s].status %q is not pass|fail|skipped|unavailable", name, g.Status))
+		}
+		// A skip with no reason is the shape this whole design exists to
+		// prevent: it reads as "checked and fine" while nothing was checked.
+		if g.Status == "skipped" && strings.TrimSpace(g.SkipReason) == "" {
+			problems = append(problems, fmt.Sprintf(
+				"gates[%s] is skipped with no skip_reason — a silent skip is indistinguishable from a pass", name))
+		}
+	}
+	return problems
+}
+
+var (
+	validRisk       = map[string]struct{}{"low": {}, "medium": {}, "high": {}, "critical": {}}
+	validGateStatus = map[string]struct{}{"pass": {}, "fail": {}, "skipped": {}, "unavailable": {}}
+	// knownComponents mirrors cmd/reviewer's componentFloorPresets keys.
+	knownComponents = map[string]bool{
+		"wallet": true, "bet-settlement": true, "bet-placement": true,
+		"jackpot": true, "responsible-gambling": true,
+	}
+)
 
 func mergeGates(p string, results []result) error {
 	state, err := readRunState(p)
