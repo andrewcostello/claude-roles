@@ -122,14 +122,30 @@ After the domain test gate is GREEN:
 
 **Round 2 — full re-audit, deliberately.** Re-run `cmd/reviewer` on the full PR diff exactly like round 1 (`git diff BASE...HEAD | reviewer -cwd WT -risk TIER [-component ...] -findings-out /tmp/findings-TASK-r2.json`). One full second look catches what round 1 missed while attention was on the flagged items — evidence: PR 1285's round-2 re-audit found a real money-display bug (PRACTICE fallback) in a file round 1 had reviewed and passed. The Tasker adjudicates round-2 findings before dispatching fixes: dismissing a finding requires cited code evidence (see the 1285 funds.go dismissal for the standard).
 
-**Rounds 3+ — targeted verification via `cmd/recheck`.** No more discovery passes; the question narrows to "did the fixes land, and did they break anything in the files they touched":
+**Rounds 3+ — targeted verification via `cmd/recheck`.** No more discovery passes; the question narrows to "did the fixes land, and did they break anything in the files they touched".
+
+**Do not drive this loop by hand — `cmd/iterate` owns it:**
+
+```bash
+~/Project/claude-workflow/cmd/iterate/iterate run -run-state "$RUN_STATE"
+# exit 0 APPROVE · 1 ITERATE · 2 ESCALATE · 3 INVALID_INPUT
+```
+
+It reads `rounds[]` from the run state and decides everything this section otherwise asks you to decide: which tool runs (full re-audit through round 2, `recheck` from round 3), the severity floor (from `classification.recheck_min_severity`), `-max-new`, and the convergence verdict — then appends the round to `rounds[]`. `iterate next` prints the decision and the exact command without running anything.
+
+The equivalent manual invocation, if `iterate` is unavailable:
 
 ```bash
 ~/Project/claude-workflow/cmd/recheck/recheck \
   -worktree "$WT" -findings /tmp/findings-TASK-rN.json \
   -risk TIER [-min-severity high|medium] \
-  -max-new <prior round's new-finding count minus 1>
+  -max-new <prior round's new-finding count, VERBATIM> \
+  -out /tmp/round-TASK-rN.json
 ```
+
+> **Correction 2026-07-31 — `-max-new` was documented one too low.** This skill previously said "prior round's new-finding count **minus 1**". `recheck` returns ITERATE only while `new < max-new`, so passing `P` already requires strictly fewer than `P`; passing `P−1` demands a drop of *two* and would escalate a genuinely converging 3 → 2 round as "not decreasing". Pass `P` verbatim. `cmd/iterate` computes it, and its `TestDecide_MaxNewComesFromPriorRound` locks the semantics in.
+
+**Cost:** the iteration rounds are where a multi-round PR bleeds tokens (PR1380 exhausted an account over 5 passes). The saving is structural — `recheck` is a **single targeted verifier** over changed files only, not the full multi-seat panel, so rounds 3+ already cost a fraction of a full re-audit. It runs on **`claude-opus-5` by default (`-model`), and that is the default we keep** — verification of money findings stays on the strong model. A budget `-model claude-haiku-4-5-20251001` is available as an **experiment only** (low confidence — do not adopt for real iterations until an A/B shows haiku catches the same STILL_OPEN/REGRESSED cases opus does).
 
 `recheck` verifies each prior finding **at or above the severity floor** as RESOLVED / STILL_OPEN / REGRESSED against the iteration diff, hunts new at-or-above-floor findings **only in files changed since the prior review**, and computes the verdict mechanically per the convergence rules: exit 0 APPROVE, 1 ITERATE, 2 ESCALATE (any STILL_OPEN/REGRESSED, or new findings ≥ `-max-new`).
 
@@ -195,5 +211,5 @@ For Medium: a single reviewer for the targeted re-review is sufficient — they'
 | Re-review finds a new MEDIUM in changed files | Coder's fix touched surrounding code | Reject the iteration; require minimal diff |
 | Domain tests fail after the fix | Fix regressed a sibling file | Iteration is rejected back to Coder; do not dispatch re-review on red |
 | Reviewer audits unchanged files | Re-review prompt was unclear | Re-state the scope; the prompt template in this skill explicitly scopes the audit |
-| Iteration count drifts above the cap silently | Tasker lost track of cycles | Track explicitly in the summary file's `Iterations` field; cap at `$MAX_ITERATIONS` (default 2) |
+| Iteration count drifts above the cap silently | Tasker lost track of cycles | Track explicitly in the summary file's `Iterations` field; ceiling is 4 (`$MAX_ITERATIONS` overrides) per Iteration Budget above — the STILL_OPEN/REGRESSED escalation is the real stop |
 | Coder bundles a refactor into an iteration | Treated the iteration as a general code-quality pass | Reject; iterations fix bugs, not style |

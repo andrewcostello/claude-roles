@@ -273,7 +273,23 @@ In TypeScript: no unhandled promise rejections. Every `await` either has a `try/
 
 ### Phase 4: Verify
 
-Before claiming completion, run all checks and **paste the actual output** — do not paraphrase.
+**Run `cmd/gates` — it is the authority on every check in this phase and Phase 4.5.**
+
+```bash
+~/Project/claude-workflow/cmd/gates/gates -run-state "$RUN_STATE"
+```
+
+It derives the applicable gate set from the run state's classification, runs each **inside the owning Go module** (this monorepo has no root `go.mod`, so root-level `go build ./...` fails), writes raw output to disk, and records pass/fail into `$RUN_STATE`. Exit 1 means a gate failed or could not run.
+
+Your Completion Report then **cites** `$RUN_STATE` and the recorded output paths. It does not restate results you typed yourself. Three reasons this is not negotiable:
+
+- A self-reported "lint: PASS" shipped a gofmt failure in PR 1294.
+- The mutation gate pointed at a directory that does not exist and reported success for months.
+- `gremlins-go` is not a binary name; the real one is `gremlins`. It never launched.
+
+`-waive <gate>=<reason>` is the only way past a gate that cannot run, and the reason is recorded. There is no status meaning "did not check but it's fine".
+
+The subsections below document what each gate checks and how to fix violations. Run them by hand only when `cmd/gates` is unavailable — and say so in the report if you do.
 
 1. **Build** — confirm the binary/bundle compiles clean before running tests
    ```
@@ -361,11 +377,26 @@ Suppressions are reviewed in code review; they are not free passes.
 
 #### 4.5.2 Mutation testing (Critical financial code only)
 
-For Critical risk tasks touching financial calculations (payout, balance, settlement, refund), run mutation testing on the affected packages.
+For Critical risk tasks touching financial calculations (payout, balance, settlement, refund), run mutation testing on the affected packages — **the packages your diff actually touched**, not a fixed path.
 
 ```
-gremlins-go run --tags=integration ./apps/finance-domain/wallet/payout/...
+gremlins-go run --tags=integration ./<changed-money-package>/...
 ```
+
+The Go money packages in this monorepo, as of 2026-07-29:
+
+| Package | Holds |
+|---|---|
+| `apps/finance-domain/wallet/service/` | Balance mutation, debit/credit, payout claim service logic |
+| `apps/finance-domain/wallet/db/` | Ledger and payout-claim persistence |
+| `apps/finance-domain/wallet/common/transactions/` | Transaction wrappers around money writes |
+| `apps/platform-domain/bay-session/store/` | Bet accept/settle/refund/dispute-reverse, wager |
+| `apps/platform-domain/core/dao/`, `core/model/` | Payout rules and tournament payout tables |
+| `apps/game-domain/engine/dao/`, `engine/model/` | Engine-side payout mapping |
+
+`apps/finance-domain/paygate/` is Java (Maven) — gremlins is Go-only, so mutation testing does not apply there; state that as `N/A — Java module` and rely on the panel plus static analysis.
+
+> Earlier revisions of this role hardcoded `./apps/finance-domain/wallet/payout/...`. That directory does not exist, so the gate silently ran against nothing. Derive the target from `git diff --name-only` and cross-check against `classification.components` in the run state (`wallet` / `bet-settlement` / `bet-placement` mean this gate applies).
 
 **Mutation score must be ≥ 80%** — at least 80% of generated mutants must be killed by your tests. Surviving mutants in financial code indicate a test gap: an arithmetic operator could flip, a comparison could swap, a constant could change, and your tests would not catch it.
 
@@ -517,8 +548,9 @@ Suppressions added (if any): [list each `// nosec`/`//lint:ignore`/`# nosemgrep`
 
 ### Mutation Testing (Critical financial only)
 ```
-$ gremlins-go run ./apps/finance-domain/wallet/payout/...
-[PASTE OUTPUT — must show mutation score ≥ 80%]
+$ gremlins-go run --tags=integration ./<changed-money-package>/...
+[PASTE OUTPUT — must show mutation score ≥ 80%. Name the package you ran against;
+ "no packages to test" is a FAILED gate, not a pass.]
 ```
 Surviving mutants: [list each, with the test added to kill it OR the equivalence justification]
 

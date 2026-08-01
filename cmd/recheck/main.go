@@ -85,8 +85,9 @@ func main() {
 	worktree := flag.String("worktree", "", "Worktree holding the fix commits (required)")
 	findingsPath := flag.String("findings", "", "Path to cmd/reviewer's -findings-out JSON from the prior round (required)")
 	risk := flag.String("risk", "", "Risk tier (default: taken from the findings file)")
-	maxNew := flag.Int("max-new", 0, "Escalate if NEW at-or-above-floor finding count is >= this (0 = any new finding escalates; pass prior round's new-count minus 1 to enforce strict decrease)")
+	maxNew := flag.Int("max-new", 0, "Escalate if the NEW at-or-above-floor finding count is >= this. 0 = any new finding escalates. To enforce a strict decrease, pass the PRIOR round's new-finding count verbatim — the verdict ITERATEs only while new < max-new, so passing P requires strictly fewer than P. (cmd/iterate computes this for you.)")
 	minSeverity := flag.String("min-severity", "high", "Severity floor to converge to: critical|high|medium. \"high\" (default): verify prior CRITICAL/HIGH and hunt new CRITICAL/HIGH — the always-on bar. \"medium\": also verify prior MEDIUMs and hunt new MEDIUMs — for critical systems that must reach zero MEDIUM-or-higher. \"critical\": CRITICAL only.")
+	outPath := flag.String("out", "", "Write the round result as JSON to this path (machine input for cmd/iterate). Includes the verdict, per-finding statuses, and the new-finding count the next round's -max-new is derived from.")
 	model := flag.String("model", "claude-opus-5", "Model for the recheck verifier. Default (and the model to keep) is claude-opus-5 — verification of money findings stays on the strong model. A budget model (e.g. claude-haiku-4-5-20251001) is available for A/B experiments only; low confidence, do not adopt for real iterations until proven.")
 	flag.Parse()
 
@@ -115,6 +116,17 @@ func main() {
 	open := atOrAboveFloor(export.Findings, floor)
 	if len(open) == 0 {
 		fmt.Printf("No %s-or-higher findings in the prior round — nothing to verify. APPROVE.\n", floor)
+		if *outPath != "" {
+			// Still emit a round result: cmd/iterate must be able to distinguish
+			// "nothing to verify" from "recheck never ran".
+			if err := writeRoundResult(*outPath, RoundResult{
+				Tool: "recheck", Verdict: "APPROVE", Floor: floor,
+				ReviewedSHA: export.ReviewedSHA, MaxNewGiven: *maxNew,
+				Summary: "no prior findings at or above the " + floor + " floor",
+			}); err != nil {
+				log.Printf("WARNING: failed to write round result to %s: %v", *outPath, err)
+			}
+		}
 		os.Exit(0)
 	}
 
@@ -139,7 +151,83 @@ func main() {
 
 	verdict, code := computeVerdict(out, *maxNew, floor)
 	printReport(export, out, open, verdict, headSHA, changedFiles)
+
+	if *outPath != "" {
+		rr := buildRoundResult(export, out, open, roundCtx{
+			Verdict: verdict, Code: code, Floor: floor, HeadSHA: headSHA,
+			MaxNew: *maxNew, ChangedFiles: len(changedFiles),
+		})
+		if err := writeRoundResult(*outPath, rr); err != nil {
+			log.Printf("WARNING: failed to write round result to %s: %v", *outPath, err)
+		} else {
+			log.Printf("Round result written to %s", *outPath)
+		}
+	}
 	os.Exit(code)
+}
+
+// RoundResult is the machine-readable record of one recheck round. cmd/iterate
+// reads it to append to run.json's rounds[] and to derive the next round's
+// -max-new, so the strictly-decreasing invariant is never hand-computed.
+type RoundResult struct {
+	Tool         string `json:"tool"` // always "recheck"
+	Verdict      string `json:"verdict"`
+	ExitCode     int    `json:"exit_code"`
+	Floor        string `json:"floor"`
+	ReviewedSHA  string `json:"reviewed_sha"`  // prior round's SHA
+	HeadSHA      string `json:"head_sha"`      // SHA this round verified
+	PriorChecked int    `json:"prior_checked"` // prior findings at or above floor
+	Resolved     int    `json:"resolved"`
+	StillOpen    int    `json:"still_open"`
+	Regressed    int    `json:"regressed"`
+	NewAtFloor   int    `json:"new_at_floor"` // the count the next -max-new comes from
+	MaxNewGiven  int    `json:"max_new_given"`
+	ChangedFiles int    `json:"changed_files"`
+	Summary      string `json:"summary"`
+}
+
+// roundCtx groups the per-round outcome values, which are always computed
+// together and always travel together.
+type roundCtx struct {
+	Verdict      string
+	Code         int
+	Floor        string
+	HeadSHA      string
+	MaxNew       int
+	ChangedFiles int
+}
+
+func buildRoundResult(export FindingsExport, out verifierOutput, prior []ExportFinding, rc roundCtx) RoundResult {
+	r := RoundResult{
+		Tool: "recheck", Verdict: rc.Verdict, ExitCode: rc.Code, Floor: rc.Floor,
+		ReviewedSHA: export.ReviewedSHA, HeadSHA: rc.HeadSHA,
+		PriorChecked: len(prior), MaxNewGiven: rc.MaxNew,
+		ChangedFiles: rc.ChangedFiles, Summary: out.Summary,
+	}
+	for _, v := range out.Verifications {
+		switch v.Status {
+		case "RESOLVED":
+			r.Resolved++
+		case "STILL_OPEN":
+			r.StillOpen++
+		case "REGRESSED":
+			r.Regressed++
+		}
+	}
+	for _, f := range out.NewFindings {
+		if severityRank[f.Severity] >= severityRank[rc.Floor] || f.Blocking {
+			r.NewAtFloor++
+		}
+	}
+	return r
+}
+
+func writeRoundResult(path string, r RoundResult) error {
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0644)
 }
 
 var severityRank = map[string]int{"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}

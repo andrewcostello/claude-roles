@@ -28,20 +28,49 @@ Load this skill on `APPROVE` verdict. The skill owns:
 
 When the gate fires, do NOT raise the PR yourself. Write the `Prepared PR` section into the summary file with everything ready (branch, title, body). The dispatcher in supervised mode prompts the human; in unattended mode it writes `Status: Blocked` with reason "awaiting human PR approval" and moves on. In standalone mode the Tasker prints the Prepared PR section and the human raises it manually.
 
-### Default financial-paths list (evenplay-mono)
+### The financial-paths check is computed, not recited
+
+`cmd/classify` owns it. `classification.financial_paths_touched` in the run state is the OR over every rule carrying `financial: true` in `config/risk-paths.json`, matched against the changed files. **Read that field; do not maintain a second list here.**
+
+```bash
+git -C "$WORKTREE" diff origin/main...HEAD | ~/Project/claude-workflow/cmd/classify/classify \
+  -worktree "$WORKTREE" -base origin/main -task "$TASK_KEY" -out "$RUN_STATE"
+# → classification.human_pr_gate is true iff risk == critical OR financial_paths_touched
+```
+
+`classification.human_pr_gate` is exactly the two-condition gate above, already evaluated. Use it.
+
+> **Correction 2026-07-29 — the list previously documented here matched nothing.** It named `apps/finance-domain/settlement/**`, `apps/finance-domain/recovery/**`, and `apps/finance-domain/payout/**`. None of those directories exist: `apps/finance-domain/` contains only `paygate/` and `wallet/`. Settlement, refunds, and dispute reversal live under `apps/platform-domain/bay-session/store/` — which the paragraph below then named as the example of a *non*-financial path. Net effect: the path check — whose whole job is to be the backstop when tier judgment misses — was dead for every money path outside `wallet/`. A change to `admin_bet_force_refund.go` or `admin_bet_dispute_reverse.go` still fired the gate *if* the Tasker classified it Critical; if it classified it High, nothing caught it. And the paragraph below actively invited exactly that call, naming `apps/platform-domain/bay-session/` as High-but-not-financial. `config/risk-paths.json` now classifies those paths critical + financial; `cmd/classify`'s `TestClassify_BaySessionMoneyPathsAreFinancial` locks it in.
+
+**Fallback for agent-driven runs with no classify available** (kept in sync with the `financial: true` rules in `config/risk-paths.json`):
 
 ```
 apps/finance-domain/wallet/**
-apps/finance-domain/settlement/**
-apps/finance-domain/recovery/**
-apps/finance-domain/payout/**
+apps/finance-domain/paygate/**
+apps/platform-domain/bay-session/store/accept_bet*
+apps/platform-domain/bay-session/store/wager*
+apps/platform-domain/bay-session/store/arm_*
+apps/platform-domain/bay-session/store/bet_settle*
+apps/platform-domain/bay-session/store/*settlement*
+apps/platform-domain/bay-session/store/*refund*
+apps/platform-domain/bay-session/store/admin_bet_dispute_reverse*
+apps/platform-domain/bay-session/store/admin_bet_force_refund*
+apps/platform-domain/bay-session/cmd/*-recovery/**
+apps/platform-domain/bay-session/cmd/admin-bet/**
+apps/platform-domain/core/dao/payout*
+apps/platform-domain/core/model/payout*
+apps/platform-domain/core/service/tournament/*payout*
+apps/game-domain/engine/dao/payout*
+apps/game-domain/engine/model/payout*
 ```
 
-The list is configurable via the `$FINANCIAL_PATHS` env var (comma-separated glob patterns) or via `dispatcher run --financial-paths '<patterns>'`. Override in `CLAUDE.md` per project — these defaults assume the wallet / settlement / recovery / payout module layout in this monorepo.
+`$FINANCIAL_PATHS` (comma-separated globs) or `dispatcher run --financial-paths '<patterns>'` still override, for projects with a different layout. A duplicated list is a drift hazard — prefer `-config` pointed at a project-specific `risk-paths.json`.
 
 ### Why path-based and not just tier-based
 
-Risk tier is the Tasker's classification; the path list is a second deterministic check. The two disagree exactly when they should: a Coder-discovered wallet bug might land in a "state machine" classification (High), but the change still touches money. The path check catches that. Conversely, a state-machine schema change in `apps/platform-domain/bay-session/` is High but is **not** financial — auto-raising it preserves unattended throughput.
+Risk tier answers "how deep does review go"; the path check answers "may this merge unattended". They disagree exactly when they should: a Coder-discovered wallet bug might land in a "state machine" classification (High), but the change still touches money — the path check catches that.
+
+The converse also holds, which is what keeps unattended throughput: `apps/platform-domain/bay-session/store/bay_station_register.go` is bay-session state-machine code, classified **High and non-financial** — no human gate, auto-raise on APPROVE. The distinction inside bay-session is per-file, not per-directory: settlement/refund/wager files are financial, station and session lifecycle files are not. This is precisely why the check belongs in a rule table with tests rather than in a directory-level generalization.
 
 ---
 

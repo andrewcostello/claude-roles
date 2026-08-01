@@ -1,0 +1,396 @@
+{
+  "schema_version": 1,
+
+  "_comment": [
+    "Path-to-risk rule table for cmd/classify. Grounded in the evenplay-mono layout",
+    "as of 2026-07-29 (apps/finance-domain/{wallet,paygate}, apps/game-domain/",
+    "{challenge,engine,paylines,station-state-computer}, apps/platform-domain/",
+    "{backoffice,bay-session,cloud-frs,core,league,notifications,partner-service}).",
+    "",
+    "SEMANTICS — monotone, max-wins, union. A file may match many rules:",
+    "  risk       = MAX over every matched rule (low < medium < high < critical)",
+    "  components = UNION over every matched rule",
+    "  financial  = OR  over every matched rule",
+    "  presentation = a file is presentational only if EVERY rule it matched is",
+    "                 marked presentation; one non-presentation match disqualifies it",
+    "Adding a rule can therefore only ever RAISE risk. Rule order is irrelevant.",
+    "",
+    "A file matching NO rule takes unmatched_risk and is listed in",
+    "classification.unmatched_files. That is the fail-closed default: a new",
+    "directory nobody has classified yet reviews HIGH until a rule is added.",
+    "",
+    "Components must be one of the presets cmd/reviewer's componentFloorPresets",
+    "accepts: wallet, bet-settlement, bet-placement, jackpot, responsible-gambling.",
+    "cmd/classify rejects unknown component names at config load, so a typo cannot",
+    "reach the reviewer. Floors are NOT computed here — cmd/reviewer's buildFloors",
+    "owns them; duplicating the table would let the two drift.",
+    "",
+    "Glob syntax: '**' matches zero or more path segments; '*' and '?' match within",
+    "one segment. Paths are repo-root-relative, forward slashes."
+  ],
+
+  "unmatched_risk": "high",
+
+  "server_surface_extensions": [
+    ".go", ".java", ".py", ".sql", ".proto", ".tf"
+  ],
+
+  "rules": [
+    {
+      "id": "wallet-service",
+      "note": "Balance mutations, payout claims, ledger. The money core.",
+      "paths": ["apps/finance-domain/wallet/**"],
+      "risk": "critical",
+      "components": ["wallet"],
+      "financial": true
+    },
+    {
+      "id": "paygate",
+      "note": "Payment gateway + transactor — external money movement.",
+      "paths": ["apps/finance-domain/paygate/**"],
+      "risk": "critical",
+      "components": ["wallet"],
+      "financial": true
+    },
+    {
+      "id": "bet-placement",
+      "note": "accept_bet / wager / arm / bet-amount bounds — money in.",
+      "paths": [
+        "apps/platform-domain/bay-session/store/accept_bet*",
+        "apps/platform-domain/bay-session/store/wager*",
+        "apps/platform-domain/bay-session/store/arm_*",
+        "apps/platform-domain/bay-session/store/bet_amount_bounds*",
+        "apps/platform-domain/bay-session/store/bet_mutation_*",
+        "apps/platform-domain/bay-session/store/advantage_tier_caps*"
+      ],
+      "risk": "critical",
+      "components": ["bet-placement"],
+      "financial": true
+    },
+    {
+      "id": "bet-settlement",
+      "note": "Settlement, hole-in-one settlement, settle SQL — money out.",
+      "paths": [
+        "apps/platform-domain/bay-session/store/bet_settle*",
+        "apps/platform-domain/bay-session/store/*settlement*",
+        "apps/platform-domain/bay-session/store/sqlc/bet_settle*"
+      ],
+      "risk": "critical",
+      "components": ["bet-settlement"],
+      "financial": true
+    },
+    {
+      "id": "bet-reversal-refund",
+      "note": "Dispute reversal and force-refund — operator-initiated money movement.",
+      "paths": [
+        "apps/platform-domain/bay-session/store/admin_bet_dispute_reverse*",
+        "apps/platform-domain/bay-session/store/admin_bet_force_refund*",
+        "apps/platform-domain/bay-session/store/*refund*",
+        "apps/platform-domain/bay-session/cmd/admin-bet/**"
+      ],
+      "risk": "critical",
+      "components": ["bet-settlement", "wallet"],
+      "financial": true
+    },
+    {
+      "id": "financial-recovery",
+      "note": "Replay/retry of financial + state-mutation operations (pr-raise.md rule 1).",
+      "paths": [
+        "apps/platform-domain/bay-session/cmd/*-recovery/**",
+        "apps/platform-domain/bay-session/cmd/*recovery*/**"
+      ],
+      "risk": "critical",
+      "components": ["bet-settlement"],
+      "financial": true
+    },
+    {
+      "id": "payout-tables",
+      "note": "Payout rules, prize/tournament payout tables — outcome-to-money mapping.",
+      "paths": [
+        "apps/platform-domain/core/dao/payout*",
+        "apps/platform-domain/core/model/payout*",
+        "apps/platform-domain/core/model/tournament_payout*",
+        "apps/platform-domain/core/service/tournament/*payout*",
+        "apps/game-domain/engine/dao/payout*",
+        "apps/game-domain/engine/model/payout*",
+        "apps/game-domain/station-state-computer/model/payout*"
+      ],
+      "risk": "critical",
+      "components": ["bet-settlement"],
+      "financial": true
+    },
+    {
+      "id": "outcome-determination",
+      "note": "Payline evaluation — gambling outcome determination (Critical per tier table).",
+      "paths": [
+        "apps/game-domain/paylines/src/**",
+        "apps/game-domain/paylines/data/**"
+      ],
+      "risk": "critical",
+      "components": ["bet-placement"]
+    },
+    {
+      "id": "shared-wallet-lib",
+      "note": "Shared money library used by every service. Found unclassified by the 60-PR validation sweep on 2026-07-31 — it was taking the fail-closed high tier with no component preset and no financial flag.",
+      "paths": ["libs/go/wallet/**"],
+      "risk": "critical",
+      "components": ["wallet"],
+      "financial": true
+    },
+    {
+      "id": "shared-authz-lib",
+      "note": "Shared authorization and capability gates — fail-open here is systemic.",
+      "paths": ["libs/go/authz/**", "libs/go/capability/**"],
+      "risk": "high"
+    },
+    {
+      "id": "shared-go-libs",
+      "note": "Remaining shared Go libraries: errcodes, logging, asyncfetch, workerpool, address.",
+      "paths": ["libs/go/**", "libs/messaging/**", "libs/analytics/**", "libs/**"],
+      "risk": "high"
+    },
+    {
+      "id": "client-money-ui",
+      "note": "Client-side withdrawal, wallet, deposit and card-entry surfaces. NOT presentation: these display balances and submit money movements, and PR 1294's escaped regression was a display bug. The 60-PR sweep found PR 1262 (40 files, native card tokenization) and PR 1350 (43 files, autoplay wager preference) both taking the single-reviewer carve-out because every path sat under src/ — this rule closes that.",
+      "paths": [
+        "apps/*/src/**/[Ww]allet/**",
+        "apps/*/src/**/withdraw*/**",
+        "apps/*/src/**/[Ww]ithdraw*/**",
+        "apps/*/src/**/deposit*/**",
+        "apps/*/src/**/[Dd]eposit*/**",
+        "apps/*/src/**/payment*/**",
+        "apps/*/src/**/*[Ww]allet*",
+        "apps/*/src/**/*[Ww]ithdraw*",
+        "apps/*/src/**/*[Dd]eposit*",
+        "apps/*/src/**/*[Cc]ard*",
+        "apps/*/src/**/*[Pp]ayment*",
+        "apps/*/src/**/*[Bb]alance*"
+      ],
+      "risk": "medium"
+    },
+    {
+      "id": "deploy-manifests",
+      "note": "Kubernetes manifests and environment config — a bad value here is a production incident.",
+      "paths": ["deploy/**", "terraform/**", "**/*.tfvars"],
+      "risk": "high"
+    },
+    {
+      "id": "generated-wire-clients",
+      "note": "Generated protobuf clients shipped into the mobile app. Wire contract, never presentation.",
+      "paths": ["apps/*/generated/**", "**/*_pb.ts", "**/*_connect.ts"],
+      "risk": "high"
+    },
+    {
+      "id": "analytics-and-modelling",
+      "note": "Backtesting and calibration for paylines/stake weighting. Not production-serving, but it is where game-math parameters are derived.",
+      "paths": ["analytics/**"],
+      "risk": "medium"
+    },
+    {
+      "id": "root-e2e-harness",
+      "note": "Repo-root Playwright cross-app suite (the apps/*/e2e rule below only covers per-app harnesses).",
+      "paths": ["tests/**"],
+      "risk": "low",
+      "presentation": true
+    },
+    {
+      "id": "responsible-gambling",
+      "note": "Bet limits, autoplay limits, confidence-bet limits, practice/tournament exclusion.",
+      "paths": [
+        "apps/game-domain/engine/service/*limits*",
+        "apps/game-domain/engine/cmd/smg/*limits*",
+        "apps/platform-domain/bay-session/store/*exclusion*",
+        "apps/platform-domain/bay-session/store/bay_real_money_capable*"
+      ],
+      "risk": "high",
+      "components": ["responsible-gambling"]
+    },
+    {
+      "id": "bay-session-other",
+      "note": "Rest of the bet/session state machine. High by default; the rules above raise the money paths to Critical.",
+      "paths": ["apps/platform-domain/bay-session/**"],
+      "risk": "high"
+    },
+    {
+      "id": "game-engine",
+      "note": "Engine + station state computer — state machines, wallet RPC clients.",
+      "paths": [
+        "apps/game-domain/engine/**",
+        "apps/game-domain/station-state-computer/**",
+        "apps/game-domain/challenge/**"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "platform-core",
+      "note": "Core platform services and DAOs.",
+      "paths": ["apps/platform-domain/core/**"],
+      "risk": "high"
+    },
+    {
+      "id": "auth-session",
+      "note": "Auth, OTP, rate limiting, session issuance — server side.",
+      "paths": [
+        "apps/finance-domain/paygate/auth/**",
+        "apps/platform-domain/core/service/otp*",
+        "apps/platform-domain/core/service/auth*",
+        "apps/platform-domain/core/service/session*",
+        "apps/platform-domain/partner-service/**"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "platform-services-other",
+      "paths": [
+        "apps/platform-domain/backoffice/**",
+        "apps/platform-domain/cloud-frs/**",
+        "apps/platform-domain/league/**",
+        "apps/platform-domain/notifications/**",
+        "apps/admin-reporting/**",
+        "apps/website-public-api/**"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "schema-migrations",
+      "note": "Any migration or raw SQL. Loads migration-checklist.md deterministically.",
+      "paths": [
+        "**/migrations/**",
+        "**/db/migrations/**",
+        "**/*.sql"
+      ],
+      "risk": "high",
+      "migration": true
+    },
+    {
+      "id": "wire-contract",
+      "note": "Protos and generated stubs — cross-service contract, never client-only.",
+      "paths": [
+        "**/*.proto",
+        "**/proto/**",
+        "**/protos/**",
+        "**/pb/**"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "client-auth",
+      "note": "Client auth surface — NOT presentation; token handling is a security surface.",
+      "paths": [
+        "apps/skillstrike-mobile/src/auth/**",
+        "apps/backoffice-web/src/auth/**",
+        "apps/backoffice-web/public/auth/**"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "client-presentation",
+      "note": "Presentation-only client code. The ONLY reduced-panel carve-out — and only when no gate signal fires and nothing above matched.",
+      "paths": [
+        "apps/skillstrike-mobile/**",
+        "apps/burrito-golf-web/**",
+        "apps/partner-hub-web/**",
+        "apps/backoffice-web/**",
+        "apps/evenplay-website/**"
+      ],
+      "risk": "low",
+      "presentation": true
+    },
+    {
+      "id": "e2e-and-mocks",
+      "note": "Test harnesses and mock services.",
+      "paths": [
+        "apps/*/e2e/**",
+        "apps/*/tests/**",
+        "apps/test-mocks/**"
+      ],
+      "risk": "low",
+      "presentation": true
+    },
+    {
+      "id": "infra-terraform",
+      "note": "Deployment/infra config — cannot be presentation, cannot be low.",
+      "paths": [
+        "**/infra/**",
+        "**/*.tf",
+        "**/Tiltfile",
+        "**/Dockerfile*",
+        "**/*.tilt"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "docs-and-meta",
+      "paths": [
+        "**/*.md",
+        "**/README*",
+        "**/*.txt",
+        "docs/**",
+        ".gitignore",
+        "**/.gitignore",
+        ".editorconfig"
+      ],
+      "risk": "low",
+      "presentation": true
+    },
+    {
+      "id": "ci-and-scripts",
+      "note": "CI workflows and repo scripts. Not presentation — scripts/check-migration-ordering.sh IS a gate, and a change here can disable a check rather than fail one.",
+      "paths": [
+        ".github/**",
+        "scripts/**",
+        "**/Makefile",
+        "**/*.mk"
+      ],
+      "risk": "medium"
+    },
+    {
+      "id": "lockfiles",
+      "note": "Dependency changes are supply-chain surface — never low.",
+      "paths": [
+        "**/go.sum",
+        "**/go.mod",
+        "**/package-lock.json",
+        "**/pnpm-lock.yaml",
+        "**/yarn.lock",
+        "**/pom.xml",
+        "**/requirements*.txt",
+        "**/poetry.lock"
+      ],
+      "risk": "medium"
+    }
+  ],
+
+  "gate_signals": [
+    {
+      "id": "env-gate",
+      "note": "Environment-driven behaviour switch — the PR 1298 fail-open class.",
+      "pattern": "os\\.Getenv\\(|process\\.env\\.|System\\.getenv\\(|os\\.environ"
+    },
+    {
+      "id": "dev-build-gate",
+      "note": "Build-mode gate. Ships enabled if the flag leaks to a deployed env.",
+      "pattern": "__DEV__|NODE_ENV|IS_DEBUG|isDebug|DEBUG_|devMode|debugMode"
+    },
+    {
+      "id": "feature-flag",
+      "note": "Feature flag / kill switch — decides whether something is allowed or shown.",
+      "pattern": "[Ff]eature[Ff]lag|featureEnabled|isEnabled\\(|flagEnabled|killSwitch|toggle[A-Z]"
+    },
+    {
+      "id": "override-bypass",
+      "note": "Explicit bypass/override path. Always full panel.",
+      "pattern": "[Bb]ypass|[Oo]verride[A-Z_]|skipAuth|skipCheck|allowAll|force[A-Z]"
+    },
+    {
+      "id": "permission-decision",
+      "note": "Authorization decision points.",
+      "pattern": "[Cc]anAccess|[Ii]sAllowed|hasPermission|[Aa]uthorize\\(|[Ii]sAdmin|requireRole"
+    },
+    {
+      "id": "real-money-gate",
+      "note": "Real-money vs practice mode decision — money exposure if it fails open.",
+      "pattern": "[Rr]ealMoney|real_money|PRACTICE|[Ii]sPractice|moneyMode"
+    }
+  ]
+}

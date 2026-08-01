@@ -97,13 +97,15 @@ Zero findings allowed. Suppressions in code are noted but not validated by you �
 
 ### Step 6: Mutation testing (Critical financial only)
 
-If the changed files include any of the configured financial-mutation paths (e.g., `apps/finance-domain/wallet/payout/`, `apps/finance-domain/wallet/settlement/`):
+This step applies when `classification.components` in the run state contains `wallet`, `bet-settlement`, or `bet-placement` — equivalently, when a changed file matches a `financial: true` rule in `config/risk-paths.json`. Run against the **Go packages the diff touched**:
 
 ```bash
-gremlins-go run --tags=integration <changed-financial-paths>
+gremlins-go run --tags=integration ./<changed-money-package>/...
 ```
 
-Report the mutation score and the list of surviving mutants. Mutation score below 80% is a fact you report; the Tasker decides whether it blocks.
+Money packages in this monorepo: `apps/finance-domain/wallet/{service,db,common/transactions}`, `apps/platform-domain/bay-session/store`, `apps/platform-domain/core/{dao,model}`, `apps/game-domain/engine/{dao,model}`. `apps/finance-domain/paygate/` is Java — report `N/A — Java module`.
+
+Report the mutation score and the list of surviving mutants. Mutation score below 80% is a fact you report; the Tasker decides whether it blocks. **`no packages to test` or an empty run is a FAIL you must report as such** — earlier revisions named `apps/finance-domain/wallet/payout/`, which does not exist, and a no-op run reads as a pass.
 
 ### Step 7: Benchmarks (Critical/High when touching benched packages)
 

@@ -168,16 +168,22 @@ A stub is NOT a completion unless the task description explicitly says "create a
 
 ### 3.1 Pre-Review Gates
 
-Run gates **before** dispatching any reviewer. Critical/High mechanics live in `critical-review-dispatch.md`:
+Run `cmd/classify` (Phase 3.4 below) first, then `cmd/gates`. It replaces the Static Analysis Gate entirely and supplies the deterministic half of the Verification Agent's work:
 
-| Tier | Gates (in order) |
-|------|------------------|
-| Critical | Verification Agent → Security Linter |
-| High | Static Analysis Gate (Tasker-side) |
+```bash
+~/Project/claude-workflow/cmd/gates/gates -run-state "$RUN_STATE" [-declare differential,bench_absolute]
+```
+
+The gate set comes from the classification — you do not choose it by tier. Exit 1 → return to Coder with the failing gate and its raw output path. Iteration counter advances.
+
+| Tier | Remaining agent-driven gates |
+|------|------------------------------|
+| Critical | Verification Agent (judgment half only — fresh-checkout sanity, claim/behaviour audit) → Security Linter |
+| High | None beyond `cmd/gates` |
 | Medium | None — Phase 3.2 spot-check is sufficient |
 | Low | None |
 
-Any gate FAIL → return to Coder. Iteration counter advances. Do not spend reviewer tokens on code that fails deterministic checks.
+Do not spend reviewer tokens on code that fails deterministic checks.
 
 ### 3.2 Verify Claims
 
@@ -190,7 +196,31 @@ Any gate FAIL → return to Coder. Iteration counter advances. Do not spend revi
 
 Remove the Coder's `Self-Assessment` block (Confidence level, Areas I'm uncertain about) before sending to reviewers. Reviewers form their own opinion.
 
-### 3.4 Dispatch Review Panel
+### 3.4 Classify the Diff (before any reviewer)
+
+Run `cmd/classify` on the completed diff. It is the authority on risk tier, component presets, panel shape, the human PR gate, and the re-review severity floor — all derived mechanically from `config/risk-paths.json`. Your Phase 1 tier was a provisional estimate for picking the Design Agent and Coder gates; **classify can raise it, and its answer wins.**
+
+```bash
+RUN_STATE="${RUN_STATE:-/tmp/run-$TASK_KEY.json}"
+git -C "$WORKTREE" diff origin/main...HEAD | ~/Project/claude-workflow/cmd/classify/classify \
+  -worktree "$WORKTREE" -base origin/main -task "$TASK_KEY" -out "$RUN_STATE"
+```
+
+Exit 3 is `INVALID_INPUT` — fix the input (wrong worktree, stale base, empty diff) and re-run. Do not proceed to review on an unclassified diff, and do not send it to the Coder as an iteration.
+
+Read these fields from `$RUN_STATE` and stop deciding them yourself:
+
+| Field | Replaces |
+|---|---|
+| `classification.reviewer_args` | Hand-assembling `-risk` / `-component`. Pass it through verbatim. |
+| `classification.panel.seats` | Judging whether the change is "read-path" or "client-only" enough for a reduced panel |
+| `classification.human_pr_gate` | The Critical-or-financial-paths check in `pr-raise.md` |
+| `classification.recheck_min_severity` | Remembering that component-preset tasks converge at the medium bar |
+| `classification.skills` | The path-derived rows of the Skill Routing table above |
+| `classification.unmatched_files` | Nothing — this is new. Non-empty means paths no rule covers took fail-closed High. Add rules rather than lowering the tier. |
+| `classification.gate_signals` | Spotting a fail-open flag/guard by eye in a "presentation-only" diff |
+
+If `cmd/classify` is unavailable, fall back to the judgment rules below — they encode the same decisions, less reliably.
 
 #### The panel is MANDATORY — no "read-path" or "small change" exemption
 
@@ -334,7 +364,7 @@ When invoked by the dispatcher, you receive these env vars:
 | `DISPATCHER_RUN_ID` | Present iff under dispatcher. Affects only the summary-writing destination. |
 | `TASK_KEY` | The task you're working on (also in the Task Assignment). |
 | `SUMMARY_PATH` | Where to write the summary at session end. |
-| `MAX_ITERATIONS` | Override default 2. |
+| `MAX_ITERATIONS` | Override the iteration ceiling (default 4 — see `iteration-protocol.md` → Iteration Budget). |
 | `SKIP_DESIGN` | Skip Design Agent (Phase 1 analysis still runs). |
 | `SKIP_SECURITY_LINTER` | Skip Security Linter. Verification Agent still runs for Critical. |
 | `REVIEWER_COUNT` | Deprecated — panel size is the CLI's `-reviewers` flag; the consensus floor scales with it automatically. |

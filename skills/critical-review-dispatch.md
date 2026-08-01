@@ -99,27 +99,31 @@ Re-run the Security Linter on changed files after the fix.
 
 **Cap at 2 linter cycles.** If still FAIL after 2 attempts, escalate to human — persistent vulnerability needs a design-level discussion, not another code fix.
 
-Linter cycles are separate from review iteration cycles. A task can use 2 linter cycles AND have its full `MAX_ITERATIONS` (default 2) review iterations available — they address different concerns (exploitability vs. correctness).
+Linter cycles are separate from review iteration cycles. A task can use 2 linter cycles AND have its full `MAX_ITERATIONS` (default 4) review iterations available — they address different concerns (exploitability vs. correctness).
 
 If `$SKIP_SECURITY_LINTER` is set, skip this phase. Verification Agent still runs for Critical.
 
 ---
 
-## Phase 3.0.3: Static Analysis Gate (High only)
+## Phase 3.0.3: Static Analysis Gate — superseded by `cmd/gates`
 
-For High risk (Critical already covers this via Verification Agent), run static analyzers as a Tasker-side gate:
+`cmd/gates` owns this. Run it for every tier, not just High:
 
 ```bash
-gosec ./...
-go list ./... | grep -vE '/pb$|/sqlc$|/mock$|/migration$' | xargs staticcheck
-semgrep --config [project semgrep rules path] --error
+~/Project/claude-workflow/cmd/gates/gates -run-state "$RUN_STATE"
 ```
 
-Zero findings allowed. Suppressions in changed files are noted for the reviewer to validate; a suppression without rationale comment is a finding.
+At `risk` high or critical it plans `gosec`, `staticcheck`, and `semgrep` alongside build/test/coverage/lint/complexity, runs each inside the owning Go module, and records raw output paths plus pass/fail in `$RUN_STATE`. Exit 1 → return to Coder with the failing gate; iteration counter advances.
 
-**Any analyzer fires** → return to Coder. Iteration counter advances.
+Notes on what changed and why:
 
-> **Why High runs this Tasker-side** rather than trusting Coder's Phase 4.5 output: Tasker's job is to verify, not trust. Re-running the cheap deterministic checks catches pasted-but-not-actually-run output.
+- **Module scope.** The old snippet ran `gosec ./...` from the worktree root. `evenplay-mono` has no root `go.mod`, so that command fails rather than analyzing anything. Gates discovers the module owning each changed file.
+- **The semgrep rules file is the gate.** If `tools/semgrep/rules.yml` is absent, gates FAILS rather than passing quietly. Waive with `-waive semgrep=<reason>` and the reason is recorded in the run state.
+- **Generated-code exclusion** moved from a `grep -vE` pipeline into `coverage_exempt` in `config/gates.json`, where it is testable.
+
+Suppressions in changed files are still noted for the reviewer to validate; a suppression without a rationale comment is a finding. Gates cannot judge a rationale — that stays with the panel.
+
+> **Why this is Tasker-side and mechanical** rather than trusting Coder's Phase 4.5 output: Tasker's job is to verify, not trust. Re-running the cheap deterministic checks catches pasted-but-not-actually-run output — and running them as code catches the class of failure where the command itself was wrong (`gremlins-go`, a nonexistent payout directory, a rootless `./...`).
 
 ---
 
