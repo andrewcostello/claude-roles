@@ -153,7 +153,10 @@ func main() {
 	printReport(export, out, open, verdict, headSHA, changedFiles)
 
 	if *outPath != "" {
-		rr := buildRoundResult(export, out, open, verdict, code, floor, headSHA, *maxNew, len(changedFiles))
+		rr := buildRoundResult(export, out, open, roundCtx{
+			Verdict: verdict, Code: code, Floor: floor, HeadSHA: headSHA,
+			MaxNew: *maxNew, ChangedFiles: len(changedFiles),
+		})
 		if err := writeRoundResult(*outPath, rr); err != nil {
 			log.Printf("WARNING: failed to write round result to %s: %v", *outPath, err)
 		} else {
@@ -183,14 +186,23 @@ type RoundResult struct {
 	Summary      string `json:"summary"`
 }
 
-func buildRoundResult(export FindingsExport, out verifierOutput, prior []ExportFinding,
-	verdict string, code int, floor, headSHA string, maxNew, changedFiles int) RoundResult {
+// roundCtx groups the per-round outcome values, which are always computed
+// together and always travel together.
+type roundCtx struct {
+	Verdict      string
+	Code         int
+	Floor        string
+	HeadSHA      string
+	MaxNew       int
+	ChangedFiles int
+}
 
+func buildRoundResult(export FindingsExport, out verifierOutput, prior []ExportFinding, rc roundCtx) RoundResult {
 	r := RoundResult{
-		Tool: "recheck", Verdict: verdict, ExitCode: code, Floor: floor,
-		ReviewedSHA: export.ReviewedSHA, HeadSHA: headSHA,
-		PriorChecked: len(prior), MaxNewGiven: maxNew,
-		ChangedFiles: changedFiles, Summary: out.Summary,
+		Tool: "recheck", Verdict: rc.Verdict, ExitCode: rc.Code, Floor: rc.Floor,
+		ReviewedSHA: export.ReviewedSHA, HeadSHA: rc.HeadSHA,
+		PriorChecked: len(prior), MaxNewGiven: rc.MaxNew,
+		ChangedFiles: rc.ChangedFiles, Summary: out.Summary,
 	}
 	for _, v := range out.Verifications {
 		switch v.Status {
@@ -203,7 +215,7 @@ func buildRoundResult(export FindingsExport, out verifierOutput, prior []ExportF
 		}
 	}
 	for _, f := range out.NewFindings {
-		if severityRank[f.Severity] >= severityRank[floor] || f.Blocking {
+		if severityRank[f.Severity] >= severityRank[rc.Floor] || f.Blocking {
 			r.NewAtFloor++
 		}
 	}

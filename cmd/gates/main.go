@@ -1239,41 +1239,7 @@ func printReport(state *RunState, modules []Module, results []result, failed int
 	fmt.Printf("Modules: %d\n\n", len(modules))
 
 	for _, r := range results {
-		fmt.Printf("%s %-16s %-45s", statusMark(r.Outcome.Status), r.Gate, emptyDash(r.Module))
-		if r.Outcome.DurationMS > 0 {
-			fmt.Printf(" %6.1fs", float64(r.Outcome.DurationMS)/1000)
-		}
-		fmt.Println()
-		if r.Outcome.SkipReason != "" {
-			fmt.Printf("      %s\n", r.Outcome.SkipReason)
-		}
-		if v, ok := r.Outcome.Metrics["violations"]; ok {
-			for _, s := range toStrings(v) {
-				fmt.Printf("      · %s\n", s)
-			}
-		}
-		if v, ok := r.Outcome.Metrics["regressions"]; ok {
-			for _, s := range toStrings(v) {
-				fmt.Printf("      · %s\n", s)
-			}
-		}
-		if v, ok := r.Outcome.Metrics["no_op"]; ok {
-			fmt.Printf("      NO-OP: %v\n", v)
-		}
-		if v, ok := r.Outcome.Metrics["environment"]; ok {
-			fmt.Printf("      ENVIRONMENT: %v\n", v)
-		}
-		if r.Outcome.Status == "fail" && r.Outcome.OutputPath != "" {
-			// #nosec G304 -- OutputPath was written by this process.
-			if data, err := os.ReadFile(r.Outcome.OutputPath); err == nil && len(data) > 0 {
-				fmt.Printf("      --- tail of %s ---\n", r.Outcome.OutputPath)
-				for _, line := range strings.Split(tail(string(data), maxTailLines), "\n") {
-					if strings.TrimSpace(line) != "" {
-						fmt.Printf("      %s\n", line)
-					}
-				}
-			}
-		}
+		printResult(r)
 	}
 
 	fmt.Println()
@@ -1283,6 +1249,50 @@ func printReport(state *RunState, modules []Module, results []result, failed int
 	}
 	fmt.Printf("=== GATES: FAIL (%d of %d) ===\n", failed, len(results))
 	fmt.Println("Return to the Coder with the failing gate and its raw output. Do not spend reviewer tokens on code that fails deterministic checks.")
+}
+
+func printResult(r result) {
+	fmt.Printf("%s %-16s %-45s", statusMark(r.Outcome.Status), r.Gate, emptyDash(r.Module))
+	if r.Outcome.DurationMS > 0 {
+		fmt.Printf(" %6.1fs", float64(r.Outcome.DurationMS)/1000)
+	}
+	fmt.Println()
+
+	if r.Outcome.SkipReason != "" {
+		fmt.Printf("      %s\n", r.Outcome.SkipReason)
+	}
+	for _, key := range []string{"violations", "regressions"} {
+		if v, ok := r.Outcome.Metrics[key]; ok {
+			for _, s := range toStrings(v) {
+				fmt.Printf("      · %s\n", s)
+			}
+		}
+	}
+	if v, ok := r.Outcome.Metrics["no_op"]; ok {
+		fmt.Printf("      NO-OP: %v\n", v)
+	}
+	if v, ok := r.Outcome.Metrics["environment"]; ok {
+		fmt.Printf("      ENVIRONMENT: %v\n", v)
+	}
+	if r.Outcome.Status == "fail" {
+		printOutputTail(r.Outcome.OutputPath)
+	}
+}
+
+func printOutputTail(path string) {
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- written by this process
+	if err != nil || len(data) == 0 {
+		return
+	}
+	fmt.Printf("      --- tail of %s ---\n", path)
+	for _, line := range strings.Split(tail(string(data), maxTailLines), "\n") {
+		if strings.TrimSpace(line) != "" {
+			fmt.Printf("      %s\n", line)
+		}
+	}
 }
 
 func statusMark(s string) string {
