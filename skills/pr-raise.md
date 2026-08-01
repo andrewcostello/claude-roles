@@ -42,7 +42,11 @@ git -C "$WORKTREE" diff origin/main...HEAD | ~/Project/claude-workflow/cmd/class
 
 > **Correction 2026-07-29 — the list previously documented here matched nothing.** It named `apps/finance-domain/settlement/**`, `apps/finance-domain/recovery/**`, and `apps/finance-domain/payout/**`. None of those directories exist: `apps/finance-domain/` contains only `paygate/` and `wallet/`. Settlement, refunds, and dispute reversal live under `apps/platform-domain/bay-session/store/` — which the paragraph below then named as the example of a *non*-financial path. Net effect: the path check — whose whole job is to be the backstop when tier judgment misses — was dead for every money path outside `wallet/`. A change to `admin_bet_force_refund.go` or `admin_bet_dispute_reverse.go` still fired the gate *if* the Tasker classified it Critical; if it classified it High, nothing caught it. And the paragraph below actively invited exactly that call, naming `apps/platform-domain/bay-session/` as High-but-not-financial. `config/risk-paths.json` now classifies those paths critical + financial; `cmd/classify`'s `TestClassify_BaySessionMoneyPathsAreFinancial` locks it in.
 
-**Fallback for agent-driven runs with no classify available** (kept in sync with the `financial: true` rules in `config/risk-paths.json`):
+**Fallback for agent-driven runs with no classify available.** This list is a DUPLICATE and therefore a drift hazard — it is the `financial: true` rules from the project's `.agent/risk-paths.json`, copied. It drifted within a day of being written (8 rules added by the 98-PR validation sweep never landed here; caught by the panel on dispatcher PR #71, 2026-08-01). Prefer `classification.human_pr_gate`; reach for this only when the binary is genuinely unavailable, and re-derive it rather than hand-editing:
+
+```bash
+jq -r '.rules[] | select(.financial) | .paths[]' .agent/risk-paths.json
+```
 
 ```
 apps/finance-domain/wallet/**
@@ -50,18 +54,26 @@ apps/finance-domain/paygate/**
 apps/platform-domain/bay-session/store/accept_bet*
 apps/platform-domain/bay-session/store/wager*
 apps/platform-domain/bay-session/store/arm_*
+apps/platform-domain/bay-session/store/bet_amount_bounds*
+apps/platform-domain/bay-session/store/bet_mutation_*
+apps/platform-domain/bay-session/store/advantage_tier_caps*
 apps/platform-domain/bay-session/store/bet_settle*
 apps/platform-domain/bay-session/store/*settlement*
-apps/platform-domain/bay-session/store/*refund*
+apps/platform-domain/bay-session/store/sqlc/bet_settle*
 apps/platform-domain/bay-session/store/admin_bet_dispute_reverse*
 apps/platform-domain/bay-session/store/admin_bet_force_refund*
-apps/platform-domain/bay-session/cmd/*-recovery/**
+apps/platform-domain/bay-session/store/*refund*
 apps/platform-domain/bay-session/cmd/admin-bet/**
+apps/platform-domain/bay-session/cmd/*-recovery/**
+apps/platform-domain/bay-session/cmd/*recovery*/**
 apps/platform-domain/core/dao/payout*
 apps/platform-domain/core/model/payout*
+apps/platform-domain/core/model/tournament_payout*
 apps/platform-domain/core/service/tournament/*payout*
 apps/game-domain/engine/dao/payout*
 apps/game-domain/engine/model/payout*
+apps/game-domain/station-state-computer/model/payout*
+libs/go/wallet/**
 ```
 
 `$FINANCIAL_PATHS` (comma-separated globs) or `dispatcher run --financial-paths '<patterns>'` still override, for projects with a different layout. A duplicated list is a drift hazard — prefer `-config` pointed at a project-specific `risk-paths.json`.
