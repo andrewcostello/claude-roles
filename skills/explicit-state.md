@@ -45,13 +45,71 @@ check, anything whose output changes what runs next:
    couldn't tell", that is **three** states. Not two-plus-null.
 2. **Name them.** A distinct constant, variant or status field per state.
    `CLASSIFY_OK` / `CLASSIFY_ABSENT` / `CLASSIFY_FAILED`, not `T | None`.
-3. **Make the caller handle them.** A caller that would *relax* a gate must be
+3. **Be exhaustive, and raise on the unknown.** See below — this is the step
+   that actually bites, and naming the states does not give it to you for free.
+4. **Make the caller handle them.** A caller that would *relax* a gate must be
    unable to conflate "failed" with "fine" — ideally because the type won't let
    it compile or the field won't parse.
-4. **Never default a missing input to the permissive value.** No `risk` key is
+5. **Never default a missing input to the permissive value.** No `risk` key is
    not `"low"`. No coverage line is not `100%`. No findings is not `APPROVE`.
-5. **Validate, don't coerce.** A policy-bearing boolean must *be* a boolean.
+6. **Validate, don't coerce.** A policy-bearing boolean must *be* a boolean.
    Coercion turns a producer bug into a silently inverted decision.
+
+### Naming the states is not enough
+
+> **Naming three states does nothing if a fourth can arrive and be silently
+> treated as the permissive one.**
+
+This is the failure mode that survives a first, careful attempt at the rule —
+learned by writing this document and then violating it within the hour, in the
+commit that applied it.
+
+The fix under review had replaced `Classification | None` with a named
+three-state `ClassifyResult`. Every state had a constant. The dispatch was:
+
+```python
+# WRONG — and it looks like it followed the rule
+if hasattr(x, "status") and hasattr(x, "classification"):
+    if getattr(x, "failed", False):
+        return True
+    inner = x.classification
+    return inner is not None and inner.requires_full_panel
+```
+
+Three real inputs returned "skip the review gate":
+
+| Input | Why it slipped through |
+|---|---|
+| `SimpleNamespace(status=..., classification=...)` | Matched on **shape**, so a lookalike walked in |
+| `ClassifyResult(status="future-status")` | An unrecognised status fell out of the bottom as permissive |
+| `ClassifyResult(status=OK, classification=None)` | Internally inconsistent, so `inner is not None` was False |
+
+Two of those are *canonical* instances of the right type. So:
+
+- **`isinstance`, never `hasattr`.** Structural matching is a type check's
+  clothes, not a type check. `getattr(x, "attr", default)` on a union is the
+  same mistake with a default attached.
+- **Handle every status by name, and `raise` on one you don't recognise.** A
+  `switch` whose default arm is the permissive branch has re-created the
+  implicit state you just removed. The unknown case is not hypothetical: it is
+  a future status, a partial rollout, an older build reading a newer producer.
+- **Reject internally inconsistent combinations.** `status=OK` with no payload
+  is not "no panel required" — it is a bug, and it must say so.
+- **Do not over-correct into "always block".** `ABSENT` and `EMPTY` genuinely
+  mean *no evidence either way*; forcing the gate on those makes it useless in
+  the deployment it was designed to degrade into. Exhaustive means each state
+  gets the **right** answer, not the same answer.
+
+### Sealing it
+
+The seal for this must use a **structural lookalike**, not a wrong-typed value.
+The original test passed a string — which lacks the probed attributes and so
+never reached the broken branch. It tested the easy case while three real shapes
+failed open.
+
+Add an exhaustive-status test, so a status added later without updating the
+predicate fails the suite rather than the gate. And falsify: revert the fix, run
+the test, confirm it fails.
 
 ### Where it binds, and where it doesn't
 
