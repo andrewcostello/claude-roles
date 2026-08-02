@@ -263,6 +263,32 @@ logger.WithContext(ctx).Info("processing", slog.Int64("amount", amount))
 logger.Info("processing withdrawal")
 ```
 
+#### No Implicit States at a Decision Boundary
+
+Load `.claude/workflow/skills/explicit-state.md` when the task touches a gate,
+guard, verdict or authorization check. The rule in one line:
+
+> Every state a decision depends on must be nameable and named. "I don't know"
+> is a state — if it can't be told apart from "the answer is no", the gate has
+> already failed and nobody will notice.
+
+Concretely, at those boundaries:
+
+- **Enumerate before you type.** Yes / no / could-not-tell is **three** states,
+  not two-plus-null. Give each a named constant or variant.
+- **Never default a missing input to the permissive value.** No `risk` key is
+  not "low". No coverage line is not 100%. No findings is not APPROVE.
+- **Validate, don't coerce.** A policy-bearing boolean must *be* a boolean —
+  `bool("false")` is `True`, and coercion turns a producer bug into a silently
+  inverted decision.
+- **No `getattr(x, "attr", False)` on a union.** That is duck typing standing in
+  for a type check, and the default is a silent implicit state.
+- **Fixtures count.** A test payload that omits a field asserts that field is
+  optional, whether or not you meant it.
+
+Outside decision boundaries this is ceremony — `Optional` for a display name is
+fine. Be strict where a wrong answer means a check does not happen.
+
 #### Never Silently Ignore Errors
 
 ```go

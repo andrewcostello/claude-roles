@@ -113,7 +113,15 @@ PASS requires ALL: happy path per spec; every documented edge case has handling 
 
 Also check MISSING: spec'd edge cases / input combinations absent from code or tests; transitions the machine should reject but doesn't; **lifecycle symmetry** — state set on an entry/setup path (join/enable/arm/configure/seen-flag) with no teardown verified on EVERY exit variant (checkout/logout/evict/timeout/player-switch/mid-flow abandon); state surviving into the next session/player/turn without an explicit reset is a finding; frontend — every UI-collected field present in the submitted payload, relocated components still enclosed by required context providers, every full-screen overlay has a guaranteed exit transition, deep-link/URL params validated at screen entry.
 
-Automatic FAIL: spec'd edge case not handled OR not tested; logic contradicts spec; off-by-one in a financial calc; unchecked type assertion on a critical path; untested state transition (valid or invalid); assert-nothing tests; race on shared mutable state (even if "unlikely").
+Automatic FAIL: spec'd edge case not handled OR not tested; logic contradicts spec; off-by-one in a financial calc; unchecked type assertion on a critical path; untested state transition (valid or invalid); assert-nothing tests; race on shared mutable state (even if "unlikely"); **an implicit state at a decision boundary** — see below.
+
+**Implicit states (project-wide constraint — `skills/explicit-state.md`).** Every state a decision depends on must be nameable and named. At any gate, guard, verdict or authorization check, ask three questions:
+
+1. **What does absence mean here?** Follow every `None`/`nil`/zero value/empty collection/missing key to its consumer. Two different causes producing one value that the consumer branches on is a finding — "not installed", "failed" and "the answer is no" are three states, not one.
+2. **Could this pass without doing anything?** Zero packages evaluated, zero mutants generated, empty output, a skipped step with no reason. If *did nothing* and *succeeded* look the same to the caller, that is a finding.
+3. **Is a missing input defaulted to the permissive value?** No `risk` key is not "low". No coverage line is not 100%. No findings is not APPROVE. Validate, never coerce — `bool("false")` is `True`, and coercion turns a producer bug into a silently inverted decision.
+
+Automatic FAIL when the boundary controls money, auth or merge. Fixing the call site is usually the wrong remedy: the ambiguity lives in the representation, and guarding one consumer leaves the next exposed. Say so in the finding.
 
 ### 2. Security — PASS / FAIL
 

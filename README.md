@@ -84,6 +84,7 @@ Composable workflow primitives the Tasker loads on demand. Each skill is self-co
 | `skills/pr-raise.md` | Verdict = APPROVE | Human PR gate (Critical OR financial-paths-touched), title/body format, size gates, no-attribution rule |
 | `skills/plan-based-execution.md` | `docs/plans/*.md` exists | Plan-based dispatch with batch checkpoints |
 | `skills/iteration-protocol.md` | Verdict = ITERATE | Targeted re-review scope, full domain test gate, iteration cap |
+| `skills/explicit-state.md` | Task touches a gate, guard, verdict or auth check | The no-implicit-states constraint: absence must be a named state, never a default or a falsy value |
 
 ## Other directories
 

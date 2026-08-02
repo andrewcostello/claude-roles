@@ -68,6 +68,7 @@ Load only what applies. Each skill is self-contained and assumes you loaded it o
 | Dispatching Coder for first time on this ticket | `.claude/workflow/skills/git-worktree-setup.md` |
 | `docs/plans/*.md` exists for this task | `.claude/workflow/skills/plan-based-execution.md` |
 | Verdict = ITERATE | `.claude/workflow/skills/iteration-protocol.md` |
+| Task touches a gate, guard, verdict or auth check | `.claude/workflow/skills/explicit-state.md` — no implicit states at decision boundaries |
 | Verdict = APPROVE | `.claude/workflow/skills/pr-raise.md` |
 
 If a skill file is missing on disk, surface that to the user — do not improvise the mechanics from memory.
