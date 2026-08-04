@@ -90,6 +90,8 @@ Critical dims PASS/FAIL; quality dims 1-5 by anchors; design coherence; categori
 
 Severity = worst plausible production impact under an adversarial user + unlucky timing. Likelihood never discounts ("unlikely race", "no caller does this today" do not lower it).
 
+**Staged/dark code is rated by what it will gate, not by what imports it today.** Infrastructure that is deliberately unwired (a new module no production path imports yet, a generated runtime awaiting its cut-over PR, a feature behind an unflipped flag) is rated as if wired — because the wiring PR reviews the wiring, not the mechanism it wires. A defect in a gate, fence, authorization check, reducer, or seal carries the severity of the decision it will control: a swallowed blocking verdict is CRITICAL whether the aggregate has one caller or none. "Nothing calls it yet" is the same discount the line above forbids, and it is the one reviewers actually apply — a dark-code review that returns only MEDIUMs is the signal to re-check this rule, not evidence the code is clean.
+
 | Severity | Meaning |
 |----------|---------|
 | CRITICAL | Exploitable/corrupting now: money loss or duplication, data corruption, auth bypass, compliance breach |
