@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -113,7 +114,7 @@ type DiffFile struct {
 
 func main() {
 	cwdFlag := flag.String("cwd", ".", "Workspace context for the review")
-	reviewersFlag := flag.String("reviewers", "claude,claude-scouts,codex,grok,agy", "Comma-separated list of reviewers to run (claude, claude-scouts, codex, grok, agy, deepseek-scouts, kimi)")
+	reviewersFlag := flag.String("reviewers", "claude,claude-scouts,codex,grok,agy", "Comma-separated list of reviewers to run (claude, claude-scouts, grok-scouts, codex, grok, agy, deepseek-scouts, kimi)")
 	baseFlag := flag.String("base", "", "Base branch or commit for review metadata")
 	strictCleanFlag := flag.Bool("strict-clean", false, "Treat a dirty worktree as INVALID_INPUT")
 	riskFlag := flag.String("risk", "medium", "Risk tier of the change (critical|high|medium|low). Scales reviewer reasoning effort, consensus floor, and Claude focused-scope fan-out.")
@@ -122,6 +123,8 @@ func main() {
 	findingsOutFlag := flag.String("findings-out", "", "Write the deduplicated findings + review metadata as JSON to this path (machine input for cmd/recheck)")
 	claudeModelFlag := flag.String("claude-model", "claude-opus-5", "Model for the claude broad seat + all scouts + focused scopes (e.g. claude-opus-5, claude-haiku-4-5-20251001). Default claude-opus-5 (cheaper than fable for this account; haiku for budget A/B).")
 	deepseekModelFlag := flag.String("deepseek-model", "deepseek-v4-flash", "Model for the deepseek broad seat (deepseek-v4-flash or deepseek-v4-pro). For A/B testing.")
+	codexModelFlag := flag.String("codex-model", "", "Model for the codex broad seat (e.g. gpt-5.5, gpt-5.6). Empty inherits the codex CLI's config.toml default. gpt-5.6 requires an OpenAI API-key login; ChatGPT-account auth rejects it.")
+	codexEffortFlag := flag.String("codex-effort", "high", "model_reasoning_effort for the codex broad seat on high/critical risk (high|xhigh). Default high; xhigh for the strongest pass on money PRs.")
 	kimiModelFlag := flag.String("kimi-model", "", "Model alias for the kimi broad seat (e.g. moonshot-ai/kimi-k3). Empty inherits the kimi CLI's configured default_model.")
 	scoutPreloadFlag := flag.String("scout-preload", "none", "Scout file-preload mode. \"none\" (default): preload no file contents — each scout tool-reads what it needs from the full diff + Changed Files table it always receives (robust: coverage never keyed on guessed paths, and it can't exceed the context window). \"all\": paste every high-signal changed file into every scout — measured to OVERFLOW the context window on a 26-file PR (209k > 200k tokens) and is expensive elsewhere; only safe for small diffs.")
 	changeMapFlag := flag.Bool("scout-change-map", false, "EXPERIMENTAL: before dispatching scouts, run one cheap map-model pass over the diff to produce a per-file orientation map, injected as a shared cached prefix in every scout's system prompt. Aims to cut scout investigation turns. The map orients only — scouts still read code for verdicts.")
@@ -206,6 +209,8 @@ func main() {
 		roleText:      roleText,
 		claudeModel:   *claudeModelFlag,
 		deepseekModel: *deepseekModelFlag,
+		codexModel:    *codexModelFlag,
+		codexEffort:   strings.ToLower(strings.TrimSpace(*codexEffortFlag)),
 		kimiModel:     *kimiModelFlag,
 		tempDir:       tempDir,
 		cwd:           *cwdFlag,
@@ -234,7 +239,27 @@ func main() {
 	}
 	log.Printf("Kimi broad model: %s\n", kimiModelLog)
 
+	// The workspace is EVIDENCE, and evidence a witness can edit is not
+	// evidence. Fingerprinted before and after the fan-out; see
+	// workspaceFingerprint for the incident that put this here.
+	fpBefore, fpErr := workspaceFingerprint(*cwdFlag)
+	if fpErr != nil {
+		log.Printf("WARNING: could not fingerprint workspace before review (%v); a mid-run mutation will NOT be detected", fpErr)
+	}
+
 	results, reviewerErrors := dispatchReviewers(reviewers, env)
+
+	if fpErr == nil {
+		if fpAfter, err := workspaceFingerprint(*cwdFlag); err != nil {
+			log.Printf("WARNING: could not fingerprint workspace after review (%v); cannot confirm it was unchanged", err)
+		} else if fpAfter != fpBefore {
+			log.Printf("FATAL: the workspace CHANGED during the review (%s -> %s). A reviewer mutated the artifact it was judging, so every finding in this run is unattributable and the reviewed SHA is meaningless. Restore the tree, then re-run.", fpBefore, fpAfter)
+			printReviewReport(statusReviewUnavailable, verdictIterate,
+				"workspace mutated mid-run — no verdict is possible", inputCtx, results, reviewerErrors)
+			os.Exit(2)
+		}
+	}
+
 	finalStatus, finalVerdict := mergeReviewStatus(results, len(reviewers), risk, floors)
 	consensus := fmt.Sprintf("%d/%d reviewers completed (floor %d for %s risk)", len(results), len(reviewers), consensusFloor(risk, len(reviewers)), risk)
 	printReviewReport(finalStatus, finalVerdict, consensus, inputCtx, results, reviewerErrors)
@@ -250,6 +275,51 @@ func main() {
 	if finalStatus == statusReviewUnavailable {
 		os.Exit(2)
 	}
+}
+
+// workspaceFingerprint identifies the exact tree a review judged: the commit,
+// plus the porcelain status so uncommitted edits count too.
+//
+// Why this exists. On 2026-08-08, during a six-slice panel, a review agent
+// COMMITTED a file into the branch it was reviewing — `.shadow.py`, an
+// `override_gate` stub, placed inside the generated safety-truth package to
+// demonstrate a real finding about the drift gate's dot-prefix blind spot. The
+// finding was true. But the slices that ran afterwards reported "the reviewed
+// SHA is its own counterexample", which was true only because a reviewer had
+// made it so. A panel that can edit its own evidence can manufacture a finding,
+// and every "reviewed SHA" it prints is unfalsifiable.
+//
+// This does not PREVENT the write — reviewers need real tool access to do their
+// job, and sandboxing them is a larger change. It makes the write DETECTABLE and
+// fatal, which is the difference between a contaminated run we know about and
+// one we do not. A run whose tree moved is REVIEW_UNAVAILABLE: its findings may
+// be real, but they are unattributable, so no verdict may rest on them.
+//
+// Errors are returned rather than swallowed: "could not fingerprint" and
+// "unchanged" are different states, and only one of them is evidence.
+func workspaceFingerprint(dir string) (string, error) {
+	head, err := gitOutput(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("rev-parse HEAD: %w", err)
+	}
+	status, err := gitOutput(dir, "status", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("status --porcelain: %w", err)
+	}
+	sum := sha256.Sum256([]byte(head + "\x00" + status))
+	return fmt.Sprintf("%s+%x", head, sum[:6]), nil
+}
+
+func gitOutput(dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func parseReviewers(reviewersFlag string) []string {
@@ -295,6 +365,8 @@ type reviewEnv struct {
 	roleText      string
 	claudeModel   string
 	deepseekModel string
+	codexModel    string // model for the codex broad seat; empty = codex CLI config default
+	codexEffort   string // model_reasoning_effort for codex on high/critical risk (high|xhigh)
 	kimiModel     string
 	tempDir       string
 	cwd           string
@@ -308,6 +380,7 @@ type reviewEnv struct {
 	sharedContext bool   // EXPERIMENTAL: shared cached context+diff prefix (see buildScoutBody / runOneScout)
 	scoutTiering  bool   // EXPERIMENTAL: soft scouts on softModel, hard scouts on claudeModel
 	softModel     string // model for soft scouts when scoutTiering is on
+	scoutProvider string // which CLI runs the scout fan-out: "claude" (default) or "grok"
 }
 
 // providerTimeout is the per-attempt ceiling for one reviewer. Bake-off data
@@ -316,16 +389,37 @@ type reviewEnv struct {
 // attempts, wasting 20 min per PR; the claude-scouts long pole (dataflow-spec)
 // ran 7m36s, only 2.4 min from the same ceiling. A kill costs the panel a
 // whole seat, so these ceilings are sized generously above observed runtimes.
+//
+// Raised 2026-08-07 after the A-stream slice run re-ran that experiment and
+// lost. On ~4.5k-line slices at -risk critical (claude at --effort max, not
+// xhigh) two seats died at their ceiling to the second: grok at 10:00 on the
+// fsmgen slice, claude at 20:00 on the generated slice. Both panels degraded
+// to 4/5 and so could not clear the critical-risk consensus floor of 5 —
+// REVIEW_UNAVAILABLE, findings kept but no verdict. The lesson is that a
+// ceiling tight enough to bite is worse than a slow panel: it converts a
+// complete review into an unusable one. Slice size is deliberately NOT the
+// lever here (shrinking slices costs cross-cutting findings that only appear
+// when a seat sees a whole subsystem); the ceilings move instead.
 func providerTimeout(name string) time.Duration {
+	// Raised again 2026-08-08: the post-repair A-stream's `seals` slice is 8.6k
+	// lines, up from 5.3k. Operator's standing preference is explicit — buy the
+	// seats more time rather than cut the slices, because a slice small enough
+	// to finish fast is also small enough to hide the cross-cutting findings
+	// that only appear when one seat sees a whole subsystem.
 	switch name {
-	case "claude-scouts":
-		// Room for one long first attempt (18m) by the heavy scouts
-		// (dataflow-spec, test-docs) plus a short transient-only retry.
-		return 24 * time.Minute
+	case "claude-scouts", "grok-scouts":
+		// Heavy scouts (dataflow-spec, test-docs) ran 14m on a 4.5k slice.
+		return 60 * time.Minute
 	case "claude", "deepseek-scouts":
-		return 20 * time.Minute
+		// --effort max ran ~20m on 4.5k; 8.6k needs room well past that.
+		return 70 * time.Minute
+	case "codex":
+		// codex at xhigh (esp. gpt-5.6-sol) runs long; give one attempt room to
+		// COMPLETE rather than being killed early and wastefully retried.
+		return 90 * time.Minute
 	default:
-		return 10 * time.Minute
+		// grok/agy/kimi/deepseek broad seats. grok died at the old 10m ceiling.
+		return 40 * time.Minute
 	}
 }
 
@@ -797,9 +891,31 @@ func printInvalidInput(inputCtx ReviewInputContext, problems []string) {
 	}
 }
 
+// weakModelAddendum is appended to the grok and codex prompts ONLY. On PR-1353
+// (N=3, SMG-3966 ground truth) these explicit written-artifact procedures lifted
+// grok solo 2/3→3/3 and gpt-5.6-sol/gpt-5.5 to 3/3 on the involved-source leak,
+// while the SAME text in the shared role REGRESSED claude-tiered 3/3→1/3 (the
+// mandatory artifacts redistribute the stronger model's attention). So it lives
+// here, model-scoped, not in reviewer.md. See memory: alt-model-seats-bakeoff.
+const weakModelAddendum = `## MANDATORY REVIEW PROCEDURES (in addition to your role — non-optional written artifacts)
+
+Produce these BEFORE any verdict on a money / multi-pool / financial diff:
+
+1. **Fund-return pair audit.** For any path that returns/restores/refunds/adjusts-down/settles stake across pools (won/bought/refund/credited/bonus): grep the parent for every crediting helper (` + "`returnTo*`, `restore*`, `AddTo*`" + `, refund/settle loops) and fill one row each: helper | pool(s) credited | allocation/involved-source row written? (file:line) | same shape as siblings? A helper that credits a pool but writes NO involved-source/allocation row while a sibling DOES = CRITICAL Correctness FAIL (money reclassification), even if one op looks balanced. Name every later reader of that allocation table (refund/settle/adjust/preview) — stale rows they re-read are production money bugs.
+
+2. **N-fold conservation.** For any balance mutation that can legally re-run (cumulative BET_ADJUST, partial refund, repeated restore, resize-after-accept): apply it N≥3× (not once) and write the trace — pool balances + sum(involved by type) + outstanding stake after EACH step. MUST hold every step or CRITICAL: sum(involved) == outstanding stake; no restricted pool (turnover-locked bonus) loses value another pool gains except via the named conversion gate; restricted→withdrawable only via that gate, never as an accounting side effect. A green single-op test or a one-step trace does NOT close this.
+
+3. **Comments are unverified claims.** Never treat a comment/docstring as evidence the code is correct — read the body and confirm the behavior yourself; a comment that contradicts the body is itself a finding AND a breadcrumb to a bug. A fund-return helper whose comment says "drain", "mirror", "same as sibling", "restores involved sources", or "decrements allocation" — open the body and point to the actual write; comment-only with no matching Update*Involved*/equivalent = treat as CRITICAL money bug until you prove that table is never re-read.
+
+4. **Automatic Correctness FAIL:** a financial fund-return/adjust path where pool credits and allocation/involved-source rows can diverge across repeated legal ops (prove conservation under N-fold, procedure 2, or FAIL); sibling fund-return helpers with asymmetric side effects on a table later ops re-read.`
+
 func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (ReviewResponse, error) {
 	if provider == "claude-scouts" {
-		return runClaudeScouts(ctx, env)
+		return runScouts(ctx, env)
+	}
+	if provider == "grok-scouts" {
+		env.scoutProvider = "grok"
+		return runScouts(ctx, env)
 	}
 	if provider == "deepseek-scouts" {
 		return runDeepseekScouts(ctx, env)
@@ -809,8 +925,11 @@ func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (Revie
 
 	switch provider {
 	case "grok":
+		// grok gets the shared prompt + the weak-model addendum (model-scoped).
+		grokPromptPath := filepath.Join(env.tempDir, "review-request-grok.md")
+		_ = os.WriteFile(grokPromptPath, []byte(env.promptBody+"\n\n---\n\n"+weakModelAddendum), 0644)
 		cmd = exec.CommandContext(ctx, "grok",
-			"--prompt-file", env.promptPath,
+			"--prompt-file", grokPromptPath,
 			"--cwd", env.cwd,
 			"--always-approve",
 			"--tools", "read_file,grep,list_dir,run_terminal_cmd",
@@ -829,13 +948,20 @@ func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (Revie
 			"--output-schema", env.schemaPath,
 			"-o", outFilePath,
 		}
+		if env.codexModel != "" {
+			codexArgs = append(codexArgs, "-m", env.codexModel)
+		}
 		if env.risk == "critical" || env.risk == "high" {
-			codexArgs = append(codexArgs, "-c", "model_reasoning_effort=high")
+			effort := env.codexEffort
+			if effort != "xhigh" {
+				effort = "high"
+			}
+			codexArgs = append(codexArgs, "-c", "model_reasoning_effort="+effort)
 		}
 		codexArgs = append(codexArgs, "-")
 		cmd = exec.CommandContext(ctx, "codex", codexArgs...)
 		cmd.Dir = env.cwd
-		cmd.Stdin = strings.NewReader(env.promptBody)
+		cmd.Stdin = strings.NewReader(env.promptBody + "\n\n---\n\n" + weakModelAddendum)
 	case "agy":
 		agyPrompt := fmt.Sprintf("Read the role instructions from %s and perform a code review on the diff located at %s. You MUST output your response strictly as a JSON object matching the schema at %s. DO NOT output any conversational text or markdown other than the JSON block.", env.promptPath, filepath.Join(env.tempDir, "review-request.md"), env.schemaPath)
 		cmd = exec.CommandContext(ctx, "agy", "--dangerously-skip-permissions", "--print-timeout", "15m", "--print", agyPrompt)
@@ -1999,7 +2125,11 @@ func logScoutContribution(outputs []scoutOutput) {
 	}
 }
 
-func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error) {
+func runScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error) {
+	prov := env.scoutProvider
+	if prov == "" {
+		prov = "claude"
+	}
 	// Optional orientation pass: one cheap map-model call, serial before the
 	// fan-out (scouts need it), injected as a shared cached prefix by runOneScout.
 	if env.changeMapOn {
@@ -2014,7 +2144,7 @@ func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error)
 		}
 	}
 
-	log.Printf("claude-scouts: dispatching %d scouts in parallel\n", len(reviewScouts))
+	log.Printf("%s-scouts: dispatching %d scouts in parallel\n", prov, len(reviewScouts))
 
 	outputs := make([]scoutOutput, len(reviewScouts))
 	errs := make([]error, len(reviewScouts))
@@ -2030,9 +2160,18 @@ func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error)
 				// (dataflow-spec, test-docs) COMPLETE rather than being killed
 				// at a tight ceiling; the retry is short because it only exists
 				// for TRANSIENT failures (a killed scout wastes all its tokens).
-				d := 18 * time.Minute
+				//
+				// Raised 2026-08-08 from 18m/6m. This is the INNER budget and it
+				// is easy to miss: providerTimeout() above is the outer ceiling
+				// for the whole fan-out, and raising that alone does nothing for
+				// a single slow scout. On the round-2 fsmgen slice (5.8k lines)
+				// dataflow-spec — the heaviest scout, and the one that produced
+				// the most CRITICALs in round 1 — was killed at exactly 18:00
+				// while the provider ceiling sat at 60m, unused. Keep
+				// first+retry comfortably under providerTimeout("claude-scouts").
+				d := 40 * time.Minute
 				if attempt == 2 {
-					d = 6 * time.Minute
+					d = 10 * time.Minute
 				}
 				attemptCtx, cancel := context.WithTimeout(ctx, d)
 				out, err = runOneScout(attemptCtx, s, env)
@@ -2077,10 +2216,10 @@ func runClaudeScouts(ctx context.Context, env reviewEnv) (ReviewResponse, error)
 	// below APPROVE (fail-safe) with a loud coverage-gap finding — the six that
 	// completed still count. Only a total wipe-out fails the slot.
 	if len(failed) == len(reviewScouts) {
-		return ReviewResponse{}, fmt.Errorf("claude-scouts: all %d scouts failed: %s", len(reviewScouts), strings.Join(failed, "; "))
+		return ReviewResponse{}, fmt.Errorf("%s-scouts: all %d scouts failed: %s", prov, len(reviewScouts), strings.Join(failed, "; "))
 	}
 	if len(failed) > 0 {
-		log.Printf("claude-scouts: %d/%d scouts failed — degrading (dimensions flagged UNVERIFIED, not silently dropped): %s", len(failed), len(reviewScouts), strings.Join(failed, "; "))
+		log.Printf("%s-scouts: %d/%d scouts failed — degrading (dimensions flagged UNVERIFIED, not silently dropped): %s", prov, len(failed), len(reviewScouts), strings.Join(failed, "; "))
 	}
 
 	return reduceScoutResultsWithStatus(outputs, errs)
@@ -2124,21 +2263,48 @@ Use your tools: the Precomputed Sibling Surface Trace is already in your context
 		sysPrompt = "## Change Map (orientation only — decide what to read; read the code yourself for verdicts)\n\n" + env.changeMap + "\n\n" + sysPrompt
 	}
 
-	cmd := claudeCmd(ctx, env.cwd, effort, string(schemaBytes), sysPrompt, scoutModel(env, s))
-	cmd.Stdin = strings.NewReader(prompt)
+	prov := env.scoutProvider
+	if prov == "" {
+		prov = "claude"
+	}
+
+	var cmd *exec.Cmd
+	if prov == "grok" {
+		// grok takes the scoped body from a file and the sliced role via
+		// --system-prompt-override (mirrors the broad grok seat's flags).
+		// grok effort is clamped to high (the CLI rejects xhigh); scouts on
+		// critical would ask for xhigh but grok tops out at high.
+		grokPromptPath := filepath.Join(env.tempDir, fmt.Sprintf("grok-scout-%s.prompt", s.name))
+		_ = os.WriteFile(grokPromptPath, []byte(prompt), 0644)
+		cmd = exec.CommandContext(ctx, "grok",
+			"--prompt-file", grokPromptPath,
+			"--system-prompt-override", sysPrompt,
+			"--cwd", env.cwd,
+			"--always-approve",
+			"--tools", "read_file,grep,list_dir",
+			"--disallowed-tools", "search_replace,write",
+			"--max-turns", "50",
+			"--reasoning-effort", grokEffort(env.risk),
+			"--json-schema", string(schemaBytes),
+			"--output-format", "json",
+		)
+	} else {
+		cmd = claudeCmd(ctx, env.cwd, effort, string(schemaBytes), sysPrompt, scoutModel(env, s))
+		cmd.Stdin = strings.NewReader(prompt)
+	}
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 
 	runErr := cmd.Run()
-	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("claude-scout-%s.raw", s.name)), outBuf.Bytes(), 0644)
-	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("claude-scout-%s.err", s.name)), errBuf.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("%s-scout-%s.raw", prov, s.name)), outBuf.Bytes(), 0644)
+	_ = os.WriteFile(filepath.Join(env.tempDir, fmt.Sprintf("%s-scout-%s.err", prov, s.name)), errBuf.Bytes(), 0644)
 	if runErr != nil {
 		return scoutOutput{}, fmt.Errorf("scout %s failed: %v (raw output in %s)", s.name, runErr, env.tempDir)
 	}
 
-	rawJSON := normalizeProviderJSON("claude", outBuf.String())
+	rawJSON := normalizeProviderJSON(prov, outBuf.String())
 	var out scoutOutput
 	if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
 		return scoutOutput{}, fmt.Errorf("failed to parse scout %s JSON: %v (raw output in %s)", s.name, err, env.tempDir)
