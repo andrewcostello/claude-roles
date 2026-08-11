@@ -618,7 +618,7 @@ func TestSeal_G2_ApplyRoundRecord_DoesNotTouchTheRoundsItDidNotAppend(t *testing
 // Edit.AtIndex will call it redundant: `append` cannot fail, so an editor that
 // computed the index itself could never mismatch and could therefore never
 // DETECT anything. iterate's d.Round is computed from load()'s read at
-// main.go:523 and the append happens against appendRound's re-read at :442 —
+// main.go:560 and the append happens against appendRound's own read at :469 —
 // with execTool and an entire review panel in between, so minutes, not
 // milliseconds. AtIndex is the only place that stale claim can be compared
 // against the document actually being edited.
@@ -632,7 +632,7 @@ func TestSeal_G2_ApplyRoundRecord_DoesNotTouchTheRoundsItDidNotAppend(t *testing
 // FOUR LEGS:
 //
 //	stale AtIndex          REFUSE, and return NO bytes
-//	round/AtIndex+1 skew   REFUSE — main.go:446-447 are mechanically linked
+//	round/AtIndex+1 skew   REFUSE — main.go:478-479 are mechanically linked
 //	Record.Round skew      ACCEPT. This is the sharper half: Record.Round is
 //	                       d.Round, computed from load()'s earlier read, and
 //	                       refusing it would make iterate fail to record a round
@@ -672,8 +672,8 @@ func TestSeal_G2_ApplyRoundRecord_RefusesAStaleAtIndexAndReturnsNoBytes(t *testi
 		t.Errorf("SEAL RED — the refusal returned %d bytes. On failure ApplyRoundRecord returns an error and NO bytes; a caller that writes whatever it got back would persist a document built by a path that had already given up.", len(out))
 	}
 
-	// LEG 2 — round disagreeing with the append. main.go:446-447 are adjacent
-	// and mechanically linked: state.Round = len(state.Rounds) AFTER the append.
+	// LEG 2 — round disagreeing with the append. main.go:478-479 are adjacent
+	// and mechanically linked: both derive from the same pre-append length.
 	skew := g2Edits()
 	skew[1].RoundNumber = 7
 	out, err = ApplyRoundRecord(original, skew)
@@ -1010,8 +1010,8 @@ func TestSeal_G2_VerifyPreservation_RefusesWhatItCannotCheckOnItsOwnTerms(t *tes
 //
 // CONTROL, same call: empty status, empty updated_at and empty escalation_reason
 // must all be REFUSED, because the source proves none of them is producible —
-// a total switch whose every arm assigns a non-empty literal (:450-460),
-// time.Now().Format (:449), and an `if escalation != ""` guard (:457).
+// a total switch whose every arm assigns a non-empty literal (:483-496),
+// time.Now().Format (:481), and an `if escalation != ""` guard (:491).
 func TestSeal_G2_EmptyVerdictIsAppliedAndEmptyStatusIsRefused(t *testing.T) {
 	defer g2Red(t)
 
@@ -1223,7 +1223,7 @@ func TestSeal_G2_AppendRound_PreservesTheWholeDocument(t *testing.T) {
 		t.Error("SEAL RED — updated_at was not stamped; the merge did not run")
 	}
 	if v := g2DivergencesOutside(t, original, produced, edits); len(v) > 0 {
-		t.Errorf("SEAL RED — appendRound destroyed %d JSON path(s) outside the licensed edits. It is not yet wired to ApplyRoundRecord; it still round-trips the whole document through this package's closed structs (main.go:441-467). The CONTROL above passed on this same output.%s",
+		t.Errorf("SEAL RED — appendRound destroyed %d JSON path(s) outside the licensed edits. It is not yet wired to ApplyRoundRecord; it still round-trips the whole document through this package's closed structs (7028605's main.go:441-467; appendRound is main.go:465-504 today). The CONTROL above passed on this same output.%s",
 			len(v), g2Report(v))
 	}
 	g2AssertEditsLanded(t, produced, edits)
@@ -1450,8 +1450,9 @@ func TestSeal_G2_TrackedBinary_IsRebuiltFromTheFixedSource(t *testing.T) {
 //
 // MEASURES SOURCE, as text: main.go is parsed with go/parser in this call.
 //
-// main.go:439-440 says iterate "owns rounds[], round, verdict, status and
-// nothing else". It omits updated_at (:449) and escalation_reason (:458) — a
+// 7028605's main.go:439-440 said iterate "owns rounds[], round, verdict, status
+// and nothing else". It omitted updated_at (:449) and escalation_reason (:458) —
+// a
 // hand-list, written by the author of the code it describes, short by a third.
 // classify/readset.go records the identical failure at larger scale. Nobody
 // detected either.
@@ -1707,4 +1708,176 @@ func g2DeleteTopLevelForRow(t *testing.T, doc []byte, key string) []byte {
 		t.Fatalf("re-emit: %v", err)
 	}
 	return append(out, '\n')
+}
+
+// ─── 17. the second append (adjudicate(G2), ruling P1) ───────────────────────
+
+// TestSeal_G2_ApplyRoundRecord_RefusesASecondAppendInOneList seals a refusal the
+// body implemented, argued at the point of deviation, and left completely
+// unsealed. It is added by P4 under ruling (P1), not by the seal author, and the
+// reason it is added rather than merely ruled on is a measurement: with
+// ApplyRoundRecord's duplicate-append branch deleted, every other row in this
+// package still passes. A ruling that confirms a behaviour nothing measures is a
+// ruling a later author can overturn silently.
+//
+// MEASURES SOURCE, in process.
+//
+// WHY IT IS LOAD-BEARING AND NOT DEFENCE IN DEPTH. appendRound is
+// LoadRunStateDocument -> ApplyRoundRecord -> os.WriteFile (main.go:465-504).
+// VerifyPreservation has NO non-test caller in this package. So ApplyRoundRecord's
+// list-level refusals are the only thing between a malformed edit list and a
+// written run-state — the checker that would catch the result is never asked.
+//
+// THE TWO SHAPES, and they fail for different reasons, which is why both are
+// legs. Check 1 requires EVERY append's AtIndex to equal len(rounds) in the
+// ORIGINAL, so two appends either claim the same index — only one can be there —
+// or different indices, and then at least one is not the original length.
+//
+//	[Append@1, Append@1]   the equal-index shape. This is the one the duplicate
+//	                       branch alone catches: both satisfy the AtIndex test,
+//	                       and without the branch the second element lands at
+//	                       rounds[2], which LicensedPaths does not license
+//	                       because both edits PathPrefix to rounds[1].
+//	[Append@1, Append@2]   the unequal-index shape. Refused either way; kept so
+//	                       the row states which branch is doing the work.
+//
+// THE CONTROL is g2Edits() itself — one append through the identical code path
+// must still be ACCEPTED. Without it "it refuses two appends" is satisfied by a
+// function that refuses everything.
+//
+// AND A SECOND CONTROL, which is the one that makes this row non-vacuous in the
+// direction that matters: the licence really does NOT cover the index a second
+// append would write. If it did, the refusal would be belt-and-braces rather
+// than the only guard, and this row would be overstating its case.
+func TestSeal_G2_ApplyRoundRecord_RefusesASecondAppendInOneList(t *testing.T) {
+	defer g2Red(t)
+
+	original := g2SeedProbes(t, g2ProducedRunState(t, g2Worktree(t)))
+	if n := g2ArrayLen(t, original, "rounds"); n != 1 {
+		t.Fatalf("fixture has %d rounds, want 1 — every AtIndex in this row is stated relative to that length", n)
+	}
+
+	// CONTROL — one append is accepted through the same path.
+	if _, err := ApplyRoundRecord(original, g2Edits()); err != nil {
+		t.Fatalf("CONTROL FAILED: the single-append list was refused: %v. Every refusal leg below is satisfied by a function that refuses everything.", err)
+	}
+
+	second := g2AppendedRound()
+	second.Round = 3
+
+	for _, tc := range []struct {
+		name    string
+		atIndex int
+	}{
+		{"equal index — both claim len(rounds); only the duplicate branch catches this", 1},
+		{"unequal index — the second is not the original length", 2},
+	} {
+		edits := append(g2Edits(), Edit{Kind: EditKindAppendRound, Record: second, AtIndex: tc.atIndex})
+		out, err := ApplyRoundRecord(original, edits)
+		if err == nil {
+			t.Errorf("SEAL RED — %s: ApplyRoundRecord ACCEPTED two EditKindAppendRound edits in one list. An append licenses exactly one new index; a second one writes a position nothing in the licence covers, and nothing on iterate's write path (LoadRunStateDocument -> ApplyRoundRecord -> os.WriteFile, main.go:465-504) would ever check. Refuse rather than pick an interpretation nobody wrote down.", tc.name)
+		} else if errors.Is(err, errNotImplemented) {
+			t.Errorf("SEAL RED — %s: the refusal is the scaffold marker, not the list-level check: %v", tc.name, err)
+		}
+		if len(out) != 0 {
+			t.Errorf("SEAL RED — %s: the refusal returned %d bytes. On failure ApplyRoundRecord returns an error and NO bytes.", tc.name, len(out))
+		}
+	}
+
+	// CONTROL 2 — the licence genuinely does not reach the index a second append
+	// would write. Both appends PathPrefix to rounds[1], so rounds[2] is
+	// unlicensed; if this ever stops being true the refusal above has become
+	// belt-and-braces and this row should say so instead.
+	dup := append(g2Edits(), Edit{Kind: EditKindAppendRound, Record: second, AtIndex: 1})
+	lic, err := LicensedPaths(dup)
+	if err != nil {
+		t.Fatalf("CONTROL FAILED: LicensedPaths refused the two-append list: %v", err)
+	}
+	if lic.Allows(JSONPath{{Key: "rounds"}, {Index: 2, IsIndex: true}, {Key: "round"}}) {
+		t.Error("SEAL RED — the licence built from a TWO-append list ALLOWS rounds[2].round. Then a second append is self-licensing: it would write an index its own edit list blesses, VerifyPreservation would certify the result, and ApplyRoundRecord's refusal would be the only thing that ever objected. That is a finding about LicensedPaths, not about this row.")
+	}
+}
+
+// ─── 18. round 0 is written, not deleted (adjudicate(G2), ruling P2) ─────────
+
+// TestSeal_G2_ApplyRoundRecord_SetRoundZeroWritesTheLiteralAndDoesNotDelete
+// seals the second choice the body took and the contract did not make. Added by
+// P4 under ruling (P2), for the same measured reason as row 17: patch
+// EditKindSetRound to delete `round` when RoundNumber is 0 and the entire suite
+// still passes, because no row anywhere passes a zero.
+//
+// MEASURES SOURCE, in process.
+//
+// THE ROW IS NOT INVENTING AN OPINION — IT IS EXERCISING ONE THE SEAL AUTHOR
+// ALREADY WROTE DOWN. g2AssertEditsLanded's EditKindSetRound leg is a bare
+// equality against fmt.Sprint(e.RoundNumber) with NO absent-case branch, while
+// its EditKindSetVerdict leg has an explicit one. On a zero payload that leg
+// demands leaves["round"] == "0", which a deleting implementation cannot
+// satisfy. The asymmetry was written into the proof-of-execution helper before
+// this row existed; all this row does is supply the input that makes it fire.
+//
+// WHY THE LITERAL AND NOT THE DELETION, in one line each — the full derivation is
+// the CHOICE above ApplyRoundRecord. `round` has no source citation licensing a
+// deletion, where `verdict` does (main.go:392). `round: 0` and an absent `round`
+// are different states to every later reader. And a document already carrying
+// `round: 5` would have a schema-declared path DESTROYED by a set edit, inside
+// the one unit whose subject is not destroying paths.
+//
+// UNREACHABLE FROM iterate, AND THAT IS THE POINT OF SEALING IT. main.go:479 is
+// `RoundNumber: len(state.Rounds) + 1`, so appendRound cannot emit a zero. This
+// row is about what a SECOND caller of this API gets, which is exactly the ground
+// the choice was argued on — and it is why the row is here rather than left to
+// the frozen-consumer constraint, which is silent about callers that do not exist
+// yet.
+func TestSeal_G2_ApplyRoundRecord_SetRoundZeroWritesTheLiteralAndDoesNotDelete(t *testing.T) {
+	defer g2Red(t)
+
+	// LEG 1 — a bare SetRound{0}. Accepted (list-level check 2 is guarded by the
+	// presence of an append), and it writes the literal.
+	edits := []Edit{{Kind: EditKindSetRound, RoundNumber: 0}}
+	original := []byte("{\n  \"round\": 5,\n  \"rounds\": [],\n  \"zzz_unknown\": \"survives\"\n}\n")
+	produced, err := ApplyRoundRecord(original, edits)
+	if err != nil {
+		t.Fatalf("SEAL RED — ApplyRoundRecord refused Edit{EditKindSetRound, RoundNumber: 0}: %v. Edit.Validate rejects only a NEGATIVE RoundNumber, citing config/run-state.schema.json's `minimum: 0`; zero is inside the type.", err)
+	}
+
+	leaves := g2Flatten(t, produced)
+	got, present := leaves["round"]
+	if !present {
+		t.Error("SEAL RED — a zero RoundNumber DELETED `round`. A set edit that silently becomes a delete at one payload value is the implicit state at a decision boundary. `round: 0` and an absent `round` are different states to every later reader, and Diverge reports them as different divergences. A deletion here needs its own EditKind, its own source citation and its own row — it has none of the three.")
+	} else if got != "0" {
+		t.Errorf("SEAL RED — round = %s, want the literal 0", got)
+	}
+
+	// The destruction leg, which is the sharpest form of the same property: the
+	// document already carried `round: 5`, a path the schema declares.
+	if !present {
+		t.Error("SEAL RED — the deletion destroyed an existing schema-declared `round: 5`, inside the unit whose subject is not destroying paths.")
+	}
+
+	// PROOF OF EXECUTION, and the helper is the seal: this is the call that makes
+	// the seal author's asymmetric SetRound leg do work.
+	g2AssertEditsLanded(t, produced, edits)
+
+	// CONTROL — nothing else moved. A body that rewrote the document wholesale
+	// would satisfy the leg above and still be the defect this unit exists for.
+	if v := g2DivergencesOutside(t, original, produced, edits); len(v) > 0 {
+		t.Errorf("SEAL RED — setting `round` to 0 changed %d path(s) outside the licence.%s", len(v), g2Report(v))
+	}
+
+	// LEG 2 — beside an append, zero is REFUSED, and by the list-level check
+	// rather than by Validate. This is the boundary that makes leg 1 safe: the
+	// literal-zero behaviour is reachable only where iterate never goes.
+	withAppend := g2Edits()
+	withAppend[1].RoundNumber = 0
+	base := g2SeedProbes(t, g2ProducedRunState(t, g2Worktree(t)))
+	out, err := ApplyRoundRecord(base, withAppend)
+	if err == nil {
+		t.Error("SEAL RED — round 0 was accepted beside an append at index 1. main.go:478-479 are mechanically linked and both derive from the same pre-append length, so `round` must be AtIndex+1; a `round` that disagrees with len(rounds) is undetectable at every later reader.")
+	} else if errors.Is(err, errNotImplemented) {
+		t.Errorf("SEAL RED — the refusal is the scaffold marker, not the list-level check: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("SEAL RED — the refusal returned %d bytes", len(out))
+	}
 }

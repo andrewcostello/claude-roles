@@ -538,7 +538,8 @@ const g2UpdatedAt = "2026-08-11T12:00:00Z"
 // measured verbatim from the tracked binary's own output.
 const g2EscalationReason = "iteration ceiling 0 reached with findings still open — write Status: Blocked with the per-round lineage"
 
-// g2AppendedRound is the Round cmdRun's stop branch builds (main.go:584-587).
+// g2AppendedRound is the Round cmdRun's stop branch builds (main.go:621-624 at
+// 704b65b; it was :584-587 before the fix moved main.go down by 61 lines).
 // Producible: it is the record the measurement's `iterate run -ceiling 0`
 // actually wrote.
 func g2AppendedRound() Round {
@@ -618,9 +619,11 @@ func g2Report(ds []Divergence) string {
 
 // ─── the control: today's appendRound, in process ────────────────────────────
 
-// g2LegacyProjection reproduces what appendRound does TODAY — json.Unmarshal
-// into this package's RunState, apply the six assignments, json.MarshalIndent
-// back (main.go:441-467) — and is the standard control for every fidelity row.
+// g2LegacyProjection reproduces what appendRound did BEFORE the fix —
+// json.Unmarshal into this package's RunState, apply the six assignments,
+// json.MarshalIndent back (7028605's main.go:441-467; appendRound is
+// main.go:465-504 today and no longer takes this path) — and is the standard
+// control for every fidelity row.
 //
 // IT MEASURES SOURCE, not the committed binary: it runs THIS package's structs
 // in this process. That matters for its longevity. After the body lands,

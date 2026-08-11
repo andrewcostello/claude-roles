@@ -11,9 +11,66 @@
 // ApplyRoundRecord), and a second EditKindAppendRound in one list is REFUSED (see
 // list-level check 1). Neither is reachable from cmd/iterate today.
 //
-// STILL OPEN, and it is the whole of row 15: the TRACKED cmd/iterate/iterate is
-// the pre-fix artifact. Finding (6) is the instruction and it is a separate
-// commit.
+// ROW 15 IS CLOSED. adjudicate(G2) rebuilt the TRACKED cmd/iterate/iterate from
+// a clean clone of 704b65b — blob 08c7b29b -> a8cff0d2, stamped
+// vcs.revision=704b65b37e933318beab6f49cf6008971b2ea1c4, vcs.modified=false.
+// Finding (6) was the instruction; see "P4 RULINGS (adjudicate(G2))" at the foot
+// of this file for what the rebuild measured and what it did not move.
+//
+// ─── CITATIONS: READ THIS BEFORE TRUSTING ANY main.go COORDINATE HERE ─────────
+//
+// THE FIX MOVED main.go UNDER THIS FILE'S FEET AND NOBODY RE-MEASURED. Wiring
+// appendRound (7028605 -> 704b65b) added 61 lines below main.go:438 and REPLACED
+// the six `state.<Field> =` assignment sites with an []Edit literal. Every
+// coordinate in this file that pointed into or after appendRound was recorded
+// against the PRE-FIX revision 7028605 and resolves, at 704b65b, to a comment
+// line inside appendRound's own doc comment. That is the same defect class as
+// the superseded prose above: text that contradicts the code it annotates.
+//
+// P4 re-measured every one of them on 2026-08-11 at 704b65b. The rule applied:
+// a citation that describes what the code DOES TODAY was corrected in place; a
+// citation inside the scaffold's historical record — "the assignments each edit
+// replaced" — was left at its pre-fix coordinate, because that is what it is
+// describing, and is covered by this stamp. Where a symbol was available it was
+// preferred to a coordinate, per the repo rule that a recorded line number here
+// has been wrong three times in five.
+//
+// STILL VALID at 704b65b, because all of it sits ABOVE the fix:
+//
+//	:69 :70 :73 :74   RunState.Round/.Verdict/.PR/.DeferredFindings
+//	:82               Repo.Dirty          :86-91  Classification
+//	:93-96            Gate                :270-275 floorFor
+//	:392              recordRecheck's `r.Verdict = rr.Verdict`
+//	:427-437          readRunState
+//
+// MOVED, with the current coordinate and the symbol that anchors it:
+//
+//	appendRound              441-467  ->  465-504
+//	  its doc comment's licence sentence  ->  442-443 ("SIX mutations")
+//	  the []Edit literal                  ->  477-482
+//	  EditKindAppendRound  :446           ->  478
+//	  EditKindSetRound     :447           ->  479   (now len(state.Rounds) + 1)
+//	  EditKindSetVerdict   :448           ->  480
+//	  EditKindSetUpdatedAt :449           ->  481
+//	  the status switch    :450-460       ->  483-496
+//	    APPROVE :452 / ITERATE :454 / default :456  ->  486 / 488 / 490
+//	    `if escalation != ""`      :457     ->  491
+//	    EditKindSetEscalationReason :458    ->  494
+//	  ApplyRoundRecord call                 ->  498
+//	  the write            :461-466       ->  os.WriteFile at 503
+//	load()                              ->  554-583; its read at 560; its
+//	                                        classification refusal at 565-568
+//	cmdNext                  548-568    ->  585-606
+//	cmdRun                              ->  607-649; the d.Stop branch at 620,
+//	                                        its appendRound at 621, its WARNING
+//	                                        at 625 (was :584 / :588)
+//	recordAndReport                     ->  670-681; its WARNING at 676 (was :639)
+//
+// THE GENERAL RULE THIS COST US, recorded because it will recur: a unit that
+// rewrites a function invalidates every coordinate its own contract file records
+// about that function, and no test in this repo checks a line number in a
+// comment. Row 16 checks that appendRound's doc comment NAMES the six mutations;
+// it cannot check that preserve.go's coordinates still resolve. Prefer symbols.
 //
 // This file deliberately reuses cmd/gates/preserve.go's vocabulary — Fidelity,
 // EditKind, Edit, JSONPath, Divergence, Diverge, flattenDocument, and the
@@ -26,6 +83,10 @@
 //
 // ─── THE DEFECT ──────────────────────────────────────────────────────────────
 //
+// EVERY main.go COORDINATE IN THIS SECTION IS AT THE PRE-FIX REVISION 7028605,
+// because the code it describes is the code the fix deleted. See the CITATIONS
+// stamp above for the 704b65b equivalents.
+//
 // appendRound (main.go:441-467) reads the run-state, decodes it into this
 // package's closed structs (:427-437 readRunState → RunState), mutates six
 // fields, and marshals the WHOLE state back (:461-466). Every JSON path those
@@ -33,39 +94,70 @@
 // cmd/classify writes the classification, cmd/gates writes gate results, and
 // cmd/iterate writes rounds — into the same file.
 //
-// MEASURED IN THIS WORKTREE at scaffold time. Not inherited from the brief, not
-// inferred from the structs, and re-run rather than copied from G1's note. The
-// pinned cmd/classify/classify produced the base document on the wallet
-// fixture; the TRACKED cmd/gates/gates (the G1-rebuilt artifact) then ran a full
-// gate pass over it; probes were seeded through json.RawMessage; and the
-// TRACKED cmd/iterate/iterate was run with `run -ceiling 0`, which reaches
-// appendRound through cmdRun's d.Stop branch (main.go:584). The two documents
-// were compared PER JSON PATH:
+// MEASURED. Not inherited from the brief, not inferred from the structs, and
+// re-run rather than copied from G1's note. The pinned cmd/classify/classify
+// produced the base document on the wallet fixture; the TRACKED
+// cmd/gates/gates (the G1-rebuilt artifact) then ran a full gate pass over it;
+// probes were seeded through json.RawMessage; and the PRE-FIX
+// cmd/iterate/iterate (blob 08c7b29b, sha256 ffb6c8bd…) was run with
+// `run -ceiling 0`, which reaches appendRound through cmdRun's d.Stop branch
+// (main.go:620 at 704b65b). The two documents were compared PER JSON PATH.
 //
-//	REMOVED 60   ADDED 7   CHANGED 5
+// THIS BLOCK HAS BEEN MEASURED THREE TIMES AND THE FIGURES BELOW ARE THE THIRD.
+// It is recorded as a supersession chain rather than overwritten, because two of
+// the three disagree and which one a later reader trusts matters:
 //
-//	classification   15 top-level keys -> 4. ELEVEN destroyed. The four that
-//	                 survive are exactly the four Classification declares
-//	                 (:86-91): risk, components, recheck_min_severity,
-//	                 reviewer_args. changed_files is destroyed outright,
-//	                 including its sub-paths changed_files[0].risk = "critical"
-//	                 and changed_files[0].rules[0] = "wallet-service".
-//	gates            all 9 records survive BY NAME and 33 paths are destroyed
+//	1fe753b  scaffold      REMOVED 60  ADDED 7  CHANGED 5   SUPERSEDED
+//	7028605  seal author   REMOVED 60  ADDED 8  CHANGED 3   SUPERSEDED in part
+//	704b65b  P4 (below)    REMOVED 62  ADDED 8  CHANGED 3   CURRENT
+//
+// THE FIGURES, re-measured by P4 on 2026-08-11 against 704b65b, three
+// consecutive runs, byte-for-byte identical each time:
+//
+//	REMOVED 62   ADDED 8   CHANGED 3        (64 of these lie OUTSIDE the licence)
+//
+//	classification   16 top-level keys -> 4, so TWELVE destroyed, spanning 22
+//	                 leaf paths. The four that survive are exactly the four
+//	                 Classification declares (:86-91): risk, components,
+//	                 recheck_min_severity, reviewer_args. changed_files is
+//	                 destroyed outright, including its sub-paths
+//	                 changed_files[0].risk = "critical" and
+//	                 changed_files[0].rules[0] = "wallet-service".
+//	                 CORRECTS the scaffold's "15 top-level keys -> 4, ELEVEN
+//	                 destroyed": both figures were one low.
+//	gates            all 9 records survive BY NAME and 34 paths are destroyed
 //	                 INSIDE them, because Gate here declares two fields (:93-96)
 //	                 and cmd/gates' Gate declares eight (gates/main.go:131-140).
 //	                 Gone: command, ran_at, duration_ms, output_path, exit_code
 //	                 and metrics — for every gate cmd/gates has just written.
-//	rounds[0]        THREE paths destroyed RETROACTIVELY by an append whose only
+//	                 34, not the scaffold's 33: this fixture's mutation gate also
+//	                 carries an exit_code. The seal author caught this one.
+//	rounds[0]        FOUR paths destroyed RETROACTIVELY by an append whose only
 //	                 intended effect was to add rounds[1]: zzz_round_future,
-//	                 evidence_id (an integer above 2^53), and
-//	                 reviewers[0].zzz_reviewer_future. See ruling (3).
+//	                 evidence_id (an integer above 2^53),
+//	                 reviewers[0].zzz_reviewer_future, and — named by NEITHER
+//	                 earlier measurement — prior_findings_still_open: 0, a
+//	                 zero value on a DECLARED field, erased by `omitempty`.
+//	                 That fourth path is the whole of the REMOVED 60 -> 62 gap
+//	                 together with classification's twelfth key. See ruling (3).
 //	repo.dirty       destroyed (`omitempty` on a declared field, :82).
 //	contract_version destroyed (unknown top-level key).
-//	CHANGED          deferred_findings[0].line and pr.big, both
+//	CHANGED          deferred_findings[0].line and pr.lines_changed, both
 //	                 9007199254740993 -> 9007199254740992. PR is
 //	                 map[string]any (:73) and DeferredFindings is []any (:74),
 //	                 so a declared field still routes every number through
 //	                 float64. Declaring a field does not save its values.
+//	                 NOT `pr.big`, which is what the scaffold recorded: `pr` is
+//	                 `"additionalProperties": false` in
+//	                 config/run-state.schema.json with a seven-name property
+//	                 list, so `pr.big` is SCHEMA-ILLEGAL and could never have
+//	                 been the probe. The seal author replaced it with
+//	                 pr.lines_changed, typed `integer` with no maximum
+//	                 (preserve_seal_helpers_test.go:270-277). The third CHANGED
+//	                 path is `status` ("in_progress" -> "escalated"), which is
+//	                 LICENSED — which is why 62 REMOVED + 2 unlicensed CHANGED =
+//	                 the 64 that row 15 reports, and all 8 ADDED are licensed
+//	                 too.
 //
 // THE PIPELINE CONSEQUENCE, observed by running the next tool rather than
 // reasoning about it: cmd/gates on the resulting document exits
@@ -644,7 +736,13 @@ func addLeaf(out map[string]flatLeaf, at JSONPath, literal string) error {
 // THE ENUMERATION IS EXHAUSTIVE AND IT IS DERIVED FROM THE SOURCE, NOT FROM
 // INTENT. Every assignment to the decoded run-state anywhere in cmd/iterate,
 // found by reading every `state.<Field> =` in main.go, all of them inside
-// appendRound:
+// appendRound.
+//
+// COORDINATES AT 7028605, AND DELIBERATELY SO: these eight assignment sites no
+// longer exist. The fix replaced them with the []Edit literal at main.go:477-495,
+// which is the whole point of the enumeration — it is the record of what the six
+// kinds were derived FROM. Row 16's drift detector accepts either form for
+// exactly this reason. The 704b65b mapping is in the CITATIONS stamp above.
 //
 //	main.go:446  state.Rounds = append(state.Rounds, r)
 //	main.go:447  state.Round = len(state.Rounds)
@@ -656,13 +754,15 @@ func addLeaf(out map[string]flatLeaf, at JSONPath, literal string) error {
 //	main.go:458  state.EscalationReason = escalation   (default arm, guarded)
 //
 // There is nothing else. cmdNext, decide, buildArgv, execTool and
-// recordAndReport only READ. `state.Repo.Worktree` at :618 and :673 is read into
-// exec.Cmd.Dir. So six edit kinds, and one of them conditional.
+// recordAndReport only READ. `state.Repo.Worktree` (:618 and :673 at 7028605;
+// main.go:655 and :710 at 704b65b) is read into exec.Cmd.Dir. So six edit kinds, and one of them conditional.
 //
 // THE COMMENT ABOVE appendRound IS ALREADY WRONG, AND THAT IS THE ARGUMENT FOR
-// DERIVING RATHER THAN ASKING. main.go:439-440 says "preserving every field
-// other nodes own. iterate owns rounds[], round, verdict, status and nothing
-// else." It omits updated_at and escalation_reason — two of the six. It is a
+// DERIVING RATHER THAN ASKING. 7028605's main.go:439-440 said "preserving every
+// field other nodes own. iterate owns rounds[], round, verdict, status and
+// nothing else." It omitted updated_at and escalation_reason — two of the six.
+// The body corrected it in the same commit that wired appendRound; the corrected
+// sentence is main.go:442-443 and row 16 holds it there. It is a
 // hand-list, written by the author of the code it describes, and it drifted by a
 // third. classify/readset.go records the identical failure at larger scale: an
 // informal enumeration of what the consumers read named three fields no consumer
@@ -692,7 +792,8 @@ const (
 	EditKindUnset EditKind = iota
 
 	// EditKindAppendRound appends ONE element to `rounds`, at AtIndex, which
-	// must equal the length of `rounds` in the ORIGINAL document (main.go:446).
+	// must equal the length of `rounds` in the ORIGINAL document
+	// (main.go:478, appendRound's EditKindAppendRound edit).
 	//
 	// It licenses rounds[AtIndex] AND NOTHING ELSE IN THE ARRAY. It is not a
 	// licence over `rounds`. See ruling (3): the measurement shows an append
@@ -704,24 +805,26 @@ const (
 	// licensed edits, because appendRound does none of them.
 	EditKindAppendRound
 
-	// EditKindSetRound sets the top-level `round` (main.go:447).
+	// EditKindSetRound sets the top-level `round` (main.go:479,
+	// appendRound's EditKindSetRound edit).
 	EditKindSetRound
 
-	// EditKindSetVerdict sets the top-level `verdict` (main.go:448).
+	// EditKindSetVerdict sets the top-level `verdict` (main.go:480).
 	//
 	// ITS PAYLOAD MAY BE EMPTY, and that is not a defect in this contract — see
 	// Edit.Validate, which is where the source derivation for it lives, and
 	// finding (8), which is the defect it exposes in iterate.
 	EditKindSetVerdict
 
-	// EditKindSetUpdatedAt sets the top-level `updated_at` (main.go:449).
+	// EditKindSetUpdatedAt sets the top-level `updated_at` (main.go:481).
 	EditKindSetUpdatedAt
 
-	// EditKindSetStatus sets the top-level `status` (main.go:452/:454/:456).
+	// EditKindSetStatus sets the top-level `status` (main.go:486/:488/:490,
+	// the three arms of appendRound's switch).
 	EditKindSetStatus
 
 	// EditKindSetEscalationReason sets the top-level `escalation_reason`
-	// (main.go:458).
+	// (main.go:494).
 	//
 	// CONDITIONAL: appendRound emits it only in the default (escalating) arm of
 	// its switch AND only when the reason is non-empty. So an edit list that does
@@ -778,8 +881,8 @@ type Edit struct {
 	//
 	// `append` cannot fail. An editor that computed the index itself could never
 	// mismatch and therefore could never DETECT anything. But iterate's own
-	// d.Round is computed from a read taken in load() (main.go:523) and the
-	// append happens in appendRound's re-read (main.go:442) — with execTool, a
+	// d.Round is computed from a read taken in load() (main.go:560) and the
+	// append happens in appendRound's own read (main.go:469) — with execTool, a
 	// whole review panel, in between. AtIndex is the only place that stale claim
 	// can be compared against the document actually being edited.
 	//
@@ -840,14 +943,14 @@ type Edit struct {
 //	                        empty payload DELETES the member. That deletion is
 //	                        licensed at `verdict` — it is what iterate does today
 //	                        — and it is recorded as finding (8), not fixed here.
-//	SetUpdatedAt            non-empty. time.Now().Format never returns "" (:449),
+//	SetUpdatedAt            non-empty. time.Now().Format never returns "" (:481),
 //	                        so an empty payload cannot come from iterate, and
 //	                        erasing updated_at while claiming to set it is the
 //	                        "did nothing wearing succeeded" shape G1 named.
-//	SetStatus               non-empty. The switch at :450-460 is TOTAL over three
+//	SetStatus               non-empty. The switch at :483-496 is TOTAL over three
 //	                        arms and every arm assigns a non-empty literal, so an
 //	                        empty status is not producible.
-//	SetEscalationReason     non-empty. main.go:457 guards it — `if escalation !=
+//	SetEscalationReason     non-empty. main.go:491 guards it — `if escalation !=
 //	                        ""` — so the source itself proves empty is not
 //	                        producible, and an empty payload would erase a reason
 //	                        while claiming to set one.
@@ -869,17 +972,17 @@ func (e Edit) Validate() error {
 		return nil
 	case EditKindSetUpdatedAt:
 		if strings.TrimSpace(e.UpdatedAt) == "" {
-			return fmt.Errorf("edit %s: empty timestamp — erasing updated_at while claiming to set it, and main.go:449 cannot produce one", e.Kind)
+			return fmt.Errorf("edit %s: empty timestamp — erasing updated_at while claiming to set it, and main.go:481 cannot produce one", e.Kind)
 		}
 		return nil
 	case EditKindSetStatus:
 		if strings.TrimSpace(e.Status) == "" {
-			return fmt.Errorf("edit %s: empty status — main.go:450-460 is a total switch whose every arm assigns a non-empty literal, so this did not come from iterate", e.Kind)
+			return fmt.Errorf("edit %s: empty status — main.go:483-496 is a total switch whose every arm assigns a non-empty literal, so this did not come from iterate", e.Kind)
 		}
 		return nil
 	case EditKindSetEscalationReason:
 		if strings.TrimSpace(e.EscalationReason) == "" {
-			return fmt.Errorf("edit %s: empty reason — main.go:457 guards this assignment with `if escalation != \"\"`, so an empty one is not producible, and writing it would erase a reason while claiming to set one", e.Kind)
+			return fmt.Errorf("edit %s: empty reason — main.go:491 guards this assignment with `if escalation != \"\"`, so an empty one is not producible, and writing it would erase a reason while claiming to set one", e.Kind)
 		}
 		return nil
 	case EditKindUnset:
@@ -990,7 +1093,7 @@ func (l Licence) Allows(at JSONPath) bool {
 // CHOICE: conditional, where G1 licensed `gates` unconditionally on any
 // non-empty edit list. G1 could get away with the looser rule because mergeGates
 // always wrote gates; the tighter rule is free here, is derived from the same
-// place (main.go:446 is the only thing that creates `rounds`), and means an edit
+// place (main.go:478 is the only thing that creates `rounds`), and means an edit
 // list that sets only the verdict cannot quietly license the creation of an
 // array. The general principle: the licence should be the smallest set the
 // source justifies, and "the caller always passes an append anyway" is a reason
@@ -1006,7 +1109,7 @@ func (l Licence) Allows(at JSONPath) bool {
 // NOTHING ELSE IS UNCONDITIONAL, and two absences are worth naming because a
 // later author will be tempted by both. `schema_version` is NOT licensed:
 // nothing in cmd/iterate writes it and a rewrite of it would be a violation.
-// `classification` is NOT licensed even though load() (:528-531) refuses a
+// `classification` is NOT licensed even though load() (:565-568) refuses a
 // document without one: reading a member is not a licence to write it, and the
 // eleven destroyed classification keys are the entire reason this unit exists.
 //
@@ -1125,8 +1228,9 @@ func LoadRunStateDocument(path string) (raw []byte, state *RunState, err error) 
 //     caller's false claim into a true one is how a stale decision becomes an
 //     invisible one.
 //  2. IF the list contains both an append and an EditKindSetRound, then
-//     RoundNumber MUST EQUAL AtIndex+1, because main.go:446-447 are adjacent and
-//     mechanically linked: state.Round = len(state.Rounds) AFTER the append.
+//     RoundNumber MUST EQUAL AtIndex+1, because main.go:478-479 are adjacent and
+//     mechanically linked: the append edit takes len(state.Rounds) and the round
+//     edit takes len(state.Rounds) + 1, both from the SAME pre-append length.
 //     A `round` that disagrees with len(rounds) is undetectable at every later
 //     reader.
 //
@@ -1149,17 +1253,19 @@ func LoadRunStateDocument(path string) (raw []byte, state *RunState, err error) 
 //   - It must not touch rounds[0..AtIndex-1]. Not to renumber a `round` field,
 //     not to backfill a missing `status`, not for anything. See ruling (3).
 //
-// CHOICE: the produced document keeps the existing two-space MarshalIndent
-// formatting and trailing newline (main.go:461, :466). Rejected alternative:
+// CHOICE: the produced document keeps the two-space MarshalIndent formatting and
+// trailing newline the pre-fix appendRound wrote (7028605's main.go:461, :466;
+// the encoder now lives in this file and the write is main.go:503).
+// Rejected alternative:
 // compact output. The run-state is read by humans and diffed in commits;
 // changing its formatting in the commit that fixes preservation would bury the
 // fix in a whitespace diff.
 //
 // OPEN DECISION, RECORDED AND NOT TAKEN — what iterate should do when this
 // returns an error. recordAndReport currently logs "WARNING: failed to record
-// round %d" (main.go:639) and then prints the round and returns the VERDICT exit
+// round %d" (main.go:676) and then prints the round and returns the VERDICT exit
 // code, so a run whose round was never persisted still exits 0 APPROVE. cmdRun's
-// stop branch does the same at :588. That is the same shape as G1's finish(),
+// stop branch does the same at :625. That is the same shape as G1's finish(),
 // and it is worse here, because the next `iterate run` will decide from a
 // rounds[] that is missing a round and can therefore re-run a round or miss a
 // convergence escalation. My recommendation for the record: it should fail, and
@@ -1180,15 +1286,34 @@ func LoadRunStateDocument(path string) (raw []byte, state *RunState, err error) 
 //
 //	(a) THE CONTRACT'S OWN ASYMMETRY IS DELIBERATE AND CITED. Edit.Validate's
 //	    table says "every asymmetry has a source citation", and the deletion at
-//	    `verdict` has one: recordRecheck can emit "" (main.go:392), so the
+//	    `verdict` has one: recordRecheck can emit "" (main.go:392 —
+//	    `r.Verdict = rr.Verdict`, re-measured at 704b65b and still exact), so the
 //	    deletion is what iterate DOES and finding (8) records it. There is no
 //	    such citation at `round`, because there is no such behaviour to preserve.
 //	(b) IT IS UNREACHABLE FROM iterate, SO NEITHER CHOICE CHANGES WHAT iterate
-//	    DECIDES. main.go:447 is `state.Round = len(state.Rounds)` AFTER an append,
-//	    so the value is >= 1 always; and this file's own list-level check requires
-//	    RoundNumber == AtIndex+1, which is >= 1 for AtIndex >= 0. The
-//	    frozen-consumer constraint — the rule that generates Validate's table — is
-//	    therefore silent here, and the choice is about what a SECOND caller gets.
+//	    DECIDES. main.go:479 is `{Kind: EditKindSetRound, RoundNumber:
+//	    len(state.Rounds) + 1}`, so the value is >= 1 always.
+//
+//	    P4 CORRECTION, and it strengthens the ground rather than weakening it.
+//	    The body argued this from `state.Round = len(state.Rounds)` at
+//	    main.go:447 — the PRE-FIX form, which the body's own commit deleted. That
+//	    form was >= 1 only because the append had executed on the line above it;
+//	    the form that exists today carries an explicit `+ 1` over a length taken
+//	    BEFORE the append, so it is >= 1 unconditionally and independently of
+//	    edit order. The citation was stale; the claim is now structural.
+//
+//	    A SECOND CORRECTION, narrowing: "this file's own list-level check
+//	    requires RoundNumber == AtIndex+1, which is >= 1" is true ONLY of a list
+//	    that CONTAINS an append — check 2 is guarded by `if appendAt >= 0`.
+//	    MEASURED: ApplyRoundRecord accepts []Edit{{EditKindSetRound,
+//	    RoundNumber: 0}} on its own and writes `"round": 0`, and over a document
+//	    already carrying `round: 5` it overwrites it with 0. So zero is reachable
+//	    through THIS API; it is unreachable only through appendRound, which
+//	    always emits an append (main.go:478). The frozen-consumer constraint —
+//	    the rule that generates Validate's table — is therefore silent here, and
+//	    the choice is about what a SECOND caller gets. That is precisely the
+//	    caller ground (c) and (d) are about, so the narrowing does not disturb
+//	    them.
 //	(c) EXPLICIT STATE. `round: 0` and an absent `round` are different states to
 //	    every later reader, and Diverge is built to report them as different
 //	    divergences (a member set to a value and a member that is gone). A set
@@ -1258,21 +1383,28 @@ func ApplyRoundRecord(original []byte, edits []Edit) ([]byte, error) {
 			continue
 		}
 		if appendAt >= 0 {
-			// EditKindAppendRound appends ONE element. Two of them cannot both be
-			// at len(rounds) in the original, so the second one's claim about the
-			// document is false by construction — and appendRound emits one.
+			// EditKindAppendRound appends ONE element, and check 1 requires EVERY
+			// append's AtIndex to equal len(rounds) IN THE ORIGINAL. Two appends
+			// therefore either claim the SAME index — in which case only one of
+			// them can be there — or DIFFERENT indices, in which case at least one
+			// is not the original length. Either way a claim is false by
+			// construction, and appendRound emits exactly one (main.go:478).
 			// Refusing beats picking an interpretation nobody wrote down.
-			return nil, fmt.Errorf("edit %d: a second %s in one list — an append licenses exactly one new index and both of these claim to be at len(rounds); appendRound (main.go:446) appends once per call and this list did not come from it", i, e.Kind)
+			//
+			// P4: CONFIRMED, and it is the ONLY runtime guard. appendRound is
+			// LoadRunStateDocument -> ApplyRoundRecord -> os.WriteFile; nothing on
+			// the write path calls VerifyPreservation. Row 17 seals this refusal.
+			return nil, fmt.Errorf("edit %d: a second %s in one list — check 1 requires every append's AtIndex to equal len(rounds) in the ORIGINAL, so two of them cannot both be true; appendRound (main.go:478) appends once per call and this list did not come from it", i, e.Kind)
 		}
 		if e.AtIndex != originalLen {
-			return nil, fmt.Errorf("edit %d: %s claims AtIndex %d and `rounds` has %d element(s) in the document being edited — the caller's claim about the document is false, which is the stale-decision hazard (iterate's index comes from load()'s read at main.go:523 and the append happens against appendRound's re-read at :442, with a whole review panel in between). Refusing rather than appending at the real length: adjusting a caller's false claim into a true one is how a stale decision becomes an invisible one", i, e.Kind, e.AtIndex, originalLen)
+			return nil, fmt.Errorf("edit %d: %s claims AtIndex %d and `rounds` has %d element(s) in the document being edited — the caller's claim about the document is false, which is the stale-decision hazard (iterate's index comes from load()'s read at main.go:560 and the append happens against appendRound's own read at :469, with a whole review panel in between). Refusing rather than appending at the real length: adjusting a caller's false claim into a true one is how a stale decision becomes an invisible one", i, e.Kind, e.AtIndex, originalLen)
 		}
 		appendAt = e.AtIndex
 	}
 
 	// LIST-LEVEL CHECK 2 — `round` MUST EQUAL AtIndex+1 when the list carries both,
-	// because main.go:446-447 are adjacent and mechanically linked:
-	// state.Round = len(state.Rounds) AFTER the append. A `round` that disagrees
+	// because main.go:478-479 are adjacent and mechanically linked: both are
+	// computed from the SAME pre-append len(state.Rounds). A `round` that disagrees
 	// with len(rounds) is undetectable at every later reader.
 	//
 	// AND THE ONE THIS FUNCTION MUST NOT MAKE: Edit.Record.Round is NOT checked
@@ -1282,7 +1414,7 @@ func ApplyRoundRecord(original []byte, edits []Edit) ([]byte, error) {
 	if appendAt >= 0 {
 		for i, e := range edits {
 			if e.Kind == EditKindSetRound && e.RoundNumber != appendAt+1 {
-				return nil, fmt.Errorf("edit %d: %s writes round %d beside an append at index %d, and main.go:446-447 make them mechanically linked — round must be %d", i, e.Kind, e.RoundNumber, appendAt, appendAt+1)
+				return nil, fmt.Errorf("edit %d: %s writes round %d beside an append at index %d, and main.go:478-479 make them mechanically linked — round must be %d", i, e.Kind, e.RoundNumber, appendAt, appendAt+1)
 			}
 		}
 	}
@@ -1360,8 +1492,8 @@ func ApplyRoundRecord(original []byte, edits []Edit) ([]byte, error) {
 		top["rounds"] = b
 	}
 
-	// Two-space indent and a trailing newline, matching main.go:461 and :466 — see
-	// the CHOICE above. Note what this does NOT do: it never re-marshals a decoded
+	// Two-space indent and a trailing newline, matching what the pre-fix appendRound
+	// wrote (7028605's main.go:461 and :466) — see the CHOICE above. Note what this does NOT do: it never re-marshals a decoded
 	// value, so a number reaches the output as the literal it arrived as and
 	// 9007199254740993 does not become 9007199254740992.
 	out, err := json.MarshalIndent(top, "", "  ")
@@ -1541,8 +1673,11 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 // (1) WHAT cmd/iterate IS LICENSED TO CHANGE — see the enumeration above. Six
 // kinds, one conditional, derived from eight assignment sites, all inside
 // appendRound. The finding worth carrying forward is not the list; it is that
-// the code's OWN comment about what it owns (main.go:439-440) was already wrong
-// by two of six before anybody looked. Derived, not asked.
+// the code's OWN comment about what it owns (7028605's main.go:439-440) was
+// already wrong by two of six before anybody looked. Derived, not asked.
+// P4 NOTE: the same file then did it again in the other direction — see the
+// CITATIONS stamp. A hand-written coordinate rots exactly like a hand-written
+// list, and for the same reason.
 //
 // (2) GATE-FIELD DESTRUCTION IS THE SAME PROPERTY AS CLASSIFICATION LOSS, NOT A
 // SECOND ONE — AND THE TEMPTATION TO SPLIT THEM IS THE DECLARATION DESIGN
@@ -1687,9 +1822,9 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 //     condition.
 //  4. NOT BYTE-IDENTITY. Both of G1's mechanisms apply unchanged.
 //  5. NOT "iterate writes only what it owns" IN THE SENSE ITS OWN COMMENT MEANS.
-//     main.go:439-440's list is short by two. G2's licence is the correction, and
-//     that comment should be updated by the body in the same commit that wires
-//     appendRound.
+//     7028605's main.go:439-440 was short by two. G2's licence is the correction.
+//     DONE: the body updated that comment in the commit that wired appendRound;
+//     it now names all six at main.go:442-443, and row 16 keeps it there.
 //
 // (5) THE v2 SIDECAR: G2 DISCHARGES ITS STATED JUSTIFICATION IN FULL AND DOES
 // NOT RETIRE IT. THE REPO'S PRIOR RULING THAT "RETIRING THE SIDECAR NEEDS A G2
@@ -1829,7 +1964,8 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 //
 // recordRecheck copies rr.Verdict straight from cmd/recheck's -out payload
 // (main.go:392). A payload without a verdict field yields "". appendRound then
-// writes state.Verdict = strings.ToLower("") = "" (:448), and RunState.Verdict is
+// emits Edit{EditKindSetVerdict, strings.ToLower("")} = "" (:480), and
+// RunState.Verdict is
 // `json:"verdict,omitempty"` (:70) — so the top-level `verdict` member is not
 // written as empty, it is REMOVED. A round whose verdict could not be determined
 // therefore deletes the previous round's verdict rather than recording that it is
@@ -1843,7 +1979,7 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 //
 // (9) A SECOND ONE, SAME SHAPE, OPPOSITE DIRECTION: A STALE escalation_reason
 // SURVIVES A RECOVERY. appendRound sets escalation_reason only in the escalating
-// arm (:456-459) and never clears it in the APPROVE or ITERATE arms. A run that
+// arm (:490-494) and never clears it in the APPROVE or ITERATE arms. A run that
 // escalated at round 2 and then recorded an ITERATE at round 3 carries round 2's
 // escalation_reason forward beside a non-escalated status. Out of scope for the
 // same reason as (8): clearing it is a change to what iterate decides.
@@ -1854,3 +1990,100 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 // to bare gate names. Both implementations already write documents the schema
 // rejects. G2 preserves that behaviour exactly, because changing it would change
 // what the tools write. It wants its own unit.
+
+// ─── P4 RULINGS (adjudicate(G2)) ─────────────────────────────────────────────
+//
+// Three disputes the body raised and left open, ruled here. All three
+// CONFIRMED; two of the three were confirmed on a ground the body stated
+// imprecisely, and the corrections are recorded beside them rather than folded
+// in silently. Every line number below was measured at 704b65b on 2026-08-11.
+//
+// (P1) A SECOND EditKindAppendRound IN ONE EDIT LIST — REFUSE. CONFIRMED, AND
+// THE BODY UNDERSTATED ITS OWN CASE.
+//
+// The body's argument was that "two appends cannot both be at len(rounds) in the
+// original, so the second one's claim is false by construction". Re-derived: that
+// covers the equal-index case directly, and the unequal-index case falls to
+// check 1's own AtIndex test, so the conclusion holds for EVERY two-append list.
+// Sound.
+//
+// What the body did not say, and what actually makes the refusal load-bearing:
+// NOTHING ON THE WRITE PATH CHECKS THE LICENCE. appendRound is
+// LoadRunStateDocument -> ApplyRoundRecord -> os.WriteFile (main.go:465-504) and
+// VerifyPreservation has no non-test caller in this package — grep it. So
+// ApplyRoundRecord's own refusals are the only thing standing between a
+// malformed edit list and a written document. "The alternative would silently
+// write an index nothing licenses" is right about the licence and wrong about who
+// would notice: nobody would.
+//
+// MEASURED, both directions:
+//
+//	edits [Append@0, Append@0]   refused today. With the refusal removed both
+//	                             pass check 1, rounds gains two elements, and the
+//	                             second lands at rounds[1] — which LicensedPaths
+//	                             does NOT license (both PathPrefix to rounds[0]),
+//	                             so VerifyPreservation reports 3 violations. It
+//	                             would catch it. It is never asked.
+//	edits [Append@0, Append@1]   refused with or without the branch: edit 1 fails
+//	                             the AtIndex == originalLen test.
+//
+// IT WANTS A ROW, AND THE MEASUREMENT IS WHY. With the duplicate branch deleted
+// the ENTIRE cmd/iterate suite still passes — 42 green, 0 red beyond the
+// tracked-binary row. The refusal was completely unsealed, so a later author
+// "simplifying" check 1 into a single index test would silently delete the only
+// runtime guard on the equal-index case and no row would move. Row 17 is that
+// row. It asserts the refusal AND that no bytes come back, and its control is
+// that the one-append list through the same code path succeeds.
+//
+// (P2) EditKindSetRound WITH RoundNumber 0 WRITES THE LITERAL `0` — CONFIRMED.
+//
+// The load-bearing ground is (a): the contract's asymmetries are cited, the
+// deletion at `verdict` has a citation, and `round` has none. P4 tested that
+// ground rather than the conclusion.
+//
+//	the verdict citation HOLDS. main.go:392 is `r.Verdict = rr.Verdict` at
+//	704b65b, exact. RoundResult.Verdict is an ordinary string field, so a -out
+//	payload without `verdict` yields "".
+//
+//	the `round` side HOLDS, and is now structural rather than incidental — but
+//	the body cited main.go:447 `state.Round = len(state.Rounds)`, a form its own
+//	commit deleted. See the CHOICE above ApplyRoundRecord for the corrected
+//	derivation and for the narrowing: the list-level floor is conditional on the
+//	list carrying an append, and a bare SetRound{0} IS accepted by this API.
+//
+// THE SUPPORTING EVIDENCE IS STRONGER THAN THE BODY REALISED. The seal author
+// wrote the asymmetry into the proof-of-execution helper:
+// g2AssertEditsLanded's SetRound leg is a bare equality against
+// fmt.Sprint(e.RoundNumber) with NO absent-case branch, while its SetVerdict leg
+// has an explicit one. On RoundNumber 0 that leg demands leaves["round"] == "0",
+// which a DELETING implementation cannot satisfy. The helper is therefore
+// already a seal of the body's choice — a latent one, because no row passes
+// RoundNumber 0. MEASURED: patch EditKindSetRound to delete on zero and the
+// whole suite still passes. Row 18 supplies the missing exercise and turns the
+// latent seal into a real one.
+//
+// WOULD A DELETION NEED ITS OWN EditKind, CITATION AND ROW? YES to all three,
+// and a fourth. (i) Its own EditKind, because PathPrefix maps kind -> licensed
+// path and a kind whose EFFECT depends on its payload value cannot be reasoned
+// about from the licence alone — that is the implicit state at a decision
+// boundary. (ii) Its own source citation, because Edit.Validate's table is
+// generated by "reject only what the source proves iterate cannot emit", and no
+// source produces a zero `round`; a deletion kind would have to name the writer
+// that wants it. (iii) Its own row, because the deletion and the literal are
+// indistinguishable to every row in the suite today. (iv) And a change to
+// g2AssertEditsLanded, which currently cannot express "absent" for `round` — the
+// asymmetry the seal author wrote in would have to be widened deliberately, not
+// discovered by a red row.
+//
+// (P3) THE STALE MEASUREMENT PROSE — AMENDED, and it was stale in more places
+// than the dispute named. See the supersession chain at the head of this file.
+// The scaffold's ADDED 7 / CHANGED 5 and its schema-illegal `pr.big` were the
+// reported defects; re-measuring found the seal author's REMOVED 60 was also two
+// low, and that BOTH earlier measurements missed
+// rounds[0].prior_findings_still_open — a zero value on a DECLARED field, which
+// is the same `omitempty` erasure the block already cites for repo.dirty and is
+// the most on-point path in the whole probe set. The dispute was right that a
+// comment contradicting its code is how FLOOR_RATIONALE was lost; what it did
+// not anticipate is that the correcting measurement was itself uncorrected.
+// Figures are now stamped with the revision and date they were taken at, three
+// runs, deterministic.
