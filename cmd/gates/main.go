@@ -1313,26 +1313,45 @@ var (
 	}
 )
 
+// mergeGates writes this run's gate results into the shared run-state.
+//
+// It merges into the document's own BYTES rather than round-tripping it through
+// this package's structs. The struct round trip that used to live here
+// (json.Unmarshal into RunState → json.MarshalIndent) silently dropped every
+// JSON path those structs do not declare — measured at 29 paths destroyed, the
+// classification collapsing from 15 keys to 3, taking recheck_min_severity and
+// reviewer_args with it. The run-state is a shared blackboard: cmd/classify
+// writes the classification and cmd/iterate reads it, so what this function
+// declares decided what the next node could see. See preserve.go, which carries
+// the contract, the measurement and the rejected alternative.
+//
+// The three assignments it used to make are now the three EXPLICIT edits below,
+// and they are the exhaustive licence: create `gates`, set gates[key], set
+// updated_at. Nothing else in cmd/gates mutates the document.
 func mergeGates(p string, results []result) error {
-	state, err := readRunState(p)
+	// One read, two views: these are the bytes that get edited, and they are the
+	// bytes that were validated. Re-reading for the merge would put a window
+	// between the two.
+	raw, _, err := LoadRunStateDocument(p)
 	if err != nil {
 		return err
 	}
-	if state.Gates == nil {
-		state.Gates = map[string]Gate{}
-	}
-	for _, r := range results {
-		state.Gates[r.Key] = r.Outcome
-	}
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	data, err := json.MarshalIndent(state, "", "  ")
+	edits := make([]Edit, 0, len(results)+1)
+	for _, r := range results {
+		edits = append(edits, Edit{Kind: EditKindSetGateResult, GateKey: r.Key, Result: r.Outcome})
+	}
+	edits = append(edits, Edit{Kind: EditKindSetUpdatedAt, UpdatedAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// No fallback to the old marshal path on error. A fallback would make the
+	// fix vacuous by turning the failure mode into the error handler.
+	data, err := ApplyGateResults(raw, edits)
 	if err != nil {
 		return err
 	}
 	// #nosec G306 -- the run state is a shared build artifact other nodes and the
 	// human read; it holds paths and verdicts, never credentials.
-	return os.WriteFile(p, append(data, '\n'), 0644)
+	return os.WriteFile(p, data, 0644)
 }
 
 // ─── output ──────────────────────────────────────────────────────────────────

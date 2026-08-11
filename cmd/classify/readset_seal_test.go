@@ -985,33 +985,70 @@ func TestSeal_RollbackMidRun_EmissionCarriesNoStateBetweenContracts(t *testing.T
 	}
 }
 
-// ─── the sidecar survives; the v1 projection does not ────────────────────────
+// ─── the sidecar survives; and since G1, so does the v1 projection ───────────
 
 // The property the separate-file decision actually rests on.
 //
 // The design's §3.3 says "a differential fixture runs classify→gates→iterate
-// and asserts BOTH projections survive every rewrite". That claim is FALSE for
-// the v1 projection, measured in this worktree, and I have not written the
-// fixture as specified. What is sealed is:
+// and asserts BOTH projections survive every rewrite". What is sealed is:
 //
 //   - the SIDECAR survives, byte for byte, because nothing else writes that
 //     file. This is real and it is the whole reason for the separate file.
-//   - the v1 loss is RECORDED, not asserted away, and the recording is
-//     non-vacuous.
+//   - the v1 projection survives the same pipeline, per top-level key and per
+//     the sub-paths inside a surviving key, and the survival is OBSERVED rather
+//     than assumed.
 //
 // P4 CORRECTION (adjudicate(B1)): the non-vacuity was originally claimed to
 // follow from v1KeysLost being non-empty. It does not — a body that executes
 // nothing returns "survived" trivially AND can return a non-empty list it never
 // measured, and I confirmed by construction that such a stub passed this row as
-// written. Non-vacuity now rests on the proof-of-execution block below, which
-// requires the RUN-STATE itself to have been destroyed by the call. See there.
+// written. Non-vacuity moved to a proof-of-execution block taken from the
+// run-state itself.
+//
+// ─── P4 AMENDMENT (adjudicate(G1)) ───────────────────────────────────────────
+//
+// WHAT FIRED THIS ROW: cmd/gates/gates was rebuilt from the G1 source in the
+// commit carrying this amendment, so the classification is no longer destroyed
+// and SidecarSurvives now reports v1KeysLost == []. The row's own text named
+// this event ("or cmd/gates has been fixed, which is good news that this seal is
+// required to notice"). It is amended, not deleted, and it is amended in the
+// direction the fix points: what used to be RECORDED AS A LOSS is now SEALED AS
+// A SURVIVAL, over the same 15 keys, so the same names keep doing work.
+//
+// BEFORE / AFTER, leg by leg:
+//
+//	len(lost) == 0                     -> Fatal      becomes   len(lost) != 0 -> Error
+//	proof of execution: the RUN-STATE  becomes       proof of execution: the RUN-STATE
+//	  LOST classification keys                         GAINED recorded gate results
+//	every recordedV1KeysLost key       becomes       every recordedV1KeysPreserved key
+//	  must still be reported lost                      must still be in the file
+//	(top-level key sets only)          gains          the classification VALUE must be
+//	                                                   unchanged, read from the file
+//
+// THE LEG THAT MATTERS AND WHY IT CHANGED. The old non-vacuity rested on the
+// pipeline DESTROYING the run-state; destruction was the only thing a stub could
+// not fake. That evidence is precisely what the fix removes, and "all 15 keys are
+// still here" is exactly what a SidecarSurvives that executed NOTHING would also
+// report. So this row would have gone green by stopping to look. The proof of
+// execution is therefore re-based on the one effect that survives the fix and
+// that only a real gates run produces: gates CREATES the `gates` object and
+// records a result in it. A body that runs nothing leaves that member absent,
+// and this row now fails it for that. See recordedGates for the two candidate
+// proofs that do NOT work — including updated_at, which was tried and measured
+// failing.
 //
 // §3.3's stated reason for the sidecar — "an unknown key would be silently
-// dropped" — understates it. KNOWN keys are dropped too: cmd/gates declares
-// Classification{risk, components, changed_files} with FileClass{path} only
-// (gates/main.go:121-129), unmarshals the run-state into it and marshals it
-// back (:1248, :1329).
-func TestSeal_SidecarSurvives_AndRecordsTheV1Loss(t *testing.T) {
+// dropped" — understated the pre-G1 defect: KNOWN keys were dropped too. The
+// sidecar's justification is NOT retired by G1 and this row does not claim it is.
+// Only one of the two frozen writers was fixed. cmd/iterate still declares
+// Classification{risk, components, recheck_min_severity, reviewer_args}
+// (iterate/main.go:86-91) and marshals the whole state back from it (:461-466),
+// so `iterate run` still destroys changed_files and the other ten keys. This
+// pipeline invokes `iterate next`, which only READS, so what this row measures is
+// honestly "the classification survives every WRITER in this pipeline", and after
+// G1 gates is the only writer in it. Retiring the sidecar needs a G2 against
+// cmd/iterate. See cmd/gates/preserve.go finding (2).
+func TestSeal_SidecarSurvives_AndSoDoesTheV1Projection(t *testing.T) {
 	defer red(t)
 
 	dir := t.TempDir()
@@ -1024,8 +1061,15 @@ func TestSeal_SidecarSurvives_AndRecordsTheV1Loss(t *testing.T) {
 	// nothing the function returns can influence it.
 	before := classificationKeys(t, runState)
 	if len(before) < 10 {
-		t.Fatalf("the seeded classification has only %d keys (%v) — the fixture is not exercising the loss", len(before), before)
+		t.Fatalf("the seeded classification has only %d keys (%v) — the fixture is not exercising the property", len(before), before)
 	}
+
+	// The recorded gate results as they stand BEFORE the pipeline — the
+	// proof-of-execution baseline. cmd/gates is the only writer of this member in
+	// this pipeline. See the P4 (adjudicate(G1)) block above, and recordedGates,
+	// for why the proof had to move here and why it is this member.
+	gatesBefore := recordedGates(t, runState)
+	classificationBefore := classificationValue(t, runState)
 
 	sidecar := V2SidecarPath(runState)
 	sidecarBytes := []byte(`{"schema_version":1,"response":{"response_version":1,"computed_config_sha256":"` +
@@ -1049,79 +1093,188 @@ func TestSeal_SidecarSurvives_AndRecordsTheV1Loss(t *testing.T) {
 		t.Errorf("the sidecar's bytes changed. Identical, not merely parseable, is the contract.\nbefore: %s\nafter:  %s", sidecarBytes, after)
 	}
 
-	if len(lost) == 0 {
-		t.Fatal("v1KeysLost is empty. Either the pipeline did not run — in which case \"survived\" means nothing — or cmd/gates has been fixed, which is good news that this seal is required to notice.")
-	}
+	// PROOF OF EXECUTION — P4 AMENDMENT (adjudicate(G1)), replacing the
+	// adjudicate(B1) block that rested on the run-state having been DESTROYED.
+	//
+	// The B1 reasoning still holds and is why this block exists at all: a body
+	// that stats the run-state, executes NOTHING, and returns a statically
+	// derived loss list reports survived=true precisely BECAUSE it ran nothing,
+	// so the sidecar's bytes are trivially unchanged. That stub was built and it
+	// passed this row as originally written.
+	//
+	// What changed is the EVIDENCE. B1 took it from keys disappearing, because
+	// only a real gates run could destroy them. G1 fixed gates, so nothing
+	// disappears, and "everything is still here" is exactly what the do-nothing
+	// stub also produces — the strongest guard in the row had become the weakest.
+	// The evidence is therefore re-based on what a real gates run ADDS: it
+	// creates the `gates` object and records a result in it. That effect only
+	// execution produces, it survives the fix, and it cannot be derived from a
+	// struct declaration. See recordedGates for the two alternatives that do not
+	// work, one of which was measured failing.
+	//
+	// Still deliberately an assertion about an OBSERVABLE EFFECT and not about
+	// how the body finds the consumer binaries (see the P4 ruling on dispute 4):
+	// pinning ../gates/gates here would over-constrain the route while still not
+	// proving anything was executed.
+	assertGatesReallyMerged(t, gatesBefore, recordedGates(t, runState),
+		"the frozen pipeline SidecarSurvives ran")
 
-	// PROOF OF EXECUTION — P4 AMENDMENT (adjudicate(B1)).
-	//
-	// This row previously rested its non-vacuity on `len(lost) != 0`, on the
-	// stated grounds that "a SidecarSurvives that executed nothing would return
-	// survived trivially". That reasoning does not hold, and I verified it does
-	// not by building the stub: a body that stats the run-state, executes
-	// NOTHING, and returns a statically-derived loss list — read off cmd/gates'
-	// struct declaration, or simply hardcoded — passes every assertion above.
-	// It reports survived=true precisely BECAUSE it ran nothing, so the
-	// sidecar's bytes are trivially unchanged, and its non-empty `lost` clears
-	// the guard. The seal certified a survival it never observed.
-	//
-	// So the proof is taken from the RUN-STATE, which only actually running the
-	// frozen pipeline can mutate. This is deliberately an assertion about an
-	// OBSERVABLE EFFECT and not about how the body finds the consumer binaries
-	// (see the P4 ruling on dispute 4): pinning ../gates/gates here would
-	// over-constrain the route while still not proving anything was executed,
-	// whereas a destroyed run-state proves execution by whatever route.
+	// THE ROW, in the direction G1 turned it: nothing may be lost, and the
+	// reported list must agree with the file either way.
 	stateAfter := classificationKeys(t, runState)
-	actuallyLost := containsAll(stateAfter, before)
-	if len(actuallyLost) == 0 {
-		t.Fatalf("SidecarSurvives reported lost=%v, but the run-state STILL CARRIES all %d classification keys (%v).\n"+
-			"Nothing was executed, so \"survived\" is a claim about a rewrite that never happened. v1KeysLost must be MEASURED from this call, not derived from a struct declaration or hardcoded.\n"+
-			"(If instead cmd/gates has genuinely been fixed, that is the good news this seal exists to catch — update recordedV1KeysLost and say which unit did it.)",
-			lost, len(before), stateAfter)
-	}
-	if miss := containsAll(actuallyLost, lost); len(miss) > 0 {
-		t.Errorf("SidecarSurvives reported %v as lost, but the run-state still carries %v after the call.\n"+
-			"The reported loss must be what THIS call destroyed; a key named here that survived in the file is a list assembled from somewhere other than the measurement.", lost, miss)
+	if actuallyLost := containsAll(stateAfter, before); len(actuallyLost) > 0 {
+		t.Errorf("the frozen pipeline destroyed %d classification key(s): %v.\n"+
+			"Since adjudicate(G1) rebuilt cmd/gates/gates from the preserving source, the whole classification must survive every writer in this pipeline. A key lost here is that fix regressing — check whether the committed binary is stale again, or whether a second writer was added to frozenConsumers.", len(actuallyLost), actuallyLost)
+	} else if len(lost) > 0 {
+		t.Errorf("SidecarSurvives reported %v as lost, but the run-state carries every one of them after the call.\n"+
+			"The reported loss must be what THIS call destroyed; a key named here that survived in the file is a list assembled from somewhere other than the measurement.", lost)
 	}
 
-	for _, k := range recordedV1KeysLost {
-		if len(containsAll(lost, []string{k})) > 0 {
-			t.Errorf("v1KeysLost %v no longer contains %q.\n"+
-				"If cmd/gates was widened to preserve it, that is the fix this project needs — update recordedV1KeysLost in the same commit and say which unit did it.\n"+
-				"If it disappeared for any other reason, the measurement has stopped measuring.", lost, k)
+	for _, k := range recordedV1KeysPreserved {
+		if len(containsAll(stateAfter, []string{k})) > 0 {
+			t.Errorf("the run-state no longer carries classification.%s after the frozen pipeline (present: %v).\n"+
+				"This is the measurement adjudicate(G1) recorded when cmd/gates stopped destroying the classification. If a consumer was narrowed again, that is the regression this row exists to catch; if the key was legitimately retired from cmd/classify's output, update recordedV1KeysPreserved in the same commit and say which unit did it.", k, stateAfter)
+		}
+	}
+
+	// PER JSON PATH, TAKEN FROM THE FILE AND NOT FROM v1KeysLost — P4
+	// (adjudicate(G1)). Every leg above this one reads a TOP-LEVEL key set,
+	// because that is what SidecarSurvives returns and adjudicate(B1) ruled
+	// (correctly) that v1KeysLost must stay top-level to remain cross-checkable.
+	// That ruling is untouched. But a top-level reading cannot see a key that
+	// survives as a null or a changed_files entry stripped back to {path}, and
+	// preserve.go finding (1) warns that a fix judged that way "could be
+	// satisfied by re-attaching thirteen nulls". VERIFIED, not assumed: a shim
+	// that recorded gate results, kept all 15 keys, nulled reviewer_args and
+	// stripped changed_files[].risk/.rules passed every leg above and was caught
+	// only here.
+	if got := classificationValue(t, runState); !reflect.DeepEqual(got, classificationBefore) {
+		t.Errorf("the classification VALUE changed under the frozen pipeline, though its key set did not.\n"+
+			"before: %s\nafter:  %s\n"+
+			"A surviving key whose value was gutted is the loss a key-set reading cannot see.",
+			mustJSON(t, classificationBefore), mustJSON(t, got))
+	}
+}
+
+// recordedGates reads the run-state's `gates` object as gate key -> status. An
+// absent `gates` member reads as the empty map.
+//
+// THIS IS THE PROOF-OF-EXECUTION INSTRUMENT for both rows above, and it is the
+// third one tried. Its two rejected alternatives are worth stating, because the
+// obvious ones do not work:
+//
+//   - THE LOSS ITSELF, which is what adjudicate(B1) used. Correct until G1
+//     removed the loss; after the fix there is nothing destroyed to point at.
+//   - updated_at MOVING. gates stamps time.Now().UTC().Format(time.RFC3339)
+//     (gates/main.go:1344), which has ONE-SECOND resolution, and classify seeds
+//     the same field microseconds earlier in the same test. MEASURED: both rows
+//     failed on an unchanged stamp with a real, correct gates run in between. A
+//     proof that is only true when the machine is slow is not a proof.
+//
+// What survives both: cmd/classify emits NO `gates` member at all, and cmd/gates
+// creates it and records one entry per gate it considered — including the ones
+// `-only` excluded, as status "skipped" with a reason. A binary that exited
+// before the merge, or one replaced by /bin/true, leaves the member absent.
+// Statuses are read rather than just counting keys, so an empty object or a
+// member written as `{}` cannot pass for a merge.
+//
+// The MAP is deliberately open — every gate key in the file arrives, whatever it
+// is named — while the value declares only `status`, which is the one field this
+// instrument reads. Decoding the whole run-state into this package's structs
+// would be the mechanism the seals exist to catch: gate keys of the form
+// "<gate>:<module-rel>" are not in any struct here.
+func recordedGates(t *testing.T, runState string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(runState) // #nosec G304 -- a temp path this test created
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Gates map[string]struct {
+			Status string `json:"status"`
+		} `json:"gates"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("run state is not valid JSON: %v", err)
+	}
+	out := make(map[string]string, len(state.Gates))
+	for k, g := range state.Gates {
+		out[k] = g.Status
+	}
+	return out
+}
+
+// assertGatesReallyMerged is the shared proof-of-execution assertion. It raises
+// rather than continuing: every preservation assertion after it would otherwise
+// be about a document nothing happened to, and would pass.
+func assertGatesReallyMerged(t *testing.T, before, after map[string]string, who string) {
+	t.Helper()
+	if len(after) <= len(before) {
+		t.Fatalf("%s recorded no gate results: the run-state's `gates` object went from %d entries to %d.\n"+
+			"cmd/gates records an entry for every gate it considered, so a merge that really happened ALWAYS adds entries. Nothing was executed, and every preservation assertion below would be about a document nothing happened to.\n"+
+			"before=%v after=%v", who, len(before), len(after), sortedGateKeys(before), sortedGateKeys(after))
+	}
+	for k, status := range after {
+		if strings.TrimSpace(status) == "" {
+			t.Fatalf("%s wrote gates[%q] with an empty status. An entry with no status is not a recorded result, so the `gates` object is not evidence that the merge ran.", who, k)
 		}
 	}
 }
 
-// recordedV1KeysLost is a MEASUREMENT, taken in this worktree at seal time
-// against the pinned classify, the tracked cmd/gates and the tracked
-// cmd/iterate, on the wallet fixture. It is not a design intent and not an
-// aspiration.
+// sortedGateKeys renders a gate map's keys for a failure message.
+func sortedGateKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return sortedCopy(out)
+}
+
+// recordedV1KeysPreserved is a MEASUREMENT, re-taken by adjudicate(G1) against
+// the pinned classify, the REBUILT cmd/gates and the tracked cmd/iterate, on the
+// wallet fixture. It is not a design intent and not an aspiration.
 //
-// Reproduction (15 classification keys before gates, 3 after):
+// P4 AMENDMENT (adjudicate(G1)). This list was recordedV1KeysLost — the twelve
+// classification keys the tracked cmd/gates DESTROYED, recorded at B1 seal time
+// so that "the day someone fixes it, a seal notices". That day is the commit
+// carrying this amendment, and a seal noticed: both rows below went red on the
+// rebuild. The list is INVERTED rather than emptied. An emptied recordedV1KeysLost
+// would leave two loops iterating over nothing — green because they stopped
+// looking, which is the one way a row may not become green. Inverted, the same
+// names keep doing work in the opposite direction and fire again the day any of
+// them stops surviving.
+//
+// Reproduction (15 classification keys before gates, 15 after):
 //
 //	classify -no-git -config testdata/example-monorepo.json -out run.json <wallet.diff>
 //	gates -run-state run.json -config ../gates/testdata/example-gates.json -only nosuchgate
-//	=> classification == {risk, components, changed_files:[{path}]}
+//	=> the classification object is unchanged, member for member and value for
+//	   value, and `gates` gains one entry per gate considered
 //
-// Two consequences that are not hypothetical, both observed:
-//   - `iterate next -run-state run.json` then prints "Floor: high" where
-//     classify wrote recheck_min_severity "medium" — floorFor
-//     (iterate/main.go:270-275) finds nothing and returns its fallback, so every
-//     MEDIUM finding is skipped on a critical money path.
-//   - reviewer_args is gone, so iterate's round-1 argv (iterate/main.go:292)
-//     carries no -risk and no -component and the panel runs at the generic
-//     tier — the exact regression cmd/classify exists to prevent.
+// The two consequences that were not hypothetical are now measured the right way
+// round, both observed against the rebuilt binary:
+//   - `iterate next -run-state run.json` prints "Floor: medium", which is the
+//     recheck_min_severity classify wrote. floorFor (iterate/main.go:270-275) no
+//     longer falls back to "high", so MEDIUM findings are reviewed again on a
+//     critical money path.
+//   - reviewer_args survives, so iterate's round-1 argv (iterate/main.go:292)
+//     carries `-risk critical -component wallet` and the panel runs at the
+//     risk-aware tier.
 //
-// changed_files[].risk and changed_files[].rules are destroyed too, inside a key
-// that otherwise survives, which is why the loss is measured per JSON path and
-// not per top-level key alone.
+// changed_files[].risk and changed_files[].rules survive too, inside a key that
+// a top-level reading would have called safe either way — which is why the row
+// below compares the whole classification value and not just this key list. A
+// fix judged only by top-level key-set equality could be satisfied by
+// re-attaching fifteen nulls.
 //
-// This is tracked as its own unit against the frozen consumers and is out of
-// B1's scope. It is recorded here so the day someone fixes it, a seal notices.
-var recordedV1KeysLost = []string{
+// STILL TRUE AND NOT FIXED BY G1: cmd/iterate has the identical closed-struct
+// shape and was NOT touched. `iterate run` still destroys eleven of these keys.
+// The pipeline these rows drive invokes `iterate next`, which only reads.
+var recordedV1KeysPreserved = []string{
+	"changed_files",
 	"classified_at",
 	"client_only",
+	"components",
 	"config_path",
 	"financial_paths_touched",
 	"human_pr_gate",
@@ -1129,6 +1282,7 @@ var recordedV1KeysLost = []string{
 	"panel",
 	"recheck_min_severity",
 	"reviewer_args",
+	"risk",
 	"risk_reasons",
 	"server_surface",
 	"skills",
@@ -1154,7 +1308,9 @@ func TestSeal_SidecarSurvives_ErrorsRatherThanReportingUnobservedSurvival(t *tes
 // implemented, and so the seal states what it measured rather than what it was
 // told.
 //
-// GREEN TODAY, and that is the point: it pins a defect.
+// IT PINNED A DEFECT. IT NOW PINS THE FIX — see the adjudicate(G1) amendment
+// below the B1-repair ruling, which is left standing because it is the reasoning
+// that made this row fireable in the first place.
 //
 // ─── P4 RULING (adjudicate(B1-repair)) ───────────────────────────────────────
 //
@@ -1194,7 +1350,61 @@ func TestSeal_SidecarSurvives_ErrorsRatherThanReportingUnobservedSurvival(t *tes
 //
 // When it does turn red, that is someone being told iterate's severity floor
 // and the panel's tier have come back to life and the follow-up unit can close.
-func TestSeal_Recorded_V1ProjectionDoesNotSurviveGates(t *testing.T) {
+//
+// ─── P4 AMENDMENT (adjudicate(G1)) ───────────────────────────────────────────
+//
+// IT TURNED RED, exactly as the ruling above predicted and for the predicted
+// reason: cmd/gates/gates was rebuilt from the G1 source in the commit carrying
+// this amendment, so the trigger fired one commit after the source fix, which is
+// the moment the loss stopped IN PRODUCTION. The row is amended, not deleted,
+// and it keeps measuring the same thing at the same place — the COMMITTED
+// artifact, by exec, never the source — because that is what tasker.md:193,
+// coder.md:318 and README.md:39 run.
+//
+// BEFORE / AFTER, leg by leg:
+//
+//	len(lost) == 0            -> Fatal   becomes  len(lost) != 0 -> Error
+//	measured loss must still            becomes  the whole classification VALUE
+//	  include recordedV1KeysLost                   must be unchanged, and every
+//	                                               recordedV1KeysPreserved key present
+//	iterate must print "Floor: high"    becomes  iterate must print "Floor: medium"
+//	                                               and emit a risk-aware argv
+//	(no proof of execution)             becomes  gates must have recorded results
+//	                                               into the `gates` object
+//
+// THE PROOF OF EXECUTION IS NEW AND IT IS NOT OPTIONAL. While this row recorded
+// a LOSS, the loss was its own evidence: only a real gates run could destroy
+// twelve keys. Asserting SURVIVAL inverts that — a binary that crashed on
+// startup, or one that was replaced by /bin/true, preserves the classification
+// perfectly. So the row now requires the effect only a real merge produces: the
+// `gates` object exists and carries recorded results. cmd/gates exits 0 here, so
+// the exit status alone proves nothing about the merge. See recordedGates for
+// the alternatives, including updated_at, which was tried and measured failing
+// at RFC3339's one-second resolution.
+//
+// WHY THE WHOLE VALUE AND NOT THE KEY SET. preserve.go finding (1) warns that a
+// fix judged only by top-level key-set equality "could be satisfied by
+// re-attaching thirteen nulls", and names changed_files[].risk and .rules as two
+// destroyed paths a top-level reading cannot see. That warning did not bite
+// while this row recorded a loss; it bites now that it certifies a fix. The
+// comparison is a deep equality over the decoded classification, which is the
+// same instrument cmd/gates' Diverge uses and for the same reason: decoding both
+// sides through one encoder means HTML escaping and re-indentation cannot show
+// up as a false divergence (see preserve.go finding (6)).
+//
+// WHAT THIS ROW DOES NOT CLAIM. It does not claim the frozen pipeline preserves
+// the run-state. It claims the committed cmd/gates does. cmd/iterate was not
+// touched by G1 and `iterate run` still destroys eleven of these keys through
+// the same closed-struct shape (iterate/main.go:86-91, :461-466). The sidecar's
+// justification therefore stands, halved: one of the two frozen writers now
+// preserves the document. Retiring it needs a G2.
+//
+// WHEN IT TURNS RED NEXT: a revert of the G1 source; a cmd/gates commit that
+// narrows the licence again; or — the shape this repo keeps meeting — a rebuilt
+// binary regressing while the source stays fixed. It also turns red if the
+// committed binary stops running at all, which the proof-of-execution block is
+// there to distinguish from real preservation.
+func TestSeal_Recorded_V1ProjectionSurvivesGates(t *testing.T) {
 	t.Parallel()
 
 	gatesBin := filepath.Join("..", "gates", "gates")
@@ -1212,8 +1422,10 @@ func TestSeal_Recorded_V1ProjectionDoesNotSurviveGates(t *testing.T) {
 
 	before := classificationKeys(t, runState)
 	if len(before) < 10 {
-		t.Fatalf("the seeded classification has only %d keys (%v) — the fixture is not exercising the loss", len(before), before)
+		t.Fatalf("the seeded classification has only %d keys (%v) — the fixture is not exercising the property", len(before), before)
 	}
+	classificationBefore := classificationValue(t, runState)
+	gatesBefore := recordedGates(t, runState)
 
 	cmd := exec.Command(gatesBin, "-run-state", runState, "-config", gatesCfg, "-only", "nosuchgate")
 	var out bytes.Buffer
@@ -1221,27 +1433,81 @@ func TestSeal_Recorded_V1ProjectionDoesNotSurviveGates(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("gates failed: %v\n%s", err, out.String())
 	}
-	after := classificationKeys(t, runState)
 
-	lost := containsAll(after, before)
-	if len(lost) == 0 {
-		t.Fatalf("cmd/gates preserved all %d classification keys.\n"+
-			"THIS IS GOOD NEWS AND THIS SEAL IS SUPPOSED TO CATCH IT. The v1 projection now survives the frozen pipeline, §3.3's claim has become true, and the follow-up unit against the frozen consumers can close. Update recordedV1KeysLost and this row together.", len(before))
+	// PROOF OF EXECUTION — see the P4 (adjudicate(G1)) block. A binary that did
+	// nothing preserves the classification perfectly, so preservation on its own
+	// certifies nothing. cmd/gates exits 0 here, so the exit status is no help.
+	assertGatesReallyMerged(t, gatesBefore, recordedGates(t, runState),
+		"the committed "+gatesBin)
+
+	// THE ROW.
+	after := classificationKeys(t, runState)
+	if lost := containsAll(after, before); len(lost) > 0 {
+		t.Errorf("the committed %s destroyed %d classification key(s): %v.\n"+
+			"adjudicate(G1) rebuilt this artifact from the preserving source and measured all %d keys surviving. A loss here is that regressing in PRODUCTION — every documented invocation execs this binary by absolute path.", gatesBin, len(lost), lost, len(before))
 	}
-	if miss := containsAll(lost, recordedV1KeysLost); len(miss) > 0 {
-		t.Errorf("the measured loss no longer includes %v (lost: %v). The measurement has moved; re-derive it before trusting anything downstream of it.", miss, lost)
+	if miss := containsAll(after, recordedV1KeysPreserved); len(miss) > 0 {
+		t.Errorf("the run-state no longer carries %v after the committed binary ran (present: %v). The measurement has moved; re-derive it before trusting anything downstream of it.", miss, after)
+	}
+	// Per JSON path, not per top-level key: a key that survives as a null, or a
+	// changed_files entry stripped back to {path}, is the loss a key-set reading
+	// cannot see.
+	if got := classificationValue(t, runState); !reflect.DeepEqual(got, classificationBefore) {
+		t.Errorf("the classification VALUE changed under the committed %s, though its key set may not have.\n"+
+			"before: %s\nafter:  %s\n"+
+			"cmd/gates is licensed to edit `gates` and `updated_at` and nothing else; anything here is an unlicensed edit.",
+			gatesBin, mustJSON(t, classificationBefore), mustJSON(t, got))
 	}
 
 	// The consequence, taken from the frozen consumer's own mouth rather than
-	// inferred: iterate reports the fallback floor where classify wrote medium.
+	// inferred: iterate reports the floor classify actually wrote, and builds a
+	// risk-aware argv. Both are contiguous-substring assertions — "critical"
+	// alone also appears in iterate's header line.
 	icmd := exec.Command(iterateBin, "next", "-run-state", runState)
 	var iout bytes.Buffer
 	icmd.Stdout, icmd.Stderr = &iout, &iout
 	_ = icmd.Run() // exit 1 == ITERATE, which is the expected verdict here
-	if !strings.Contains(iout.String(), "Floor: high") {
-		t.Errorf("cmd/iterate no longer reports the fallback floor after gates has run.\n"+
-			"classify wrote recheck_min_severity=medium; if iterate now reports medium, the safety floor survives and every MEDIUM finding is being reviewed again. Re-read this seal.\n%s", iout.String())
+	if !strings.Contains(iout.String(), "Floor: medium") {
+		t.Errorf("cmd/iterate does not report the floor classify wrote after gates has run.\n"+
+			"classify wrote recheck_min_severity=medium; if iterate reports \"high\" it has fallen back (floorFor, iterate/main.go:270-275), and every MEDIUM finding is being skipped on a critical money path.\n%s", iout.String())
 	}
+	if !strings.Contains(iout.String(), "-risk critical -component wallet") {
+		t.Errorf("cmd/iterate's round-1 argv carries no -risk and no -component, so the panel runs at the generic tier — the exact regression cmd/classify exists to prevent. reviewer_args did not survive.\n%s", iout.String())
+	}
+}
+
+// classificationValue decodes the run-state's whole `classification` member.
+//
+// Decoded and not raw bytes, deliberately: comparing bytes would report HTML
+// escaping and re-indentation as divergences, which is the trap cmd/gates'
+// Diverge documents (preserve.go finding (6)). Decoding both sides through one
+// encoder compares what the document MEANS, at every path.
+func classificationValue(t *testing.T, runState string) any {
+	t.Helper()
+	data, err := os.ReadFile(runState) // #nosec G304 -- a temp path this test created
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Classification any `json:"classification"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("run state is not valid JSON: %v", err)
+	}
+	if state.Classification == nil {
+		t.Fatalf("run state %s carries no classification — there is nothing to compare", runState)
+	}
+	return state.Classification
+}
+
+// mustJSON renders a decoded value for a failure message.
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 // seedRunState writes a complete, real run-state using the frozen v1 producer
