@@ -1012,8 +1012,23 @@ func TestSeal_ResolveConfigDual(t *testing.T) {
 // runs. This row is the only thing in the suite that says so. Read it as "the
 // shipped classify still has the bypass", not as "the ordering is unfixed".
 //
-// Delete it in the commit that rebuilds cmd/classify/classify, and re-derive
-// the v1 differential baseline in that same commit.
+// Delete it in the commit that rebuilds cmd/classify/classify — and after the
+// split there is no longer a differential baseline to re-derive in that commit,
+// which is the whole point of the split.
+//
+// AMENDED BY THE P4 (B1-baseline). The exec below named `pinnedBinary`. That
+// was correct only while `pinnedBinary` and `deployedClassifyPath` were the same
+// file; now that the differential's reference has moved to a frozen copy under
+// testdata/, `pinnedBinary` is frozen BY CONSTRUCTION and this row's trigger
+// could never fire again — strictly worse than the unfireability it already had,
+// and precisely the trap
+// TestSeal_Baseline_RecordedEnvVarRowFiresOnAFixedDeployedArtifact
+// (baseline_seal_test.go:614) was written to catch. It now names
+// `deployedClassifyPath`, which is what the paragraph above always claimed the
+// subject was: the tracked committed binary production execs. That is still the
+// ARTIFACT, not the source — nothing here builds anything — so the lag this row
+// exists to measure is unchanged. What changed is that the artifact may now be
+// rebuilt and committed, so the trigger fires one commit after the source fix.
 func TestSeal_Recorded_EnvVarOutranksBothConfigDirectories(t *testing.T) {
 	t.Parallel()
 
@@ -1046,12 +1061,12 @@ func TestSeal_Recorded_EnvVarOutranksBothConfigDirectories(t *testing.T) {
 
 	run := func(env []string) map[string]any {
 		t.Helper()
-		cmd := exec.Command(pinnedBinary, "-json", "-no-git", "-worktree", wt, diffPath)
+		cmd := exec.Command(deployedClassifyPath, "-json", "-no-git", "-worktree", wt, diffPath)
 		cmd.Env = append(os.Environ(), env...)
 		var out, errb bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errb
 		if err := cmd.Run(); err != nil {
-			t.Fatalf("pinned binary failed: %v\n%s", err, errb.String())
+			t.Fatalf("the deployed artifact %s failed: %v\n%s", deployedClassifyPath, err, errb.String())
 		}
 		var m map[string]any
 		if err := json.Unmarshal(out.Bytes(), &m); err != nil {

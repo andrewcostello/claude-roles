@@ -159,7 +159,21 @@ func (f sealFixture) classification(t *testing.T) *Classification {
 // pinnedBinary is the tracked v1 producer at baseline. It is a FIXTURE, not a
 // build artifact: it must not be rebuilt, because the whole point of the
 // differential is that one side of the comparison predates this unit.
-const pinnedBinary = "./classify"
+//
+// AMENDED BY THE P4 (B1-baseline). It was the literal "./classify", which is
+// also deployedClassifyPath (baseline_seal_test.go:112) and this module's
+// default `go build` output path. baseline_seal_test.go:56 said "the body
+// chooses the new path and these rows follow it" — but the path was a literal
+// here, so no non-test change could make it follow anything. Row 1's structural
+// leg and row 3 leg B both assert !os.SameFile(reference, deployed), and
+// os.Stat of one path twice is one inode, always. That was the deadlock.
+//
+// It now names the body's PinnedBaselineV1Path (baseline.go), so the identifier
+// still means "whatever file the differential uses as its reference" and the
+// non-test half is what decides where that is. Pointing it anywhere that is not
+// the frozen v1 producer is still caught by row 3 leg A, which compares the
+// bytes at this path against baselineDigestOfRecord.
+const pinnedBinary = PinnedBaselineV1Path
 
 // pinnedV1 runs the pinned binary over the fixture and returns its v1 stdout.
 //
@@ -167,8 +181,21 @@ const pinnedBinary = "./classify"
 // quietly skips when it cannot find its baseline is the vacuous-pass failure in
 // a different costume: it would go green on exactly the machine where it
 // mattered least to run.
+//
+// AMENDED BY THE P4 (B1-baseline), row 2's "checked at use": the reference's
+// sha256 is verified against the value pinned in source BEFORE the bytes are
+// touched, because presence is not identity. A same-size, behaviourally
+// identical substitution passes an os.Stat and passes an output comparison; only
+// a hash against a value written down somewhere else notices it. The check goes
+// on the path that USES the bytes — this one — rather than at startup, because
+// the differential's claim is about the bytes it actually ran. The os.Stat below
+// is now subsumed by it and is kept only as the fallback presence check it
+// always was.
 func pinnedV1(t *testing.T, f sealFixture) []byte {
 	t.Helper()
+	if err := VerifyPinnedBaseline(pinnedBinary); err != nil {
+		t.Fatalf("%v", err)
+	}
 	if _, err := os.Stat(pinnedBinary); err != nil {
 		t.Fatalf("pinned v1 producer %s is missing: %v — it is a tracked fixture and the differential cannot run without it", pinnedBinary, err)
 	}
