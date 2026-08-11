@@ -1,10 +1,19 @@
 // Run-state preservation for cmd/iterate — unit G2, the sibling of G1.
 //
-// SCAFFOLD. LoadRunStateDocument, ApplyRoundRecord and VerifyPreservation
-// return errNotImplemented. appendRound is NOT wired to them. Everything else
-// in this file is implemented, and the header section "WHAT THIS SCAFFOLD
-// IMPLEMENTED" says why each exception was made. A seal author writes the rows
-// next; a body author implements the three stubs and wires appendRound.
+// BODY LANDED. LoadRunStateDocument, ApplyRoundRecord and VerifyPreservation are
+// implemented and appendRound (main.go) is wired to them; the section "WHAT THIS
+// SCAFFOLD IMPLEMENTED" is kept as the record of which declarations the scaffold
+// wrote and why, not as a statement about what is implemented today.
+//
+// TWO DECISIONS THE CONTRACT DID NOT MAKE AND THE BODY DID, both stated at the
+// point of deviation rather than here: EditKindSetRound with RoundNumber 0 writes
+// the literal `0` and does not delete `round` (see the CHOICE above
+// ApplyRoundRecord), and a second EditKindAppendRound in one list is REFUSED (see
+// list-level check 1). Neither is reachable from cmd/iterate today.
+//
+// STILL OPEN, and it is the whole of row 15: the TRACKED cmd/iterate/iterate is
+// the pre-fix artifact. Finding (6) is the instruction and it is a separate
+// commit.
 //
 // This file deliberately reuses cmd/gates/preserve.go's vocabulary — Fidelity,
 // EditKind, Edit, JSONPath, Divergence, Diverge, flattenDocument, and the
@@ -153,6 +162,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -1055,10 +1065,26 @@ func LicensedPaths(edits []Edit) (Licence, error) {
 // vacates while the row keeps passing. Re-base that row on a hand-built
 // expectation BEFORE readRunState loses its last caller.
 //
-// STUB. The body must implement it.
+// IMPLEMENTED.
 func LoadRunStateDocument(path string) (raw []byte, state *RunState, err error) {
-	_ = path
-	return nil, nil, fmt.Errorf("LoadRunStateDocument must read %s ONCE and return both the verbatim bytes and the decoded RunState, without validating (cmd/iterate has no validator and inventing one is a behaviour change): %w", "the run-state path", errNotImplemented)
+	// #nosec G304 -- path is the -run-state flag, exactly as in readRunState.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var s RunState
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, nil, err
+	}
+	// AND NOTHING ELSE. No validator is called and none is invented: readRunState
+	// (main.go:427-437) does os.ReadFile then json.Unmarshal and stops, load()'s
+	// `state.Classification == nil` check at :528 stays in load(), and a document
+	// iterate accepts today must still be accepted. A refusal added here would be
+	// a behaviour change wearing a hardening.
+	//
+	// `data` is returned VERBATIM — not re-marshalled from `s`, which is the round
+	// trip this whole unit exists to remove.
+	return data, &s, nil
 }
 
 // ApplyRoundRecord produces the new run-state document: the original, with
@@ -1140,10 +1166,209 @@ func LoadRunStateDocument(path string) (raw []byte, state *RunState, err error) 
 // the change should be its own unit with its own differential run, because it
 // changes iterate's exit behaviour.
 //
-// STUB. The body must implement it.
+// CHOICE TAKEN BY THE BODY, BECAUSE THE CONTRACT DOES NOT MAKE IT —
+// EditKindSetRound WITH RoundNumber 0 WRITES THE LITERAL `0`; IT DOES NOT DELETE
+// `round`.
+//
+// The dispute is real and the contract leaves it open. Edit.Validate permits
+// RoundNumber == 0 (it rejects only a negative, citing the schema's minimum 0),
+// and RunState.Round is `json:"round,omitempty"` (main.go:69) — so a body that
+// reproduced iterate's marshal faithfully would DELETE the member on a zero. The
+// contract reasons about `omitempty` in exactly one place, EditKindSetVerdict,
+// and it reasons about it there to LICENSE a deletion. It says nothing about
+// `round`. Four grounds for writing the zero:
+//
+//	(a) THE CONTRACT'S OWN ASYMMETRY IS DELIBERATE AND CITED. Edit.Validate's
+//	    table says "every asymmetry has a source citation", and the deletion at
+//	    `verdict` has one: recordRecheck can emit "" (main.go:392), so the
+//	    deletion is what iterate DOES and finding (8) records it. There is no
+//	    such citation at `round`, because there is no such behaviour to preserve.
+//	(b) IT IS UNREACHABLE FROM iterate, SO NEITHER CHOICE CHANGES WHAT iterate
+//	    DECIDES. main.go:447 is `state.Round = len(state.Rounds)` AFTER an append,
+//	    so the value is >= 1 always; and this file's own list-level check requires
+//	    RoundNumber == AtIndex+1, which is >= 1 for AtIndex >= 0. The
+//	    frozen-consumer constraint — the rule that generates Validate's table — is
+//	    therefore silent here, and the choice is about what a SECOND caller gets.
+//	(c) EXPLICIT STATE. `round: 0` and an absent `round` are different states to
+//	    every later reader, and Diverge is built to report them as different
+//	    divergences (a member set to a value and a member that is gone). A set
+//	    edit that silently becomes a delete at one payload value is the implicit
+//	    state at a decision boundary that skills/explicit-state.md exists to
+//	    remove. A caller that wants `round` gone should have to say so — and there
+//	    is no EditKind that says so, which is itself the answer.
+//	(d) PRESERVATION. The document may already carry `round: 5`. Turning a SET
+//	    into a DELETE destroys a path the schema declares, inside the one unit
+//	    whose subject is not destroying paths.
+//
+// A deletion here would need its own EditKind, its own source citation and its
+// own row. It has none of the three, so it is not this body's to invent.
+//
+// IMPLEMENTED.
 func ApplyRoundRecord(original []byte, edits []Edit) ([]byte, error) {
-	_, _ = original, edits
-	return nil, fmt.Errorf("ApplyRoundRecord must merge the licensed edits INTO the original bytes through map[string]json.RawMessage and []json.RawMessage, never through RunState, and must leave rounds[0..AtIndex-1] as the bytes they arrived as: %w", errNotImplemented)
+	// THE LICENCE FIRST, before a single byte is touched. An edit list that does
+	// not validate is not a document problem, and refusing before the merge means
+	// a rejected list can never leave a half-edited document behind — which is
+	// also how "returns NO bytes on failure" is made structural rather than
+	// remembered at each return.
+	for i, e := range edits {
+		if err := e.Validate(); err != nil {
+			return nil, fmt.Errorf("edit %d: %w", i, err)
+		}
+	}
+
+	// THE TOP LEVEL AS RAW MEMBERS. Every member this function does not name stays
+	// a json.RawMessage and is re-emitted as the bytes it arrived as.
+	// `classification`, `gates`, `pr`, `deferred_findings` and `repo` are four of
+	// those members and nothing below decodes any of them: anything that decodes
+	// them can lose them, and two of them lose their VALUES rather than their
+	// paths because their declarations bottom out in `any`.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(original, &top); err != nil {
+		return nil, fmt.Errorf("original document is not a JSON object: %w", err)
+	}
+
+	if len(edits) == 0 {
+		// Licensed set empty, so nothing may move. Returning the original bytes IS
+		// the success here; re-emitting them would be a change nobody licensed.
+		// iterate cannot produce this list — appendRound always emits at least five
+		// edits — so a caller arriving here is exercising the editor.
+		out := make([]byte, len(original))
+		copy(out, original)
+		return out, nil
+	}
+
+	// `rounds` ONE LEVEL FURTHER, AND NO FURTHER, so an element can be appended
+	// without disturbing its siblings. EACH EXISTING ELEMENT STAYS A RawMessage
+	// AND IS RE-EMITTED VERBATIM — that is ruling (3b) made mechanical:
+	// rounds[0].zzz_round_future survives because nothing decodes rounds[0].
+	var rounds []json.RawMessage
+	if raw, ok := top["rounds"]; ok {
+		if err := json.Unmarshal(raw, &rounds); err != nil {
+			return nil, fmt.Errorf("run-state member `rounds` is not a JSON array: %w", err)
+		}
+	}
+	originalLen := len(rounds)
+
+	// LIST-LEVEL CHECK 1 — AtIndex MUST EQUAL len(rounds) IN THE ORIGINAL. The
+	// length is taken BEFORE any edit is applied, which is what "in the original"
+	// means and is why the loop below runs first and separately.
+	appendAt := -1
+	for i, e := range edits {
+		if e.Kind != EditKindAppendRound {
+			continue
+		}
+		if appendAt >= 0 {
+			// EditKindAppendRound appends ONE element. Two of them cannot both be
+			// at len(rounds) in the original, so the second one's claim about the
+			// document is false by construction — and appendRound emits one.
+			// Refusing beats picking an interpretation nobody wrote down.
+			return nil, fmt.Errorf("edit %d: a second %s in one list — an append licenses exactly one new index and both of these claim to be at len(rounds); appendRound (main.go:446) appends once per call and this list did not come from it", i, e.Kind)
+		}
+		if e.AtIndex != originalLen {
+			return nil, fmt.Errorf("edit %d: %s claims AtIndex %d and `rounds` has %d element(s) in the document being edited — the caller's claim about the document is false, which is the stale-decision hazard (iterate's index comes from load()'s read at main.go:523 and the append happens against appendRound's re-read at :442, with a whole review panel in between). Refusing rather than appending at the real length: adjusting a caller's false claim into a true one is how a stale decision becomes an invisible one", i, e.Kind, e.AtIndex, originalLen)
+		}
+		appendAt = e.AtIndex
+	}
+
+	// LIST-LEVEL CHECK 2 — `round` MUST EQUAL AtIndex+1 when the list carries both,
+	// because main.go:446-447 are adjacent and mechanically linked:
+	// state.Round = len(state.Rounds) AFTER the append. A `round` that disagrees
+	// with len(rounds) is undetectable at every later reader.
+	//
+	// AND THE ONE THIS FUNCTION MUST NOT MAKE: Edit.Record.Round is NOT checked
+	// against AtIndex+1. It is d.Round, computed by decide() from load()'s earlier
+	// read, and refusing it would make iterate fail to record a round it records
+	// today. The place to fix that is the unit that closes the staleness window.
+	if appendAt >= 0 {
+		for i, e := range edits {
+			if e.Kind == EditKindSetRound && e.RoundNumber != appendAt+1 {
+				return nil, fmt.Errorf("edit %d: %s writes round %d beside an append at index %d, and main.go:446-447 make them mechanically linked — round must be %d", i, e.Kind, e.RoundNumber, appendAt, appendAt+1)
+			}
+		}
+	}
+
+	setMember := func(i int, key string, v any) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Errorf("edit %d: encode %s: %w", i, key, err)
+		}
+		top[key] = b
+		return nil
+	}
+
+	roundsTouched := false
+	for i, e := range edits {
+		switch e.Kind {
+		case EditKindAppendRound:
+			// The ONE element this function encodes. Everything already in `rounds`
+			// stays the bytes it arrived as.
+			b, err := json.Marshal(e.Record)
+			if err != nil {
+				return nil, fmt.Errorf("edit %d: encode round %d: %w", i, e.Record.Round, err)
+			}
+			rounds = append(rounds, json.RawMessage(b))
+			roundsTouched = true
+		case EditKindSetRound:
+			// The literal, including 0 — see the CHOICE above.
+			if err := setMember(i, "round", e.RoundNumber); err != nil {
+				return nil, err
+			}
+		case EditKindSetVerdict:
+			if e.Verdict == "" {
+				// NOT a set of the empty string. RunState.Verdict is
+				// `json:"verdict,omitempty"` (main.go:70), so what iterate does
+				// today with an undetermined verdict is DELETE the member —
+				// preserve.go finding (8). The deletion is licensed at `verdict`
+				// because it is what iterate does; it is recorded, not fixed.
+				delete(top, "verdict")
+				continue
+			}
+			if err := setMember(i, "verdict", e.Verdict); err != nil {
+				return nil, err
+			}
+		case EditKindSetUpdatedAt:
+			if err := setMember(i, "updated_at", e.UpdatedAt); err != nil {
+				return nil, err
+			}
+		case EditKindSetStatus:
+			if err := setMember(i, "status", e.Status); err != nil {
+				return nil, err
+			}
+		case EditKindSetEscalationReason:
+			if err := setMember(i, "escalation_reason", e.EscalationReason); err != nil {
+				return nil, err
+			}
+		default:
+			// Unreachable while Edit.Validate above stays exhaustive. Kept, and kept
+			// as a refusal that NAMES the kind, because the two switches drifting
+			// apart is the realistic failure and "pass the mutation through" is not
+			// an available answer to it.
+			return nil, fmt.Errorf("edit %d: kind %s reached the editor's dispatch without being licensed by Edit.Validate; the two switches have drifted and refusing is the only safe answer", i, e.Kind)
+		}
+	}
+
+	if roundsTouched {
+		// Only re-encoded when an edit actually appended. An untouched `rounds`
+		// keeps its original bytes like any other member. Marshalling
+		// []json.RawMessage re-emits each element's own bytes; it does not decode
+		// them, so no number literal inside an existing round is routed through
+		// float64 and no `omitempty` erases a zero this function never saw.
+		b, err := json.Marshal(rounds)
+		if err != nil {
+			return nil, fmt.Errorf("encode `rounds`: %w", err)
+		}
+		top["rounds"] = b
+	}
+
+	// Two-space indent and a trailing newline, matching main.go:461 and :466 — see
+	// the CHOICE above. Note what this does NOT do: it never re-marshals a decoded
+	// value, so a number reaches the output as the literal it arrived as and
+	// 9007199254740993 does not become 9007199254740992.
+	out, err := json.MarshalIndent(top, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode run state: %w", err)
+	}
+	return append(out, '\n'), nil
 }
 
 // VerifyPreservation checks a produced document against the original at the
@@ -1192,10 +1417,71 @@ func ApplyRoundRecord(original []byte, edits []Edit) ([]byte, error) {
 // instead of from its own emitter. A seal can call these two against each other;
 // it cannot get inside one function.
 //
-// STUB. The body must implement it.
+// IMPLEMENTED.
 func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity) (violations []Divergence, err error) {
-	_, _, _, _ = original, produced, edits, level
-	return nil, fmt.Errorf("VerifyPreservation must dispatch exhaustively on the level, build the Licence from the EDIT LIST (never from the produced document), Diverge the pair, and return every unlicensed divergence — with an empty slice and a nil error as the only passing result: %w", errNotImplemented)
+	if lerr := level.Validate(); lerr != nil {
+		return nil, lerr
+	}
+
+	// THE LEVEL DISPATCH, exhaustive, before any work. Validate above has already
+	// refused the unset and the unrecognised; what is left is the three named
+	// levels, and they are not all checkable here.
+	countChanged := true
+	switch level {
+	case FidelityPathwise:
+		// Normative for cmd/iterate. Every divergence counts: removed, added AND
+		// changed — the two number corruptions this unit measures are CHANGED, and
+		// a level that skipped them would call them preserved.
+	case FidelityKeySet:
+		// The path set only. Explicitly NOT normative — a body that re-attached
+		// every lost key with a null satisfies it — and implemented only so that a
+		// caller who names it gets what the constant says rather than a silently
+		// stricter answer.
+		countChanged = false
+	case FidelityByteIdentical:
+		// REFUSED, and refused in the ERROR channel, which is the honest place for
+		// it: this build cannot perform the check. encoding/json cannot express
+		// byte-identity — MarshalIndent re-indents the whole buffer and Marshal
+		// compacts every RawMessage with escapeHTML on — and scoping it to the
+		// edited spans needs an order-preserving document model this package does
+		// not have. Returning an empty violation list here would report "checked
+		// and clean" for a check that never ran.
+		return nil, fmt.Errorf("cannot check at %s: this build has no order-preserving JSON document model, and encoding/json cannot express byte-identity — %s is the normative level for cmd/iterate", level, FidelityPathwise)
+	default:
+		// Unreachable while Fidelity.Validate stays exhaustive.
+		return nil, fmt.Errorf("cannot check at %s: the level dispatch and Fidelity.Validate have drifted apart", level)
+	}
+
+	// THE LICENSED SET COMES FROM THE EDIT LIST THE CALLER INTENDED, never from the
+	// produced document and never from the divergences found. For an APPEND that is
+	// not a fine point: deriving the licensed index from the produced document's
+	// rounds[] length licenses whatever index the body actually wrote, which is the
+	// one thing the append most needs checked.
+	lic, lperr := LicensedPaths(edits)
+	if lperr != nil {
+		return nil, fmt.Errorf("cannot check: the licensed path set does not build from the edit list: %w", lperr)
+	}
+
+	ds, derr := Diverge(original, produced)
+	if derr != nil {
+		// "Could not check", not "nothing to report". A document that does not
+		// parse is the most complete failure of preservation available.
+		return nil, fmt.Errorf("cannot check: %w", derr)
+	}
+
+	// An empty slice, not nil, so the only passing result is one a caller can read
+	// as "the check ran and found nothing" rather than as "nothing happened".
+	violations = []Divergence{}
+	for _, d := range ds {
+		if !countChanged && d.Kind == DivergenceChanged {
+			continue
+		}
+		if lic.Allows(d.At) {
+			continue
+		}
+		violations = append(violations, d)
+	}
+	return violations, nil
 }
 
 // ─── WHAT THIS SCAFFOLD IMPLEMENTED, AND WHY ─────────────────────────────────
@@ -1227,16 +1513,16 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 // The three stubs are exactly G1's three, renamed for this tool:
 // LoadRunStateDocument, ApplyRoundRecord, VerifyPreservation.
 //
-// ─── WIRING: NOT DONE, DELIBERATELY ──────────────────────────────────────────
+// ─── WIRING: NOT DONE BY THE SCAFFOLD, DELIBERATELY — DONE BY THE BODY ───────
 //
-// appendRound (main.go:441-467) is NOT wired to ApplyRoundRecord. Wiring a
-// raising stub into the one function that writes the run-state would take
+// The scaffold did NOT wire appendRound (main.go) to ApplyRoundRecord. Wiring a
+// raising stub into the one function that writes the run-state would have taken
 // green rows in this package red at the scaffold commit, and a scaffold whose
-// job is to move no row cannot start by moving any. cmd/iterate is 27 green / 0
-// red at this commit and is 27 green / 0 red after it.
+// job is to move no row cannot start by moving any. cmd/iterate was 27 green / 0
+// red at that commit and 27 green / 0 red after it.
 //
-// THE LICENCE appendRound WILL HAND TO ApplyRoundRecord, constructed explicitly
-// so the body is not left to infer it, with the assignments each edit replaces:
+// THE BODY PERFORMED THE WIRING, and the edit list below is what it built —
+// verbatim, with the assignments each edit replaced:
 //
 //	Edit{Kind: EditKindAppendRound,   Record: r, AtIndex: len(state.Rounds)}   :446
 //	Edit{Kind: EditKindSetRound,      RoundNumber: len(state.Rounds) + 1}      :447
@@ -1247,8 +1533,8 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 //	                                             ONLY when escalation != ""    :457-459
 //
 // Note that AtIndex and RoundNumber are both computed from the length BEFORE the
-// append, which is why they differ by one. The body must take that length from
-// the bytes LoadRunStateDocument returned, not from load()'s earlier read.
+// append, which is why they differ by one, and the length is taken from the
+// document LoadRunStateDocument just returned, not from load()'s earlier read.
 //
 // ─── FINDINGS AND RULINGS THIS SCAFFOLD RECORDS ──────────────────────────────
 //

@@ -437,33 +437,70 @@ func readRunState(p string) (*RunState, error) {
 }
 
 // appendRound merges one round into the run state, preserving every field other
-// nodes own. iterate owns rounds[], round, verdict, status and nothing else.
+// nodes own.
+//
+// iterate's licence is SIX mutations and nothing else: it appends one element to
+// rounds[], and it sets round, verdict, updated_at, status and escalation_reason.
+// The previous version of this sentence named four of the six — it omitted
+// updated_at and escalation_reason, both of which this function has always
+// assigned — and it was wrong from the day it was written. That is the finding
+// worth carrying: a hand-list drifted by a third and nobody noticed. The
+// authority is preserve.go's enumeration, derived from this function's own
+// assignment sites, and the six EditKinds below are what makes the licence
+// executable rather than a comment.
+//
+// It merges into the document's own BYTES through ApplyRoundRecord rather than
+// round-tripping it through this package's closed structs. The struct round trip
+// that used to live here (json.Unmarshal into RunState → json.MarshalIndent)
+// silently destroyed every JSON path those structs do not declare — measured at
+// 60 paths, the classification collapsing from 15 keys to 4, 34 paths destroyed
+// inside the 9 gate records cmd/gates had written minutes earlier, and 3 destroyed
+// retroactively inside rounds[0] by an append whose only intended effect was to
+// add rounds[1]. cmd/gates over the result exited 3 INVALID_INPUT: after one
+// `iterate run` the pipeline could not gate at all. See preserve.go, which carries
+// the contract, the measurement and the rejected alternatives.
+//
+// There is NO FALLBACK to the old marshal path on error. A fallback would make
+// the fix vacuous by turning the failure mode into the error handler.
 func appendRound(p string, r Round, verdict string, escalation string) error {
-	state, err := readRunState(p)
+	// One read, two views: these are the bytes that get edited, and they are the
+	// bytes the length below is taken from. Re-reading for the merge would put a
+	// window between the two.
+	raw, state, err := LoadRunStateDocument(p)
 	if err != nil {
 		return err
 	}
-	state.Rounds = append(state.Rounds, r)
-	state.Round = len(state.Rounds)
-	state.Verdict = strings.ToLower(verdict)
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	// AtIndex and RoundNumber are both computed from the length BEFORE the append,
+	// which is why they differ by one, and both are taken from the document just
+	// read rather than from load()'s earlier read.
+	edits := []Edit{
+		{Kind: EditKindAppendRound, Record: r, AtIndex: len(state.Rounds)},
+		{Kind: EditKindSetRound, RoundNumber: len(state.Rounds) + 1},
+		{Kind: EditKindSetVerdict, Verdict: strings.ToLower(verdict)},
+		{Kind: EditKindSetUpdatedAt, UpdatedAt: time.Now().UTC().Format(time.RFC3339)},
+	}
 	switch strings.ToUpper(verdict) {
 	case "APPROVE":
-		state.Status = "in_progress" // the driver flips this to done once the PR is raised
+		// the driver flips this to done once the PR is raised
+		edits = append(edits, Edit{Kind: EditKindSetStatus, Status: "in_progress"})
 	case "ITERATE":
-		state.Status = "in_progress"
+		edits = append(edits, Edit{Kind: EditKindSetStatus, Status: "in_progress"})
 	default:
-		state.Status = "escalated"
+		edits = append(edits, Edit{Kind: EditKindSetStatus, Status: "escalated"})
 		if escalation != "" {
-			state.EscalationReason = escalation
+			// CONDITIONAL, and the condition is the source's own guard. An edit list
+			// without it does not license `escalation_reason` at all.
+			edits = append(edits, Edit{Kind: EditKindSetEscalationReason, EscalationReason: escalation})
 		}
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
+
+	data, err := ApplyRoundRecord(raw, edits)
 	if err != nil {
 		return err
 	}
 	// #nosec G306 -- the run state is a shared build artifact other nodes read.
-	return os.WriteFile(p, append(data, '\n'), 0644)
+	return os.WriteFile(p, data, 0644)
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────
