@@ -787,14 +787,32 @@ func TestSeal_WriteV2Sidecar(t *testing.T) {
 }
 
 // An empty run-state must never produce "./.v2.json" in the process's working
-// directory.
+// directory, and must RAISE.
 //
-// DISPUTE (recorded, see the report): the scaffold says V2SidecarPath returns
-// "" for an empty run-state and that callers must treat that as "no sidecar is
-// written", but it does not say whether WriteV2Sidecar("") errors or is a
-// silent no-op. The seal therefore pins only the part the scaffold does state —
-// the file must not appear — and accepts either outcome, so that P4's ruling
-// can land without rewriting this row.
+// P4 RULING ON DISPUTE 3 (adjudicate(B1)): WriteV2Sidecar("") ERRORS. It is not
+// a silent no-op. The seal author correctly pinned only the stated hazard —
+// that no file appears — and left the outcome open; this row now also pins the
+// outcome, because a ruling nothing asserts is not a ruling.
+//
+// The reason, and why the two scaffold comments that look opposed are not:
+// V2SidecarPath's "callers must treat [the empty string] as no sidecar is
+// written" governs the CALLER's guard, and WriteV2Sidecar's own contract says
+// it is written "only when the contract is ContractV2 AND -out was given". An
+// empty run-state means -out was absent, so a correct caller never reaches this
+// function at all. Arriving here is therefore a broken guard — a programming
+// error — and this scaffold has already ruled how those are handled, on
+// LiftPanelFromV1's unreachable arm: "an unreachable arm that raises is the
+// difference between a contract and a coincidence".
+//
+// A silent no-op is the worse half of the choice on consequences too. The
+// scaffold's own reason for making a write failure hard applies verbatim: "a
+// silently missing sidecar is indistinguishable at the consumer from an old
+// run, which routes it down the in-flight mirror path and loses the v2 facts".
+// Absorbing "" reproduces exactly that state, and hides a caller-side drift
+// (someone flipped -contract-version 2 and forgot -out) behind exit 0.
+//
+// CONSEQUENCE FOR THE BODY: return an error naming the empty run-state. Do NOT
+// create the file, and do NOT return nil.
 func TestSeal_WriteV2Sidecar_EmptyRunStateWritesNoFile(t *testing.T) {
 	defer red(t)
 
@@ -805,8 +823,14 @@ func TestSeal_WriteV2Sidecar_EmptyRunStateWritesNoFile(t *testing.T) {
 	_ = os.Remove(stray)
 	t.Cleanup(func() { _ = os.Remove(stray) })
 
-	_ = WriteV2Sidecar("", cls)
-	if _, err := os.Stat(stray); err == nil {
+	err := WriteV2Sidecar("", cls)
+	if err == nil {
+		t.Error("WriteV2Sidecar(\"\") returned nil. Per the P4 ruling above it must raise: reaching it with an empty run-state means the caller's `ContractV2 && -out` guard is broken, and a silent no-op leaves the consumer unable to tell a missing sidecar from an old run.")
+	}
+
+	// The stated hazard, unchanged and still the load-bearing half: whatever the
+	// outcome, no sidecar may appear in the working directory.
+	if _, statErr := os.Stat(stray); statErr == nil {
 		t.Errorf("WriteV2Sidecar(\"\") created %q in the package directory — writing \"./.v2.json\" would be worse than nothing", stray)
 	}
 }

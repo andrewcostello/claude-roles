@@ -997,9 +997,14 @@ func TestSeal_RollbackMidRun_EmissionCarriesNoStateBetweenContracts(t *testing.T
 //   - the SIDECAR survives, byte for byte, because nothing else writes that
 //     file. This is real and it is the whole reason for the separate file.
 //   - the v1 loss is RECORDED, not asserted away, and the recording is
-//     non-vacuous: v1KeysLost must be non-empty, which is also what proves the
-//     pipeline actually ran. A SidecarSurvives that executed nothing would
-//     return "survived" trivially.
+//     non-vacuous.
+//
+// P4 CORRECTION (adjudicate(B1)): the non-vacuity was originally claimed to
+// follow from v1KeysLost being non-empty. It does not — a body that executes
+// nothing returns "survived" trivially AND can return a non-empty list it never
+// measured, and I confirmed by construction that such a stub passed this row as
+// written. Non-vacuity now rests on the proof-of-execution block below, which
+// requires the RUN-STATE itself to have been destroyed by the call. See there.
 //
 // §3.3's stated reason for the sidecar — "an unknown key would be silently
 // dropped" — understates it. KNOWN keys are dropped too: cmd/gates declares
@@ -1012,6 +1017,15 @@ func TestSeal_SidecarSurvives_AndRecordsTheV1Loss(t *testing.T) {
 	dir := t.TempDir()
 	runState := filepath.Join(dir, "run.json")
 	seedRunState(t, runState)
+
+	// The classification as the PINNED producer wrote it, captured before the
+	// call. This is the baseline for the proof-of-execution block below, and it
+	// is read from the run-state rather than taken from SidecarSurvives, so
+	// nothing the function returns can influence it.
+	before := classificationKeys(t, runState)
+	if len(before) < 10 {
+		t.Fatalf("the seeded classification has only %d keys (%v) — the fixture is not exercising the loss", len(before), before)
+	}
 
 	sidecar := V2SidecarPath(runState)
 	sidecarBytes := []byte(`{"schema_version":1,"response":{"response_version":1,"computed_config_sha256":"` +
@@ -1035,12 +1049,41 @@ func TestSeal_SidecarSurvives_AndRecordsTheV1Loss(t *testing.T) {
 		t.Errorf("the sidecar's bytes changed. Identical, not merely parseable, is the contract.\nbefore: %s\nafter:  %s", sidecarBytes, after)
 	}
 
-	// NON-VACUITY: an implementation that ran nothing would report survival
-	// trivially. A non-empty loss list is the proof that the pipeline executed
-	// AND that gates really does destroy classification keys.
 	if len(lost) == 0 {
 		t.Fatal("v1KeysLost is empty. Either the pipeline did not run — in which case \"survived\" means nothing — or cmd/gates has been fixed, which is good news that this seal is required to notice.")
 	}
+
+	// PROOF OF EXECUTION — P4 AMENDMENT (adjudicate(B1)).
+	//
+	// This row previously rested its non-vacuity on `len(lost) != 0`, on the
+	// stated grounds that "a SidecarSurvives that executed nothing would return
+	// survived trivially". That reasoning does not hold, and I verified it does
+	// not by building the stub: a body that stats the run-state, executes
+	// NOTHING, and returns a statically-derived loss list — read off cmd/gates'
+	// struct declaration, or simply hardcoded — passes every assertion above.
+	// It reports survived=true precisely BECAUSE it ran nothing, so the
+	// sidecar's bytes are trivially unchanged, and its non-empty `lost` clears
+	// the guard. The seal certified a survival it never observed.
+	//
+	// So the proof is taken from the RUN-STATE, which only actually running the
+	// frozen pipeline can mutate. This is deliberately an assertion about an
+	// OBSERVABLE EFFECT and not about how the body finds the consumer binaries
+	// (see the P4 ruling on dispute 4): pinning ../gates/gates here would
+	// over-constrain the route while still not proving anything was executed,
+	// whereas a destroyed run-state proves execution by whatever route.
+	stateAfter := classificationKeys(t, runState)
+	actuallyLost := containsAll(stateAfter, before)
+	if len(actuallyLost) == 0 {
+		t.Fatalf("SidecarSurvives reported lost=%v, but the run-state STILL CARRIES all %d classification keys (%v).\n"+
+			"Nothing was executed, so \"survived\" is a claim about a rewrite that never happened. v1KeysLost must be MEASURED from this call, not derived from a struct declaration or hardcoded.\n"+
+			"(If instead cmd/gates has genuinely been fixed, that is the good news this seal exists to catch — update recordedV1KeysLost and say which unit did it.)",
+			lost, len(before), stateAfter)
+	}
+	if miss := containsAll(actuallyLost, lost); len(miss) > 0 {
+		t.Errorf("SidecarSurvives reported %v as lost, but the run-state still carries %v after the call.\n"+
+			"The reported loss must be what THIS call destroyed; a key named here that survived in the file is a list assembled from somewhere other than the measurement.", lost, miss)
+	}
+
 	for _, k := range recordedV1KeysLost {
 		if len(containsAll(lost, []string{k})) > 0 {
 			t.Errorf("v1KeysLost %v no longer contains %q.\n"+
