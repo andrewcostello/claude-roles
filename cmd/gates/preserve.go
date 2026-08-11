@@ -1,18 +1,23 @@
 // Run-state preservation for cmd/gates — unit G1.
 //
-// SCAFFOLD: CONTRACTS AND STUBS ONLY. The doc comments are the spec. Every
-// function that performs the fix returns errNotImplemented; the three things
-// implemented here are named, with their reasons, under "WHAT IS IMPLEMENTED"
-// below.
+// BODY: THE THREE STUBS ARE IMPLEMENTED AND mergeGates IS WIRED. The doc
+// comments below are the contract this file was built to, and they are left
+// standing because they are the specification and the argument, not a status
+// report. Where the scaffold described its own unfinished state, the text has
+// been corrected in place and the correction says so. Every main.go line number
+// in this file cites the PRE-G1 shape of mergeGates unless it says otherwise;
+// those citations are how the licence was DERIVED and they are kept for that
+// reason, not as a map of the current file. mergeGates is now main.go:1331.
 //
-// ─── THE DEFECT ──────────────────────────────────────────────────────────────
+// ─── THE DEFECT (PRE-G1; FIXED BY THIS FILE) ─────────────────────────────────
 //
-// mergeGates (main.go:1316-1335) round-trips the whole run-state through this
-// package's closed structs: readRunState → json.Unmarshal into RunState
-// (main.go:1248-1262) → json.MarshalIndent (main.go:1329) → os.WriteFile. Any
-// JSON path those structs do not declare is silently dropped, and the run-state
-// is a SHARED blackboard: cmd/classify writes the classification, cmd/gates and
-// cmd/iterate read it, and the driver reads it after both.
+// mergeGates (main.go:1316-1335, before this unit) round-tripped the whole
+// run-state through this package's closed structs: readRunState →
+// json.Unmarshal into RunState (main.go:1248-1262) → json.MarshalIndent
+// (main.go:1329) → os.WriteFile. Any JSON path those structs do not declare was
+// silently dropped, and the run-state is a SHARED blackboard: cmd/classify
+// writes the classification, cmd/gates and cmd/iterate read it, and the driver
+// reads it after both.
 //
 // MEASURED IN THIS WORKTREE at scaffold time — not inferred from the structs,
 // and not copied from B1's note. The pinned cmd/classify/classify was run on
@@ -120,10 +125,11 @@
 // preserves unknown keys, zero values and number literals without knowing what
 // they are.
 //
-// ─── WHAT IS IMPLEMENTED, AND WHY ────────────────────────────────────────────
+// ─── WHAT THE SCAFFOLD IMPLEMENTED, AND WHY ──────────────────────────────────
 //
-// The rule for this scaffold is stubs only, excepting anything whose absence
-// would make the contract untestable. Three things qualify:
+// Kept because it records why the measuring instrument could not be left to the
+// seal author. The rule for the scaffold was stubs only, excepting anything
+// whose absence would make the contract untestable. Three things qualified:
 //
 //   - Diverge and its walk. This is the MEASURING INSTRUMENT, and it is what
 //     the fidelity property MEANS. Stubbed, "what exactly is preserved" stays
@@ -139,19 +145,26 @@
 //   - JSONPath's rendering and prefix test, because Diverge cannot report
 //     anything without them.
 //
-// Everything that performs the fix — LoadRunStateDocument, ApplyGateResults,
-// VerifyPreservation — returns errNotImplemented.
+// CORRECTED BY THE BODY: the three functions that perform the fix —
+// LoadRunStateDocument, ApplyGateResults, VerifyPreservation — no longer return
+// errNotImplemented. Each is implemented against the contract in its own doc
+// comment. errNotImplemented itself is kept: several seal rows assert that a
+// refusal is NOT that marker, which is what stops "it errors on bad input" being
+// satisfied by a function that never looked at its input.
 //
-// ─── WHAT THIS SCAFFOLD DELIBERATELY DOES NOT DO ─────────────────────────────
+// ─── WIRING ──────────────────────────────────────────────────────────────────
 //
-// CHOICE: mergeGates is NOT rewired to call ApplyGateResults. Rejected
-// alternative: wire it now, so the seam is visible. Wiring a raising stub into
-// the one function that writes the run-state takes all 63 green rows in this
-// package red immediately, and a scaffold whose job is to move no row cannot
-// start by moving 63. The body performs the wiring. The seal author can still
-// write a RED end-to-end seal today — build cmd/gates from source to a scratch
-// path, run it over a seeded run-state, and assert preservation; that seal is
-// red until the body wires it, which is exactly the seal that is wanted.
+// CORRECTED BY THE BODY: mergeGates IS now wired to ApplyGateResults
+// (main.go:1331). The scaffold's reason for not wiring it stands as written and
+// is why the wiring landed here instead: wiring a raising stub into the one
+// function that writes the run-state would have taken all 63 green rows in this
+// package red at the scaffold commit, and a scaffold whose job is to move no row
+// cannot start by moving 63.
+//
+// The licence mergeGates hands to ApplyGateResults is the enumeration below,
+// constructed explicitly: one EditKindSetGateResult per result, then one
+// EditKindSetUpdatedAt. The pre-G1 assignments those replace are cited at the
+// enumeration.
 package main
 
 import (
@@ -159,6 +172,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -279,11 +293,17 @@ func (f Fidelity) String() string {
 //
 // The enumeration is EXHAUSTIVE and it is derived from the source, not from
 // intent: the only assignments to the decoded run-state anywhere in this
-// package are main.go:1322 (`state.Gates = map[string]Gate{}` when absent),
+// package were main.go:1322 (`state.Gates = map[string]Gate{}` when absent),
 // main.go:1325 (`state.Gates[r.Key] = r.Outcome`) and main.go:1327
-// (`state.UpdatedAt = ...`). Nothing else in cmd/gates mutates the document.
+// (`state.UpdatedAt = ...`). Nothing else in cmd/gates mutated the document.
 // The 18 added paths and 1 changed path in the measurement above are all
 // accounted for by exactly these.
+//
+// AFTER G1 those three assignments are the three edits mergeGates builds at
+// main.go:1342-1344, and the derivation is unchanged: the licence is still
+// exactly what the old code did, now stated rather than inferred. That is the
+// property to hold when this list is next touched — it enumerates what gates
+// MAY change, and it is only sound while it is still what gates DOES change.
 //
 // Anything else is a VIOLATION and must raise. "Pass it through" is not
 // available: a divergence this list does not name is either a bug in the editor
@@ -770,9 +790,34 @@ func addLeaf(out map[string]flatLeaf, at JSONPath, literal string) error {
 // document that gates accepts today must still be accepted, or G1 has changed
 // what gates decides, which is the one thing it may not do.
 //
-// STUB.
+// IMPLEMENTED.
+//
+// CHOICE: this does NOT delegate to readRunState, and readRunState is NOT
+// rewritten to delegate to this. Rejected both, for the same reason: the seal
+// for this function uses readRunState as its INDEPENDENT oracle — "a document
+// readRunState accepts must still be accepted, and one it rejects must still be
+// rejected" — and a function that is its own oracle certifies nothing. The
+// duplication is six lines of plumbing; the thing that could actually drift, the
+// rule set, is validateRunState, and both call THAT one function.
 func LoadRunStateDocument(path string) (raw []byte, state *RunState, err error) {
-	return nil, nil, fmt.Errorf("LoadRunStateDocument(%q): must read the file once, return its bytes verbatim, and return the same bytes decoded and passed through validateRunState: %w", path, errNotImplemented)
+	// #nosec G304 -- path is the -run-state flag, exactly as in readRunState.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var s RunState
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, nil, err
+	}
+	// The EXISTING validator, called rather than re-stated. G1 does not tighten
+	// it and does not loosen it: a document gates accepts today must still be
+	// accepted, or G1 has changed what gates decides.
+	if problems := validateRunState(&s); len(problems) > 0 {
+		return nil, nil, fmt.Errorf("run state is not valid: %s", strings.Join(problems, "; "))
+	}
+	// `data` is returned verbatim — not re-marshalled from `s`, which is the
+	// round trip this whole unit exists to remove.
+	return data, &s, nil
 }
 
 // ApplyGateResults produces the new run-state document: the original, with
@@ -827,9 +872,99 @@ func LoadRunStateDocument(path string) (raw []byte, state *RunState, err error) 
 // recommendation for the record: it should fail, and the change should be its
 // own unit with its own differential run.
 //
-// STUB.
+// IMPLEMENTED.
 func ApplyGateResults(original []byte, edits []Edit) ([]byte, error) {
-	return nil, fmt.Errorf("ApplyGateResults over %d bytes and %d edit(s): must merge the licensed edits into the original document and preserve every other JSON path at %s: %w", len(original), len(edits), FidelityPathwise, errNotImplemented)
+	// THE LICENCE FIRST, before a single byte is touched. An edit list that does
+	// not validate is not a document problem, and refusing before the merge means
+	// a rejected list can never leave a half-edited document behind — which is
+	// also how "returns NO bytes on failure" is made structural rather than
+	// remembered at each return.
+	for i, e := range edits {
+		if err := e.Validate(); err != nil {
+			return nil, fmt.Errorf("edit %d: %w", i, err)
+		}
+	}
+
+	// THE TOP LEVEL AS RAW MEMBERS. Every member this function does not name
+	// stays a json.RawMessage and is re-emitted as the bytes it arrived as.
+	// `classification` is one of those members, and nothing below decodes it:
+	// anything that decodes it can lose it.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(original, &top); err != nil {
+		return nil, fmt.Errorf("original document is not a JSON object: %w", err)
+	}
+
+	if len(edits) == 0 {
+		// A real state — gates ran no gate — and its licensed set is empty:
+		// `gates` is not created and updated_at is not stamped. Returning the
+		// original bytes IS the success here. Re-emitting them would be a change
+		// nobody licensed, and VerifyPreservation is what tells this apart from a
+		// merge that silently did nothing (which is why the edit list is an input
+		// to verification and not an assumption).
+		out := make([]byte, len(original))
+		copy(out, original)
+		return out, nil
+	}
+
+	// `gates` ONE LEVEL FURTHER, AND NO FURTHER, so one gate result can be
+	// replaced without disturbing its siblings. Each sibling stays a RawMessage.
+	var gates map[string]json.RawMessage
+	if rawGates, ok := top["gates"]; ok {
+		if err := json.Unmarshal(rawGates, &gates); err != nil {
+			return nil, fmt.Errorf("run-state member `gates` is not a JSON object: %w", err)
+		}
+	}
+	gatesTouched := false
+
+	for i, e := range edits {
+		switch e.Kind {
+		case EditKindSetGateResult:
+			if gates == nil {
+				// mergeGates creates the member when it is absent
+				// (main.go:1321-1323); this is that create, and it is why
+				// AllowedPrefixes licenses `gates` unconditionally.
+				gates = map[string]json.RawMessage{}
+			}
+			b, err := json.Marshal(e.Result)
+			if err != nil {
+				return nil, fmt.Errorf("edit %d: encode gate %q: %w", i, e.GateKey, err)
+			}
+			gates[e.GateKey] = b
+			gatesTouched = true
+		case EditKindSetUpdatedAt:
+			b, err := json.Marshal(e.UpdatedAt)
+			if err != nil {
+				return nil, fmt.Errorf("edit %d: encode updated_at: %w", i, err)
+			}
+			top["updated_at"] = b
+		default:
+			// Unreachable while Edit.Validate above stays exhaustive. Kept, and
+			// kept as a refusal that NAMES the kind, because the two switches
+			// drifting apart is the realistic failure and "pass the mutation
+			// through" is not an available answer to it.
+			return nil, fmt.Errorf("edit %d: kind %s reached the editor's dispatch without being licensed by Edit.Validate; the two switches have drifted and refusing is the only safe answer", i, e.Kind)
+		}
+	}
+
+	if gatesTouched {
+		// Only re-encoded when an edit actually wrote a gate. An untouched
+		// `gates` keeps its original bytes like any other member.
+		b, err := json.Marshal(gates)
+		if err != nil {
+			return nil, fmt.Errorf("encode `gates`: %w", err)
+		}
+		top["gates"] = b
+	}
+
+	// Two-space indent and a trailing newline, matching main.go:1329 and :1335 —
+	// see the CHOICE above. Note what this does NOT do: it never re-marshals a
+	// decoded value, so a number reaches the output as the literal it arrived as
+	// and 9007199254740993 does not become 9007199254740992.
+	out, err := json.MarshalIndent(top, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode run state: %w", err)
+	}
+	return append(out, '\n'), nil
 }
 
 // VerifyPreservation checks a produced document against the original at the
@@ -858,12 +993,113 @@ func ApplyGateResults(original []byte, edits []Edit) ([]byte, error) {
 // read set from the consumers' source instead of from its own emitter. A seal
 // can call these two against each other; it cannot get inside one function.
 //
-// STUB.
+// IMPLEMENTED.
 func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity) (violations []Divergence, err error) {
 	if lerr := level.Validate(); lerr != nil {
 		return nil, lerr
 	}
-	return nil, fmt.Errorf("VerifyPreservation at %s over %d edit(s): must report every divergence outside AllowedPrefixes(edits) as a violation, and must distinguish \"could not check\" from \"nothing to report\": %w", level, len(edits), errNotImplemented)
+
+	// THE LEVEL DISPATCH, exhaustive, before any work. Validate above has already
+	// refused the unset and the unrecognised; what is left is the three named
+	// levels, and they are not all checkable here.
+	countChanged := true
+	switch level {
+	case FidelityPathwise:
+		// Normative. Every divergence counts: removed, added AND changed.
+	case FidelityKeySet:
+		// The path set only. Explicitly NOT normative — a body that re-attached
+		// every lost key with a null satisfies it — and implemented only so that
+		// a caller who names it gets what the constant says rather than a
+		// silently stricter answer.
+		countChanged = false
+	case FidelityByteIdentical:
+		// REFUSED, and refused in the ERROR channel, which is the honest place
+		// for it: this build cannot perform the check. The constant's own doc
+		// says why — encoding/json cannot express byte-identity, and scoping it
+		// to the edited spans needs an order-preserving document model this
+		// package does not have. Returning an empty violation list here would
+		// report "checked and clean" for a check that never ran.
+		return nil, fmt.Errorf("cannot check at %s: this build has no order-preserving JSON document model, and encoding/json cannot express byte-identity — %s is the normative level for cmd/gates", level, FidelityPathwise)
+	default:
+		// Unreachable while Fidelity.Validate stays exhaustive.
+		return nil, fmt.Errorf("cannot check at %s: the level dispatch and Fidelity.Validate have drifted apart", level)
+	}
+
+	// THE LICENSED SET COMES FROM THE EDIT LIST THE CALLER INTENDED, never from
+	// the produced document and never from the divergences found — deriving it
+	// from what happened would certify whatever happened.
+	prefixes, perr := AllowedPrefixes(edits)
+	if perr != nil {
+		return nil, fmt.Errorf("cannot check: the licensed path set does not build from the edit list: %w", perr)
+	}
+	container, subtrees, serr := splitLicence(prefixes)
+	if serr != nil {
+		return nil, serr
+	}
+
+	ds, derr := Diverge(original, produced)
+	if derr != nil {
+		// "Could not check", not "nothing to report". A document that does not
+		// parse is the most complete failure of preservation available.
+		return nil, fmt.Errorf("cannot check: %w", derr)
+	}
+
+	for _, d := range ds {
+		if !countChanged && d.Kind == DivergenceChanged {
+			continue
+		}
+		if licensedDivergence(d.At, container, subtrees) {
+			continue
+		}
+		violations = append(violations, d)
+	}
+	return violations, nil
+}
+
+// splitLicence separates AllowedPrefixes' flat result into the two licences that
+// differ in KIND, which a flat prefix list cannot express.
+//
+// This is the distinction row 6 of the seals turns on, and getting it wrong in
+// the obvious direction is the whole bug: `gates` is licensed because mergeGates
+// CREATES the member, so it is licensed AS A CONTAINER — at exactly its own
+// path. Treating it as a subtree prefix forgives every divergence beneath it,
+// including a gate result that vanished, and a gate that vanished from the map
+// is indistinguishable at the reader from one that never ran.
+//
+// It re-checks AllowedPrefixes' documented shape rather than assuming it. The
+// coupling is real (this function knows the container is element 0), so it is
+// checked: an empty JSONPath or a differently-shaped first element would
+// otherwise silently make the container licence into a whole-document licence.
+func splitLicence(prefixes []JSONPath) (container bool, subtrees []JSONPath, err error) {
+	if len(prefixes) == 0 {
+		// The empty edit list. Nothing is licensed, not even `gates` — which is
+		// what AllowedPrefixes says its licensed set is.
+		return false, nil, nil
+	}
+	want := PathSegment{Key: "gates"}
+	if len(prefixes[0]) != 1 || prefixes[0][0] != want {
+		return false, nil, fmt.Errorf("cannot check: AllowedPrefixes returned %s as its first prefix, and this checker reads that slot as the unconditional `gates` CONTAINER licence; the two have drifted and continuing would apply the container licence to the wrong path", prefixes[0])
+	}
+	return true, prefixes[1:], nil
+}
+
+// licensedDivergence applies the two licences.
+//
+// The container licence is an EXACT path match and deliberately not a prefix
+// test: `gates` stops being a leaf the moment a gate is added to an empty `{}`,
+// which is a removal AT `gates` and is licensed, while a removal UNDER
+// `gates.<a-key-no-edit-named>` is a violation. Only the per-edit prefixes
+// license a subtree, and EditKindSetGateResult covers create and replace only.
+func licensedDivergence(at JSONPath, container bool, subtrees []JSONPath) bool {
+	if container && len(at) == 1 && at[0] == (PathSegment{Key: "gates"}) {
+		return true
+	}
+	for _, p := range subtrees {
+		if at.HasPrefix(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── findings and rulings this scaffold records ──────────────────────────────
@@ -990,6 +1226,22 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 // green. That trades a fixed production for a green suite, and it is the exact
 // trade this repo has already been burned by twice.
 //
+// WHAT THE BODY DID, AND WHY IT IS NOT THE ABOVE FAILURE MODE. The body did NOT
+// rebuild. TestSeal_G1_TrackedBinary_IsRebuiltFromTheFixedSource is therefore
+// the one row left RED, and that is the point: it is now in the exact state its
+// own text calls "source fixed, binary NOT rebuilt", with row 11 GREEN beside
+// it, and the pair says precisely what is wrong. The refused trade is leaving
+// the binary stale and the suite GREEN; a red row that names the missing rebuild
+// is the opposite of that.
+//
+// The reason is sequencing, not preference: the rebuild fires the two cmd/classify
+// rows above, and a body author may not edit a seal. Doing the rebuild here would
+// mean landing a commit that knowingly takes two green rows in another module red
+// with no amendment, which is a worse state than one red row that says why. The
+// rebuild plus those two amendments is one commit and it belongs to whoever may
+// make it. UNTIL THAT COMMIT LANDS, PRODUCTION STILL HAS THE DEFECT — the fix is
+// in the source and every documented invocation execs the artifact.
+//
 // (5) OUT OF SCOPE, RECORDED SO IT IS NOT LOST. cmd/gates writes gate keys of
 // the form "<gate>:<module-rel>" — "build:." in the measurement — but
 // config/run-state.schema.json constrains `gates` with propertyNames.enum to
@@ -997,3 +1249,48 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 // schema rejects. G1 preserves that behaviour exactly, because changing it
 // would change what gates writes. It is a real divergence between the schema
 // and both implementations and it wants its own unit.
+//
+// ─── findings the BODY records ───────────────────────────────────────────────
+//
+// (6) BYTE-IDENTITY OF UNTOUCHED SUBTREES IS FURTHER FROM FREE THAN EITHER THE
+// SCAFFOLD OR THE SEALS SAY, and the second reason is worse than the first.
+//
+// FidelityByteIdentical's doc comment calls the sub-property "free under the
+// adopted design"; the seal author's dispute (ii) corrects that to "not quite",
+// on the grounds that json.MarshalIndent runs json.Indent over the whole buffer
+// so an untouched RawMessage is still RE-INDENTED — a no-op on this document
+// only because the producer already emits two-space indent.
+//
+// There is a second mechanism, and unlike re-indentation it changes bytes no
+// matter how the producer formats: json.Marshal COMPACTS every json.RawMessage
+// it emits, with escapeHTML ON. MEASURED, by running ApplyGateResults over a
+// document whose untouched `note` member is "a < b && c > d":
+//
+//	in:  "a < b && c > d"
+//	out: "a < b && c > d"
+//
+// The member was never decoded, never named by an edit, and its bytes changed
+// anyway. FidelityPathwise is UNAFFECTED and VerifyPreservation reports zero
+// violations on that pair — Diverge decodes and re-encodes both sides through
+// one encoder, so the two literals compare equal, which is the same reason its
+// own doc comment gives for HTML escaping showing up in a Divergence report.
+// The normative property holds; the byte-identity sub-property does not, and
+// nothing in this repo should be built on it.
+//
+// NOT A BEHAVIOUR CHANGE: the pre-G1 json.MarshalIndent(state) escaped HTML in
+// string fields identically, so gates has always written the \u form. Measured
+// on the seal fixture: the pinned producer emits no '<', '>' or '&' at all, so
+// this is unexercised in production today and is recorded, not fixed.
+//
+// (7) LoadRunStateDocument CLOSES THE WINDOW INSIDE mergeGates, NOT THE WHOLE
+// ONE, and the residue should not be mistaken for closed.
+//
+// The contract names two reads per invocation — prepare() at main.go:253 and
+// mergeGates minutes later — and mergeGates now validates and edits ONE set of
+// bytes, which is the window it was asked to close. The prepare()→mergeGates
+// window is still open: the document gates planned against is still not
+// provably the document it merges into. Closing it means plumbing the raw bytes
+// from prepare() through run() and finish() into mergeGates, which changes the
+// shape of gates' control flow rather than what it writes, and B1's differential
+// exists to hold that shape still. Recorded for whoever takes it; it is not a
+// preservation bug, it is a staleness one.
