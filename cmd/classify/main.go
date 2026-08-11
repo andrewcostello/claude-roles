@@ -170,7 +170,11 @@ type options struct {
 	out        string
 	json       bool
 	noGit      bool
-	args       []string
+	// contractVersion is the RAW flag value, validated in run() rather than
+	// here. Parsing it in parseFlags would have to log.Fatalf, which exits 1;
+	// a mistyped contract is INVALID_INPUT and owes the caller exit 3.
+	contractVersion string
+	args            []string
 }
 
 func main() {
@@ -178,6 +182,11 @@ func main() {
 		switch os.Args[1] {
 		case "init":
 			os.Exit(cmdInit(os.Args[2:]))
+		case probeSubcommand:
+			// Dispatched here, ahead of flag parsing, so the probe cannot be
+			// perturbed by any other argv and can answer at preflight — where
+			// there is no config, no repo and no stdin to work with.
+			os.Exit(cmdCapabilities(os.Args[2:]))
 		case "help", "-h", "--help":
 			usage()
 			os.Exit(0)
@@ -191,12 +200,13 @@ func usage() {
 
   classify [flags] [diff-file]   classify a diff (reads stdin when no file given)
   classify init [-worktree D]    scaffold this project's .claude/risk-paths.json
+  classify capabilities          report what this binary can do, as JSON
 
 The rule table is PROJECT-SPECIFIC and lives in the project, not in this repo:
 it names one repository's money, auth and client paths. Applied to a different
 repository it would classify confidently and wrongly, so there is no default.
 
-Exit codes: 0 classified, 3 INVALID_INPUT
+Exit codes: 0 classified, 3 INVALID_INPUT, 4 CAPABILITY_INCOMPLETE (probe only)
 `)
 }
 
@@ -208,24 +218,57 @@ func parseFlags() options {
 	outFlag := flag.String("out", "", "Run-state JSON to create or update. Preserves gates/rounds/pr written by other nodes.")
 	jsonFlag := flag.Bool("json", false, "Print the classification JSON to stdout instead of the report")
 	noGitFlag := flag.Bool("no-git", false, "Skip base/head resolution. For classifying a bare diff with no worktree.")
+	contractFlag := registerContractVersionFlag(flag.CommandLine)
 	flag.Parse()
 
 	log.SetFlags(0)
 	log.SetPrefix("classify: ")
 
 	return options{
-		configPath: *configFlag,
-		worktree:   *worktreeFlag,
-		base:       *baseFlag,
-		task:       *taskFlag,
-		out:        *outFlag,
-		json:       *jsonFlag,
-		noGit:      *noGitFlag,
-		args:       flag.Args(),
+		configPath:      *configFlag,
+		worktree:        *worktreeFlag,
+		base:            *baseFlag,
+		task:            *taskFlag,
+		out:             *outFlag,
+		json:            *jsonFlag,
+		noGit:           *noGitFlag,
+		contractVersion: *contractFlag,
+		args:            flag.Args(),
 	}
 }
 
+// registerContractVersionFlag registers -contract-version through the
+// capability registry rather than by calling flag.String here.
+//
+// That indirection is the point: it makes the capability observable BEFORE
+// flag.Parse runs, which the probe subcommand requires because it dispatches
+// ahead of flag parsing. It also means the probe's answer and the flag's
+// existence are the same fact.
+//
+// A nil registrar is not a silent default. It would mean this binary has no
+// -contract-version flag at all, so the only contract it could honour is the
+// compiled-in default, and saying so here keeps that an explicit value rather
+// than an empty string that ParseContractVersion would later reject with a
+// message about the operator's argv — which would name the wrong culprit.
+func registerContractVersionFlag(fs *flag.FlagSet) *string {
+	if contractFlagRegistrar == nil {
+		fallback := defaultContractVersion.String()
+		return &fallback
+	}
+	return contractFlagRegistrar.RegisterContractVersionFlag(fs)
+}
+
 func run(opts options) int {
+	// The contract is a genesis decision recorded by the caller, resolved once
+	// here and never inferred per-parse. It is validated before any work so a
+	// mistyped -contract-version costs nothing and is reported as the operator's
+	// argv problem it is.
+	contract, err := ParseContractVersion(opts.contractVersion)
+	if err != nil {
+		printInvalidInput(Repo{Worktree: opts.worktree}, []string{err.Error()})
+		return exitInvalid
+	}
+
 	cfgPath, ok := resolveConfigPath(opts)
 	if !ok {
 		printInvalidInput(Repo{Worktree: opts.worktree}, missingConfigMessage(opts.worktree))
@@ -244,8 +287,10 @@ func run(opts options) int {
 	}
 
 	cls := buildClassification(cfg, files, diff, repo, cfgPath)
-	emit(repo, cls, opts.json)
-	return persist(opts, repo, cls)
+	if err := emit(repo, cls, opts.json, contract); err != nil {
+		log.Fatalf("%v", err)
+	}
+	return persist(opts, repo, cls, contract)
 }
 
 // resolveConfigPath honours an explicit -config, else searches this project.
@@ -276,14 +321,30 @@ func buildClassification(cfg *Config, files []string, diff string, repo Repo, cf
 	return cls
 }
 
-func persist(opts options, repo Repo, cls *Classification) int {
+func persist(opts options, repo Repo, cls *Classification, contract ContractVersion) int {
 	if opts.out == "" {
 		return 0
 	}
+	// The shared run-state stays v1 under BOTH contracts. cmd/gates and
+	// cmd/iterate read it and are frozen; writing a v2 payload there would
+	// strand gates' changed_files dependency and iterate's severity floor. The
+	// v2 envelope lands in the sidecar and nowhere else.
 	if err := writeRunState(opts.out, opts.task, repo, cls); err != nil {
 		log.Fatalf("write run state %s: %v", opts.out, err)
 	}
 	log.Printf("run state written to %s", opts.out)
+
+	if contract == ContractV2 {
+		// Only under ContractV2 and only with -out: those two conditions are
+		// WriteV2Sidecar's stated guard, and this is the caller that owes it.
+		if err := WriteV2Sidecar(opts.out, cls); err != nil {
+			// A hard error, not a warning. A silently missing sidecar is
+			// indistinguishable at the consumer from an old run, which routes
+			// it down the in-flight mirror path and loses the v2 facts.
+			log.Fatalf("%v", err)
+		}
+		log.Printf("v2 sidecar written to %s", V2SidecarPath(opts.out))
+	}
 	return 0
 }
 
@@ -306,15 +367,25 @@ func validateInput(diff string, files []string, worktree, base string, noGit boo
 	return repo, problems
 }
 
-func emit(repo Repo, cls *Classification, asJSON bool) {
+// emit writes the machine payload for the contract in force, or the human
+// report, which is the same under both contracts.
+func emit(repo Repo, cls *Classification, asJSON bool, contract ContractVersion) error {
 	if !asJSON {
 		printReport(repo, cls)
-		return
+		return nil
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(cls); err != nil {
-		log.Fatalf("encode: %v", err)
+	// Exhaustive over the closed set, with no default arm falling through to
+	// v1: run() has already rejected anything outside it, and an arm that
+	// re-derived a default here would be a second place the contract is decided.
+	switch contract {
+	case ContractV1:
+		return EmitV1(os.Stdout, cls)
+	case ContractV2:
+		return EmitV2(os.Stdout, cls)
+	case ContractVersionUnset:
+		return fmt.Errorf("emit: contract is %s — nobody decided which wire to write", ContractVersionUnset)
+	default:
+		return fmt.Errorf("emit: contract %s is outside the closed set", contract)
 	}
 }
 
@@ -418,6 +489,11 @@ func loadConfig(p string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The digest the response wrapper echoes is over the bytes THIS PROCESS
+	// CONSUMED, so it is recorded here, at the read — not recomputed from the
+	// path at emission time, which would digest whatever is on disk then and
+	// would be a different claim.
+	unframedDigests.recordConfig(data)
 	return parseConfig(data)
 }
 
@@ -489,6 +565,7 @@ func readDiff(args []string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read diff %s: %w", args[0], err)
 		}
+		unframedDigests.recordDiff(data)
 		return string(data), nil
 	}
 	st, err := os.Stdin.Stat()
@@ -502,6 +579,9 @@ func readDiff(args []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read stdin: %w", err)
 	}
+	// Recorded on both branches, and on the exact bytes: the diff channel's
+	// digest must describe what was classified, whichever way it arrived.
+	unframedDigests.recordDiff(data)
 	return string(data), nil
 }
 

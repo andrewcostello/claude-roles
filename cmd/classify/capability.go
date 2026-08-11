@@ -10,9 +10,16 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
+	"sync"
 )
 
 // ─── the honesty mechanism ───────────────────────────────────────────────────
@@ -190,7 +197,37 @@ var requiredCapabilities = []string{
 // whether the corresponding registry variable is non-nil. It must not consult
 // build tags, version strings, flag registration state, or anything else.
 func probeCapabilities() Capabilities {
-	panic("B1: not implemented")
+	// Three nil checks and nothing else. No boolean literal, no build tag, no
+	// version string: installing the implementation IS the capability flip, so
+	// a later unit lands without editing this function and the probe cannot
+	// drift from what the binary can actually do.
+	return Capabilities{
+		FramedAuthoritativeStdin: framedStdinReader != nil,
+		DualDigestEcho:           digestSource != nil,
+		ContractVersionFlag:      contractFlagRegistrar != nil,
+	}
+}
+
+// capabilityValue answers the probe's tuple by name, so Missing is computed
+// from the same booleans the report carries rather than from a second set of
+// conditions that could disagree with them.
+//
+// An unrecognised name is reported ABSENT. That is the only fail-closed answer
+// available to a function that cannot raise: a capability nobody can evaluate
+// must fail REQUIRED preflight, never pass it. If requiredCapabilities grows,
+// the new name lands in Missing until it is wired here — loudly, and in the
+// safe direction.
+func capabilityValue(caps Capabilities, name string) bool {
+	switch name {
+	case "framed_authoritative_stdin":
+		return caps.FramedAuthoritativeStdin
+	case "dual_digest_echo":
+		return caps.DualDigestEcho
+	case "contract_version_flag":
+		return caps.ContractVersionFlag
+	default:
+		return false
+	}
 }
 
 // buildCapabilityReport assembles the full report, including ContractVersions
@@ -198,7 +235,33 @@ func probeCapabilities() Capabilities {
 // intersected with the false booleans, in requiredCapabilities order so the
 // output is deterministic and goldenable).
 func buildCapabilityReport() CapabilityReport {
-	panic("B1: not implemented")
+	caps := probeCapabilities()
+
+	// requiredCapabilities order, so the output is deterministic and goldenable.
+	// make(...,0,...) and not a nil slice: an empty Missing must marshal as [],
+	// never as null.
+	missing := make([]string, 0, len(requiredCapabilities))
+	for _, name := range requiredCapabilities {
+		if !capabilityValue(caps, name) {
+			missing = append(missing, name)
+		}
+	}
+
+	// Derived from the closed set ParseContractVersion accepts, not written out
+	// by hand, so the probe cannot advertise a contract the binary rejects.
+	versions := make([]int, 0, len(contractVersionSet))
+	for _, v := range contractVersionSet {
+		versions = append(versions, int(v))
+	}
+	sort.Ints(versions)
+
+	return CapabilityReport{
+		ProbeVersion:     probeVersion,
+		Producer:         "cmd/classify",
+		Capabilities:     caps,
+		ContractVersions: versions,
+		Missing:          missing,
+	}
 }
 
 // cmdCapabilities implements the probe subcommand.
@@ -222,11 +285,126 @@ func buildCapabilityReport() CapabilityReport {
 // `case probeSubcommand: os.Exit(cmdCapabilities(os.Args[2:]))`. That wiring is
 // the body author's, not the scaffold's.
 func cmdCapabilities(args []string) int {
-	panic("B1: not implemented")
+	if len(args) != 0 {
+		// Nothing on stdout. A probe that tolerated stray argv would let a
+		// caller believe it had asked something it had not.
+		fmt.Fprintf(os.Stderr, "classify %s takes no arguments (got %q). The contractual invocation is exactly `classify %s`.\n",
+			probeSubcommand, args, probeSubcommand)
+		return exitInvalid
+	}
+
+	rep := buildCapabilityReport()
+	if err := writeCapabilityReport(os.Stdout, rep); err != nil {
+		// Not log.Fatalf: the exit code is the contract, and an os.Exit(1) from
+		// a logger would be an uncontracted fourth outcome. A stdout that
+		// cannot be written is an input problem on the caller's side, and
+		// minting a fifth exit code for it would change this producer's
+		// contractual codes for a case where the caller has already lost the
+		// pipe it would read them on.
+		fmt.Fprintf(os.Stderr, "classify %s: write report: %v\n", probeSubcommand, err)
+		return exitInvalid
+	}
+
+	// The biconditional. The report is written on BOTH paths — naming which
+	// capability is absent is the entire point of the incomplete exit code.
+	if len(rep.Missing) > 0 {
+		return exitCapabilityIncomplete
+	}
+	return 0
 }
 
 // writeCapabilityReport encodes r to w. Split out so a seal can assert the
 // exact bytes without running the exit-code path.
 func writeCapabilityReport(w io.Writer, r CapabilityReport) error {
-	panic("B1: not implemented")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r)
+}
+
+// ─── what unit B1's body installs ────────────────────────────────────────────
+
+// b1FlagRegistrar registers -contract-version on behalf of unit B1.
+//
+// It exists as a type rather than as a closure because the registry holds
+// interface values and the probe's answer is "is this non-nil": a typed empty
+// struct is the smallest thing that can be installed and named in a failure
+// message.
+type b1FlagRegistrar struct{}
+
+func (b1FlagRegistrar) RegisterContractVersionFlag(fs *flag.FlagSet) *string {
+	return fs.String(flagContractVersion, defaultContractVersion.String(),
+		"Classification wire contract to emit: 1 (the legacy envelope every frozen consumer reads) or 2 (the canonical envelope, written to the <run-state>.v2.json sidecar)")
+}
+
+// unframedDigestSource is B1's DigestSource: SHA-256 over the bytes THIS
+// process consumed on the unframed path — the config file read at main.go:417
+// and the diff read at main.go:486.
+//
+// It records rather than recomputes. Re-reading the config from its path at
+// emission time would digest whatever is on disk THEN, which is a different
+// claim from "these are the bytes I classified" and is exactly the gap an
+// attacker who can rewrite a file between the two reads would use. Unit B2
+// replaces this with a source over the framed preimages; the recording
+// discipline is what survives the swap.
+type unframedDigestSource struct {
+	mu        sync.Mutex
+	config    []byte
+	diff      []byte
+	sawConfig bool
+	sawDiff   bool
+}
+
+// recordConfig and recordDiff copy, because the caller owns its buffer and the
+// digest must describe the bytes as they were consumed.
+func (s *unframedDigestSource) recordConfig(b []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config = append([]byte(nil), b...)
+	s.sawConfig = true
+}
+
+func (s *unframedDigestSource) recordDiff(b []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.diff = append([]byte(nil), b...)
+	s.sawDiff = true
+}
+
+func (s *unframedDigestSource) ConsumedDigests() (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A channel this process did not consume raises. It never returns "" — an
+	// empty digest in the wrapper is indistinguishable from a digest over empty
+	// bytes, and the wrapper's only job is to bind the response to what was read.
+	var unread []string
+	if !s.sawConfig {
+		unread = append(unread, "config")
+	}
+	if !s.sawDiff {
+		unread = append(unread, "diff")
+	}
+	if len(unread) > 0 {
+		return "", "", fmt.Errorf("this process consumed no bytes on the %s channel, so there is nothing to digest", strings.Join(unread, " or "))
+	}
+	return hexSHA256(s.config), hexSHA256(s.diff), nil
+}
+
+func hexSHA256(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// unframedDigests is the process-wide recorder the input path writes into.
+var unframedDigests = &unframedDigestSource{}
+
+// init installs unit B1's two hooks, and deliberately installs no third.
+//
+// framedStdinReader stays nil. It is unit B2's, and a placeholder here would
+// make the probe report a framed authoritative channel this binary does not
+// have — REQUIRED preflight would then pass on a producer whose policy bytes
+// still come from an agent-writable file, which is the one direction the probe
+// must never lie in.
+func init() {
+	contractFlagRegistrar = b1FlagRegistrar{}
+	digestSource = unframedDigests
 }

@@ -14,8 +14,16 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // ─── contract version ────────────────────────────────────────────────────────
@@ -71,14 +79,40 @@ const defaultContractVersion = ContractV1
 // The error is INVALID_INPUT (exit 3), not INVALID_SCHEMA: it is the operator's
 // argv that is wrong, not a producer's output.
 func ParseContractVersion(s string) (ContractVersion, error) {
-	panic("B1: not implemented")
+	for _, v := range contractVersionSet {
+		if s == strconv.Itoa(int(v)) {
+			return v, nil
+		}
+	}
+	return ContractVersionUnset, fmt.Errorf(
+		"-%s %q is not a classification contract this binary emits; accepted values are 1 and 2",
+		flagContractVersion, s)
 }
+
+// contractVersionSet is the closed set, enumerated once.
+//
+// ParseContractVersion accepts exactly these, Valid reports membership in
+// exactly these, and the capability probe's contract_versions list is derived
+// from exactly these. One enumeration with three readers cannot contradict
+// itself; three hand-written lists would need three edits to stay honest, and
+// the edit that only happened twice is this design's whole failure class.
+//
+// Comparison is on the exact decimal rendering, which is what rejects "02",
+// " 2" and "v1": there is no lenient parse, because the difference between the
+// contracts is whether an absent config_scaffold is legal, and a wrong guess
+// there is a wrong answer about whether a money-path table was ever reviewed.
+var contractVersionSet = []ContractVersion{ContractV1, ContractV2}
 
 // Valid reports whether v is one of the closed set {ContractV1, ContractV2}.
 // ContractVersionUnset is NOT valid. Callers use this to raise early; it is
 // never a licence to substitute a default for an invalid value.
 func (v ContractVersion) Valid() bool {
-	panic("B1: not implemented")
+	for _, known := range contractVersionSet {
+		if v == known {
+			return true
+		}
+	}
+	return false
 }
 
 // String renders the contract for messages and for the capability probe's
@@ -86,7 +120,20 @@ func (v ContractVersion) Valid() bool {
 // any out-of-set value as a form that visibly contains the raw integer, so an
 // unknown contract cannot be mistaken for a known one in a log line.
 func (v ContractVersion) String() string {
-	panic("B1: not implemented")
+	if v == ContractVersionUnset {
+		return "unset"
+	}
+	if v.Valid() {
+		// The decimal form, so String and ParseContractVersion round-trip. The
+		// registrar defaults the flag to defaultContractVersion.String(); a
+		// rendering like "v1" or "ContractV1" would make the binary reject its
+		// own default flag value.
+		return strconv.Itoa(int(v))
+	}
+	// int(v), never %v on v itself: %v would call this method again. The raw
+	// integer stays visible so an unknown contract cannot read as a known one
+	// in a log line.
+	return fmt.Sprintf("unknown(%d)", int(v))
 }
 
 // ─── config_scaffold: the named, total desugaring rule ───────────────────────
@@ -147,7 +194,57 @@ const (
 // §12 mandated PR0 to eliminate. When PR0's machine-readable artifact lands,
 // this function must become generated, not hand-maintained.
 func DesugarConfigScaffold(contract ContractVersion, presence ScaffoldPresence) (bool, error) {
-	panic("B1: not implemented")
+	// Presence is validated first and exhaustively, so that an undetermined or
+	// unknown presence raises under EVERY contract rather than only under the
+	// ones whose arm happens to inspect it.
+	switch presence {
+	case ScaffoldAbsent, ScaffoldPresentFalse, ScaffoldPresentTrue:
+	case ScaffoldPresenceUnknown:
+		return false, fmt.Errorf("config_scaffold: wire presence is %s — a caller that has not determined whether the key was on the wire must not call the desugar", presenceName(presence))
+	default:
+		return false, fmt.Errorf("config_scaffold: wire presence %s is outside the closed set {absent, present-false, present-true}", presenceName(presence))
+	}
+
+	switch contract {
+	case ContractV1:
+		// The named desugar. This is the ONLY place absence becomes false, and
+		// it is a rule rather than a fallback. Requiring presence here would
+		// turn every non-scaffold classify into INVALID_SCHEMA, because the v1
+		// tag is `config_scaffold,omitempty`.
+		return presence == ScaffoldPresentTrue, nil
+	case ContractV2:
+		if presence == ScaffoldAbsent {
+			return false, fmt.Errorf(
+				"config_scaffold is absent and contract %s requires it to be present: under contract %s a soft default would re-open absent-means-false, which is the implicit state this contract exists to close — rebuild the producer, or ask it for contract %s",
+				ContractV2, ContractV2, ContractV1)
+		}
+		return presence == ScaffoldPresentTrue, nil
+	case ContractVersionUnset:
+		return false, fmt.Errorf("config_scaffold: contract is %s — nobody decided which contract is in force, and that is a named state that raises rather than falling through to %s", ContractVersionUnset, ContractV1)
+	default:
+		return false, fmt.Errorf("config_scaffold: contract %s is outside the closed set {%s, %s}; there is no default arm", contract, ContractV1, ContractV2)
+	}
+}
+
+// presenceName renders a ScaffoldPresence for a message.
+//
+// It is a function rather than a String method on the type because the type's
+// method set is part of the scaffold's frozen surface, and an unknown value
+// must render so its raw integer stays visible — the same rule
+// ContractVersion.String follows.
+func presenceName(p ScaffoldPresence) string {
+	switch p {
+	case ScaffoldPresenceUnknown:
+		return "unknown"
+	case ScaffoldAbsent:
+		return "absent"
+	case ScaffoldPresentFalse:
+		return "present-false"
+	case ScaffoldPresentTrue:
+		return "present-true"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(p))
+	}
 }
 
 // ─── panel intensity and its two-way projection ──────────────────────────────
@@ -190,7 +287,18 @@ const (
 // the v1 struct as a convenience, and do not populate Panel.Reasons from
 // anything but the v2 reasons.
 func ProjectPanelToV1(intensity PanelIntensity, reasons []string) (Panel, error) {
-	panic("B1: not implemented")
+	switch intensity {
+	case PanelFULL:
+		return Panel{Required: true, Seats: 5, Reduced: false, Reasons: reasons}, nil
+	case PanelSINGLE:
+		return Panel{Required: true, Seats: 1, Reduced: true, Reasons: reasons}, nil
+	case PanelSKIP:
+		return Panel{}, fmt.Errorf("panel intensity SKIP has no v1 emission: it is reachable only in the consumer's LEGACY and EMPTY modes, and a panel is always required by contract, so there is no empty v1 panel to project it to")
+	case PanelIntensityUnset:
+		return Panel{}, fmt.Errorf("panel intensity is unset: nobody decided the panel shape, and that raises rather than defaulting")
+	default:
+		return Panel{}, fmt.Errorf("panel intensity %d is outside the closed set: raise, never approximate to FULL — at-least-FULL is the CONSUMER's demand rule for an unknown intensity, not the producer's emission rule", int(intensity))
+	}
 }
 
 // LiftPanelFromV1 is the v1→v2 direction, used when building the v2 envelope
@@ -209,7 +317,40 @@ func ProjectPanelToV1(intensity PanelIntensity, reasons []string) (Panel, error)
 // SKIP. A future decidePanel that emits Required:false has changed the mandatory
 // -panel rule, and that must surface as a schema failure, not as a silent SKIP.
 func LiftPanelFromV1(p Panel) (PanelIntensity, error) {
-	panic("B1: not implemented")
+	switch {
+	case p.Required && p.Seats == 5 && !p.Reduced:
+		return PanelFULL, nil
+	case p.Required && p.Seats == 1 && p.Reduced:
+		return PanelSINGLE, nil
+	case !p.Required:
+		// NOT PanelSKIP. A decidePanel that emits Required:false has changed the
+		// mandatory-panel rule, and this project's rule is that no PR is raised
+		// with zero AI review — so it surfaces as a schema failure, never as a
+		// silent SKIP.
+		return PanelIntensityUnset, fmt.Errorf("v1 panel %+v carries required=false: the mandatory-panel rule has changed, which is INVALID_SCHEMA and not a SKIP", p)
+	default:
+		return PanelIntensityUnset, fmt.Errorf("v1 panel %+v is not a shape decidePanel constructs (5 seats not reduced, or 1 seat reduced)", p)
+	}
+}
+
+// panelIntensityWire is the v2 wire spelling of an intensity.
+//
+// It is separate from the projection so that marshalling rejects
+// PanelIntensityUnset rather than emitting an empty string: an empty intensity
+// on the wire would be a fourth, unnamed panel state.
+func panelIntensityWire(intensity PanelIntensity) (string, error) {
+	switch intensity {
+	case PanelFULL:
+		return "FULL", nil
+	case PanelSINGLE:
+		return "SINGLE", nil
+	case PanelSKIP:
+		return "", fmt.Errorf("panel intensity SKIP: the producer must never emit it")
+	case PanelIntensityUnset:
+		return "", fmt.Errorf("panel intensity is unset: it must not marshal as an empty string")
+	default:
+		return "", fmt.Errorf("panel intensity %d is outside the closed set", int(intensity))
+	}
 }
 
 // ─── the v2 envelope ─────────────────────────────────────────────────────────
@@ -355,7 +496,12 @@ type V2Sidecar struct {
 // Returns the empty string for an empty runState, which callers must treat as
 // "no sidecar is written" — writing "./.v2.json" would be worse than nothing.
 func V2SidecarPath(runState string) string {
-	panic("B1: not implemented")
+	if runState == "" {
+		return ""
+	}
+	// A literal append. No case analysis on the extension, so there is exactly
+	// one answer for every input including a run-state with no ".json" suffix.
+	return runState + ".v2.json"
 }
 
 // ─── emission ────────────────────────────────────────────────────────────────
@@ -378,7 +524,16 @@ func V2SidecarPath(runState string) string {
 // frozen readers consume, so there is no field it cannot fill. That totality is
 // what GenerateReadSet exists to keep true.
 func EmitV1(w io.Writer, cls *Classification) error {
-	panic("B1: not implemented")
+	if cls == nil {
+		return fmt.Errorf("v1 emission: nil classification")
+	}
+	// Deliberately the same four lines as emit() at main.go:314-318, over the
+	// same struct: same field order, same omitempty behaviour, the default
+	// HTML escaping, two-space indent, and Encode's trailing newline. Anything
+	// cleverer here is a wire break dressed as a refactor.
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(cls)
 }
 
 // BuildV2 lifts the classification classify() already computed into the v2
@@ -391,7 +546,54 @@ func EmitV1(w io.Writer, cls *Classification) error {
 // Nil slices in cls become empty slices here, not null, because every field in
 // ClassificationV2 is non-omitted and `null` is a third state.
 func BuildV2(cls *Classification) (ClassificationV2, error) {
-	panic("B1: not implemented")
+	if cls == nil {
+		return ClassificationV2{}, fmt.Errorf("v2 envelope: nil classification")
+	}
+	intensity, err := LiftPanelFromV1(cls.Panel)
+	if err != nil {
+		return ClassificationV2{}, fmt.Errorf("v2 envelope: %w", err)
+	}
+	wire, err := panelIntensityWire(intensity)
+	if err != nil {
+		return ClassificationV2{}, fmt.Errorf("v2 envelope: %w", err)
+	}
+	// Every value below comes from cls. Nothing is invented, and nothing is
+	// copied out of a field cls does not carry — which is why the omissions
+	// listed on ClassificationV2 are omissions rather than zero values.
+	return ClassificationV2{
+		ContractVersion:       int(ContractV2),
+		Risk:                  cls.Risk,
+		FinancialPathsTouched: cls.FinancialPathsTouched,
+		ClientOnly:            cls.ClientOnly,
+		ServerSurface:         cls.ServerSurface,
+		Migration:             cls.Migration,
+		HumanPRGate:           cls.HumanPRGate,
+		RecheckMinSeverity:    cls.RecheckMinSeverity,
+		Components:            nonNilStrings(cls.Components),
+		Panel:                 PanelV2{Intensity: wire, Reasons: nonNilStrings(cls.Panel.Reasons)},
+		GateSignals:           nonNilGateHits(cls.GateSignals),
+		RiskReasons:           nonNilStrings(cls.RiskReasons),
+		UnmatchedFiles:        nonNilStrings(cls.UnmatchedFiles),
+		ConfigScaffold:        cls.ConfigScaffold,
+	}, nil
+}
+
+// nonNilStrings copies in, and returns an empty slice rather than nil for an
+// empty input, so the field marshals as [] and never as null. `null` is a third
+// state, and every field in ClassificationV2 is non-omitted precisely so the
+// envelope carries no third states.
+//
+// It copies rather than aliasing so that BuildV2 cannot hand out a window into
+// the classification it projected: a v2 envelope is a snapshot, and a caller
+// that sorted its Components must not be able to reorder the v1 emission.
+func nonNilStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	return append(out, in...)
+}
+
+func nonNilGateHits(in []GateHit) []GateHit {
+	out := make([]GateHit, 0, len(in))
+	return append(out, in...)
 }
 
 // EmitV2 writes the v2 envelope inside the response wrapper.
@@ -409,7 +611,56 @@ func BuildV2(cls *Classification) (ClassificationV2, error) {
 // envelope. This unit does not extend it; §3.3 is normative and this is a
 // finding against §3.3, not a licence to add the field.
 func EmitV2(w io.Writer, cls *Classification) error {
-	panic("B1: not implemented")
+	wrapper, err := buildResponseWrapper(cls)
+	if err != nil {
+		return err
+	}
+	// Encoded into a buffer first, so that every failure path above and below
+	// leaves w untouched. A partially written wrapper is the same broken state
+	// as a wrapper with absent digests: a reader cannot tell it from a complete
+	// one until it fails to parse.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(wrapper); err != nil {
+		return fmt.Errorf("v2 emission: encode: %w", err)
+	}
+	_, err = w.Write(buf.Bytes())
+	return err
+}
+
+// buildResponseWrapper assembles the v2 envelope inside its wrapper.
+//
+// It is shared by EmitV2 and WriteV2Sidecar so that the stdout emission and the
+// sidecar cannot disagree about what a v2 response is — the sidecar's whole
+// value is that a reader of it alone can still check the dual digest echo, and
+// that only holds if it carries the same wrapper.
+func buildResponseWrapper(cls *Classification) (ResponseWrapper, error) {
+	src := digestSource
+	if src == nil {
+		return ResponseWrapper{}, fmt.Errorf("v2 emission requires an installed DigestSource: the wrapper's whole job is the dual digest echo, and emitting it with empty digests — or emitting the envelope bare, with nowhere to carry them — is the unimplementable echo this contract rejected")
+	}
+	configSHA, diffSHA, err := src.ConsumedDigests()
+	if err != nil {
+		return ResponseWrapper{}, fmt.Errorf("v2 emission: dual digest echo: %w", err)
+	}
+	if configSHA == "" || diffSHA == "" {
+		return ResponseWrapper{}, fmt.Errorf("v2 emission: the DigestSource returned an empty digest (config %q, diff %q) without an error; a channel it did not consume must raise, not blank", configSHA, diffSHA)
+	}
+	env, err := BuildV2(cls)
+	if err != nil {
+		return ResponseWrapper{}, err
+	}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return ResponseWrapper{}, fmt.Errorf("v2 emission: marshal envelope: %w", err)
+	}
+	return ResponseWrapper{
+		ResponseVersion:      responseVersion,
+		ComputedConfigSHA256: configSHA,
+		ComputedDiffSHA256:   diffSHA,
+		Classification:       payload,
+	}, nil
 }
 
 // WriteV2Sidecar writes <run-state>.v2.json.
@@ -426,7 +677,34 @@ func EmitV2(w io.Writer, cls *Classification) error {
 //     missing sidecar is indistinguishable at the consumer from an old run,
 //     which routes it down the in-flight mirror path and loses the v2 facts.
 func WriteV2Sidecar(runState string, cls *Classification) error {
-	panic("B1: not implemented")
+	if runState == "" {
+		// Not a silent no-op. The sidecar is written only when the contract is
+		// ContractV2 AND -out was given, so an empty run-state means the
+		// caller's guard is broken — someone flipped -contract-version 2 and
+		// forgot -out. Absorbing that would leave the consumer unable to tell a
+		// missing sidecar from an old run, which is exactly the state that makes
+		// a failed write a hard error here.
+		return fmt.Errorf("v2 sidecar: empty run-state path — a correct caller writes the sidecar only under contract %s with -out, so reaching here means that guard is broken; writing \"./.v2.json\" would be worse than nothing", ContractV2)
+	}
+	wrapper, err := buildResponseWrapper(cls)
+	if err != nil {
+		return fmt.Errorf("v2 sidecar: %w", err)
+	}
+	data, err := json.MarshalIndent(V2Sidecar{SchemaVersion: v2SidecarSchemaVersion, Response: wrapper}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("v2 sidecar: encode: %w", err)
+	}
+	path := V2SidecarPath(runState)
+	// A full replace, never a merge: this file has exactly one writer, so
+	// imitating writeRunState's merge-preserving dance would resurrect stale
+	// facts from a previous run. os.WriteFile truncates, which is the whole
+	// mechanism. Note that runState itself is never opened here.
+	// #nosec G306 -- the sidecar is a mirror of the classification the run-state
+	// already carries in the clear; it holds paths and verdicts, never secrets.
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write v2 sidecar %s: %w", path, err)
+	}
+	return nil
 }
 
 // ─── config path resolution ──────────────────────────────────────────────────
@@ -462,5 +740,52 @@ func WriteV2Sidecar(runState string, cls *Classification) error {
 // authority-channel problem, it is out of B1's scope, and it must not be closed
 // by quietly reordering the candidate list here.
 func ResolveConfigDual(worktree string) (path string, err error) {
-	panic("B1: not implemented")
+	// Derived from agentConfigDirs (main.go:352) rather than from two literals,
+	// so the preference order here is the same fact as the search order there.
+	// agentConfigDirs[0] is the preferred directory, which is what makes
+	// "both present, identical → use .agent" fall out of the ordering.
+	candidates := make([]string, 0, len(agentConfigDirs))
+	for _, dir := range agentConfigDirs {
+		candidates = append(candidates, filepath.Join(worktree, dir, "risk-paths.json"))
+	}
+
+	type found struct {
+		path   string
+		digest [sha256.Size]byte
+	}
+	var present []found
+	for _, c := range candidates {
+		// #nosec G304 -- a repo-derived config path; reading the caller's rule
+		// table is this tool's contract, and it reads nothing else.
+		data, readErr := os.ReadFile(c)
+		if readErr != nil {
+			continue
+		}
+		present = append(present, found{path: c, digest: sha256.Sum256(data)})
+	}
+
+	switch len(present) {
+	case 0:
+		return "", fmt.Errorf("no risk-paths config found: looked in %s. The rule table is project-specific and there is no default — a missing config is INVALID_INPUT, because another project's table would classify this diff confidently and wrongly", strings.Join(candidates, " and "))
+	case 1:
+		return present[0].path, nil
+	}
+
+	// Difference is SHA-256 over the RAW BYTES, not over the parsed Config. It
+	// is total and needs no canonical form; it is the same digest the wrapper
+	// echoes for the config channel; and two copies of a money table that differ
+	// only in formatting are two files a human has been editing separately,
+	// which is a drift signal worth failing on. Comparing parsed Configs would
+	// also accept a reordered rules array that changes nothing today and
+	// something tomorrow.
+	for _, f := range present[1:] {
+		if f.digest != present[0].digest {
+			var lines []string
+			for _, p := range present {
+				lines = append(lines, fmt.Sprintf("%s (sha256 %s)", p.path, hex.EncodeToString(p.digest[:])))
+			}
+			return "", fmt.Errorf("two risk-paths tables are present and their bytes differ: %s. Which one names this project's money paths is not something classify may guess, so this is INVALID_SCHEMA — reconcile them, then delete one", strings.Join(lines, ", "))
+		}
+	}
+	return present[0].path, nil
 }
