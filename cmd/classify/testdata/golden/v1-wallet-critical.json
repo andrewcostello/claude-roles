@@ -1,0 +1,52 @@
+{
+  "risk": "critical",
+  "risk_reasons": [
+    "apps/finance-domain/wallet/service/debit.go → critical via wallet-service"
+  ],
+  "components": [
+    "wallet"
+  ],
+  "financial_paths_touched": true,
+  "client_only": false,
+  "server_surface": true,
+  "migration": false,
+  "panel": {
+    "required": true,
+    "seats": 5,
+    "reduced": false,
+    "reasons": [
+      "not client-only presentation",
+      "server/wire surface touched (.go/.java/.py/.sql/.proto/.tf)",
+      "financial path touched",
+      "component preset applies: wallet",
+      "risk tier critical (\u003e= medium always gets the panel)"
+    ]
+  },
+  "human_pr_gate": true,
+  "recheck_min_severity": "medium",
+  "skills": [
+    "critical-review-dispatch",
+    "pr-raise"
+  ],
+  "reviewer_args": [
+    "-cwd",
+    ".",
+    "-base",
+    "origin/main",
+    "-risk",
+    "critical",
+    "-component",
+    "wallet"
+  ],
+  "changed_files": [
+    {
+      "path": "apps/finance-domain/wallet/service/debit.go",
+      "risk": "critical",
+      "rules": [
+        "wallet-service"
+      ]
+    }
+  ],
+  "config_path": "testdata/example-monorepo.json",
+  "classified_at": "<VOLATILE>"
+}

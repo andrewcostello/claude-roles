@@ -1,0 +1,48 @@
+{
+  "risk": "high",
+  "risk_reasons": [
+    "apps/finance-domain/wallet/service/debit.go → high (UNMATCHED — no rule covers this path)"
+  ],
+  "financial_paths_touched": false,
+  "client_only": false,
+  "server_surface": true,
+  "migration": false,
+  "panel": {
+    "required": true,
+    "seats": 5,
+    "reduced": false,
+    "reasons": [
+      "not client-only presentation",
+      "server/wire surface touched (.go/.java/.py/.sql/.proto/.tf)",
+      "risk tier high (\u003e= medium always gets the panel)",
+      "1 unclassified path(s) — fail closed",
+      "risk-paths config is still a scaffold — its money paths have not been reviewed, so nothing can be certified safe"
+    ]
+  },
+  "human_pr_gate": true,
+  "recheck_min_severity": "high",
+  "skills": [
+    "critical-review-dispatch",
+    "pr-raise"
+  ],
+  "reviewer_args": [
+    "-cwd",
+    ".",
+    "-base",
+    "origin/main",
+    "-risk",
+    "high"
+  ],
+  "changed_files": [
+    {
+      "path": "apps/finance-domain/wallet/service/debit.go",
+      "risk": "high"
+    }
+  ],
+  "unmatched_files": [
+    "apps/finance-domain/wallet/service/debit.go"
+  ],
+  "config_scaffold": true,
+  "config_path": "testdata/scaffold-config.json",
+  "classified_at": "<VOLATILE>"
+}

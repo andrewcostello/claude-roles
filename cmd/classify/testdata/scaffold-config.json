@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "scaffold": true,
+  "unmatched_risk": "high",
+  "server_surface_extensions": [
+    ".go",
+    ".java",
+    ".py",
+    ".rb",
+    ".sql",
+    ".proto",
+    ".tf"
+  ],
+  "rules": [
+    {
+      "id": "TODO-money-paths",
+      "note": "REPLACE THESE PATHS. Every path that moves, holds, settles or refunds money. No tool can infer this — it is the single most important rule in the table, and a wrong answer here silently disables the human PR gate. Add the component preset that matches (wallet, bet-settlement, bet-placement, jackpot).",
+      "paths": [
+        "REPLACE-ME/never-matches/**"
+      ],
+      "risk": "critical",
+      "components": [
+        "wallet"
+      ],
+      "financial": true
+    },
+    {
+      "id": "TODO-auth-paths",
+      "note": "REPLACE THESE PATHS. Authentication, session, permission and capability code — anywhere a fail-open decides whether something is allowed.",
+      "paths": [
+        "REPLACE-ME/never-matches-auth/**"
+      ],
+      "risk": "high"
+    },
+    {
+      "id": "schema-migrations",
+      "note": "Any migration or raw SQL. Routes the migration checklist deterministically.",
+      "paths": [
+        "**/migrations/**",
+        "**/*.sql"
+      ],
+      "risk": "high",
+      "migration": true
+    },
+    {
+      "id": "ci-and-scripts",
+      "note": "CI and repo scripts are gates themselves — a change here can DISABLE a check rather than fail one, so this is not presentation.",
+      "paths": [
+        ".github/**",
+        "scripts/**",
+        "**/Makefile"
+      ],
+      "risk": "medium"
+    },
+    {
+      "id": "docs-and-meta",
+      "paths": [
+        "**/*.md",
+        "**/README*",
+        "docs/**",
+        ".gitignore",
+        "**/.gitignore"
+      ],
+      "risk": "low",
+      "presentation": true
+    },
+    {
+      "id": "dependency-manifests",
+      "note": "Dependency changes are supply-chain surface — never low.",
+      "paths": [
+        "**/go.mod",
+        "**/go.sum",
+        "**/package-lock.json",
+        "**/pnpm-lock.yaml",
+        "**/requirements*.txt",
+        "**/pom.xml"
+      ],
+      "risk": "medium"
+    }
+  ],
+  "gate_signals": [
+    {
+      "id": "env-gate",
+      "note": "Environment-driven behaviour switch.",
+      "pattern": "os\\.Getenv\\(|process\\.env\\.|System\\.getenv\\(|os\\.environ"
+    },
+    {
+      "id": "dev-build-gate",
+      "note": "Build-mode gate — ships enabled if the flag leaks to a deployed env.",
+      "pattern": "__DEV__|NODE_ENV|IS_DEBUG|isDebug|DEBUG_|devMode|debugMode"
+    },
+    {
+      "id": "feature-flag",
+      "note": "Feature flag or kill switch.",
+      "pattern": "[Ff]eature[Ff]lag|featureEnabled|isEnabled\\(|flagEnabled|killSwitch"
+    },
+    {
+      "id": "override-bypass",
+      "note": "Explicit bypass or override path.",
+      "pattern": "[Bb]ypass|skipAuth|skipCheck|allowAll"
+    },
+    {
+      "id": "permission-decision",
+      "note": "Authorization decision points.",
+      "pattern": "[Cc]anAccess|[Ii]sAllowed|hasPermission|[Aa]uthorize\\(|[Ii]sAdmin|requireRole"
+    }
+  ]
+}

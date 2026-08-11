@@ -1,0 +1,39 @@
+{
+  "response_version": 1,
+  "computed_config_sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "computed_diff_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+  "classification": {
+    "contract_version": 2,
+    "risk": "low",
+    "financial_paths_touched": false,
+    "client_only": true,
+    "server_surface": false,
+    "migration": false,
+    "human_pr_gate": false,
+    "recheck_min_severity": "high",
+    "components": [],
+    "panel": {
+      "intensity": "FULL",
+      "reasons": [
+        "gate/guard/flag signal in changed lines (dev-build-gate,env-gate) — decides whether something is allowed, not presentation"
+      ]
+    },
+    "gate_signals": [
+      {
+        "signal": "env-gate",
+        "file": "apps/skillstrike-mobile/src/components/DebugPanel.tsx",
+        "sample": "const show = __DEV__ || process.env.SHOW_DEBUG === '1'"
+      },
+      {
+        "signal": "dev-build-gate",
+        "file": "apps/skillstrike-mobile/src/components/DebugPanel.tsx",
+        "sample": "const show = __DEV__ || process.env.SHOW_DEBUG === '1'"
+      }
+    ],
+    "risk_reasons": [
+      "apps/skillstrike-mobile/src/components/DebugPanel.tsx → low via client-presentation"
+    ],
+    "unmatched_files": [],
+    "config_scaffold": false
+  }
+}

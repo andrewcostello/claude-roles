@@ -1,0 +1,33 @@
+{
+  "response_version": 1,
+  "computed_config_sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+  "computed_diff_sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+  "classification": {
+    "contract_version": 2,
+    "risk": "high",
+    "financial_paths_touched": false,
+    "client_only": false,
+    "server_surface": true,
+    "migration": false,
+    "human_pr_gate": false,
+    "recheck_min_severity": "high",
+    "components": [],
+    "panel": {
+      "intensity": "FULL",
+      "reasons": [
+        "not client-only presentation",
+        "server/wire surface touched (.go/.java/.py/.sql/.proto/.tf)",
+        "risk tier high (\u003e= medium always gets the panel)",
+        "1 unclassified path(s) — fail closed"
+      ]
+    },
+    "gate_signals": [],
+    "risk_reasons": [
+      "apps/brand-new-service/handler.go → high (UNMATCHED — no rule covers this path)"
+    ],
+    "unmatched_files": [
+      "apps/brand-new-service/handler.go"
+    ],
+    "config_scaffold": false
+  }
+}

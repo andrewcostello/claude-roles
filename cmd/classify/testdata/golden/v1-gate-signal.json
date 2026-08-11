@@ -1,0 +1,51 @@
+{
+  "risk": "low",
+  "risk_reasons": [
+    "apps/skillstrike-mobile/src/components/DebugPanel.tsx → low via client-presentation"
+  ],
+  "financial_paths_touched": false,
+  "client_only": true,
+  "server_surface": false,
+  "migration": false,
+  "gate_signals": [
+    {
+      "signal": "env-gate",
+      "file": "apps/skillstrike-mobile/src/components/DebugPanel.tsx",
+      "sample": "const show = __DEV__ || process.env.SHOW_DEBUG === '1'"
+    },
+    {
+      "signal": "dev-build-gate",
+      "file": "apps/skillstrike-mobile/src/components/DebugPanel.tsx",
+      "sample": "const show = __DEV__ || process.env.SHOW_DEBUG === '1'"
+    }
+  ],
+  "panel": {
+    "required": true,
+    "seats": 5,
+    "reduced": false,
+    "reasons": [
+      "gate/guard/flag signal in changed lines (dev-build-gate,env-gate) — decides whether something is allowed, not presentation"
+    ]
+  },
+  "human_pr_gate": false,
+  "recheck_min_severity": "high",
+  "reviewer_args": [
+    "-cwd",
+    ".",
+    "-base",
+    "origin/main",
+    "-risk",
+    "low"
+  ],
+  "changed_files": [
+    {
+      "path": "apps/skillstrike-mobile/src/components/DebugPanel.tsx",
+      "risk": "low",
+      "rules": [
+        "client-presentation"
+      ]
+    }
+  ],
+  "config_path": "testdata/example-monorepo.json",
+  "classified_at": "<VOLATILE>"
+}

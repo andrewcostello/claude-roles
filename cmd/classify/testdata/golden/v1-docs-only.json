@@ -1,0 +1,48 @@
+{
+  "risk": "low",
+  "risk_reasons": [
+    "docs/plans/2026-07-29-graph-spine.md → low via docs-and-meta"
+  ],
+  "financial_paths_touched": false,
+  "client_only": true,
+  "server_surface": false,
+  "migration": false,
+  "panel": {
+    "required": true,
+    "seats": 1,
+    "reduced": true,
+    "reasons": [
+      "client-only presentation, no server/money/auth surface, no gate signals — reduced single-reviewer panel"
+    ]
+  },
+  "human_pr_gate": false,
+  "recheck_min_severity": "high",
+  "reviewer_args": [
+    "-cwd",
+    ".",
+    "-base",
+    "origin/main",
+    "-risk",
+    "low",
+    "-reviewers",
+    "claude"
+  ],
+  "changed_files": [
+    {
+      "path": "docs/plans/2026-07-29-graph-spine.md",
+      "risk": "low",
+      "rules": [
+        "docs-and-meta"
+      ]
+    },
+    {
+      "path": "README.md",
+      "risk": "low",
+      "rules": [
+        "docs-and-meta"
+      ]
+    }
+  ],
+  "config_path": "testdata/example-monorepo.json",
+  "classified_at": "<VOLATILE>"
+}
