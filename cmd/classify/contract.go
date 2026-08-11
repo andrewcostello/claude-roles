@@ -18,12 +18,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 )
 
 // ─── contract version ────────────────────────────────────────────────────────
@@ -501,8 +504,12 @@ func V2SidecarPath(runState string) string {
 	}
 	// A literal append. No case analysis on the extension, so there is exactly
 	// one answer for every input including a run-state with no ".json" suffix.
-	return runState + ".v2.json"
+	return runState + v2SidecarSuffix
 }
+
+// v2SidecarSuffix is the appended tail, named once so the derivation and the
+// messages that explain it cannot disagree about what was appended.
+const v2SidecarSuffix = ".v2.json"
 
 // ─── emission ────────────────────────────────────────────────────────────────
 
@@ -673,9 +680,20 @@ func buildResponseWrapper(cls *Classification) (ResponseWrapper, error) {
 //     imitated.
 //   - It NEVER touches the run-state file. If this function is ever seen to
 //     open opts.out, that is the bug the separate-file rule exists to prevent.
+//     That rule is enforced against SYMLINKS too, which is the route the
+//     sentence above did not consider: the write used os.WriteFile, which opens
+//     O_WRONLY|O_CREATE|O_TRUNC and FOLLOWS a link, so it never opened opts.out
+//     and still destroyed it whenever "<out>.v2.json" was a symlink pointing at
+//     it. The path is DERIVED by appending ".v2.json" to -out, so it is not a
+//     path any operator named — anyone who can create one file beside the
+//     run-state could choose which file classify truncated. The open therefore
+//     carries O_NOFOLLOW.
 //   - Failure to write the sidecar is a hard error, not a warning. A silently
 //     missing sidecar is indistinguishable at the consumer from an old run,
 //     which routes it down the in-flight mirror path and loses the v2 facts.
+//     A symlink at the derived path is one of those failures: it is refused
+//     rather than resolved, because there is no reading of "the operator meant
+//     this" that classify may supply on its behalf.
 func WriteV2Sidecar(runState string, cls *Classification) error {
 	if runState == "" {
 		// Not a silent no-op. The sidecar is written only when the contract is
@@ -697,17 +715,206 @@ func WriteV2Sidecar(runState string, cls *Classification) error {
 	path := V2SidecarPath(runState)
 	// A full replace, never a merge: this file has exactly one writer, so
 	// imitating writeRunState's merge-preserving dance would resurrect stale
-	// facts from a previous run. os.WriteFile truncates, which is the whole
-	// mechanism. Note that runState itself is never opened here.
-	// #nosec G306 -- the sidecar is a mirror of the classification the run-state
-	// already carries in the clear; it holds paths and verdicts, never secrets.
-	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+	// facts from a previous run. O_TRUNC is that mechanism.
+	//
+	// O_NOFOLLOW is the rest of it, and it is not decoration. It applies to the
+	// FINAL component only, which is exactly the component nobody named: an
+	// operator chose the run-state path, and this one was derived from it. With
+	// the link followed, the two observed outcomes were an unrelated file
+	// silently replaced by sidecar bytes, and the shared run-state — the file
+	// cmd/gates and cmd/iterate read — destroyed, both reported as success.
+	// Checking with Lstat first and then writing would be the same bug with a
+	// race in it; refusing in the open() itself is the only version with no
+	// window.
+	// #nosec G304 -- path is derived from the operator's -out. G306 -- the
+	// sidecar mirrors the classification the run-state already carries in the
+	// clear; it holds paths and verdicts, never secrets.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("write v2 sidecar %s: the path is a SYMLINK and the sidecar was not written. This path is derived from -out (%s) by appending %q, so it is not a file any operator named, and following the link would truncate whatever it points at — the observed cases are an unrelated file replaced and the shared run-state destroyed. Remove the link, or point -out somewhere the run owns", path, runState, v2SidecarSuffix)
+		}
 		return fmt.Errorf("write v2 sidecar %s: %w", path, err)
+	}
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		// The close error is deliberately dropped in favour of the write error:
+		// the write is the failure the caller must hear about, and reporting
+		// only the close would name the wrong culprit.
+		_ = f.Close()
+		return fmt.Errorf("write v2 sidecar %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		// Close is where a deferred write error surfaces, so a dropped Close is
+		// a sidecar that may not be on disk being reported as written.
+		return fmt.Errorf("write v2 sidecar %s: close: %w", path, err)
 	}
 	return nil
 }
 
+// RemoveV2Sidecar tears down the sidecar beside runState and reports whether
+// there was one.
+//
+// It is the other half of WriteV2Sidecar's lifecycle, and it exists because a
+// sidecar left behind by an earlier run is worse than no sidecar at all: it is
+// a verdict, it parses, and nothing in it says which run produced it. A v1 run
+// over an -out that a v2 run used before has no v2 envelope to publish, so the
+// only correct end state is that no v2 sidecar is readable there.
+//
+// ABSENT IS NOT AN ERROR and is reported as removed=false — the ordinary case
+// is a v1 run over an -out that never had a sidecar, and it must not create one
+// or complain about one. Every other failure IS an error, on the same reasoning
+// that makes a failed write one.
+//
+// os.Remove unlinks the name and never follows it, so a symlink at the derived
+// path loses the link and not its target.
+func RemoveV2Sidecar(runState string) (removed bool, err error) {
+	if runState == "" {
+		// The same broken-guard case WriteV2Sidecar refuses, for the same
+		// reason: the caller writes and removes the sidecar only with -out, so
+		// an empty run-state means that guard is broken, and unlinking
+		// "./.v2.json" would be worse than nothing.
+		return false, fmt.Errorf("v2 sidecar: empty run-state path — a correct caller touches the sidecar only with -out, so reaching here means that guard is broken; removing \"./.v2.json\" would be worse than nothing")
+	}
+	path := V2SidecarPath(runState)
+	switch err := os.Remove(path); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return false, fmt.Errorf("remove stale v2 sidecar %s: %w — a sidecar this run could not tear down stays readable, and a consumer cannot tell it from this run's own", path, err)
+	}
+}
+
 // ─── config path resolution ──────────────────────────────────────────────────
+
+// ConfigSearchOutcome names every way the directory search for a rule table can
+// end. There are five and they are all here.
+//
+// It is a named type and not a bool because "not resolved" was three different
+// facts wearing one hat. Nothing-is-there tells the operator to scaffold a
+// table; two-tables-disagree tells them to reconcile the two they already have;
+// a-table-cannot-be-read tells them about a mode or a mount. Collapsing them
+// meant the differing case was reported as the missing case, which is advice to
+// create a third table.
+type ConfigSearchOutcome string
+
+const (
+	// ConfigSearchUnset is the zero value and is NEVER a legal answer. It
+	// exists so that "nobody decided" raises instead of defaulting into one of
+	// the real four.
+	ConfigSearchUnset ConfigSearchOutcome = "unset"
+	// ConfigSearchResolved: exactly one table governs, and its path is returned.
+	ConfigSearchResolved ConfigSearchOutcome = "resolved"
+	// ConfigSearchAbsent: no candidate exists. A defined state with a defined
+	// answer — INVALID_INPUT and the scaffold instructions.
+	ConfigSearchAbsent ConfigSearchOutcome = "absent"
+	// ConfigSearchDiffering: both tables exist and their bytes differ.
+	// INVALID_SCHEMA: which one names this project's money is not a guess
+	// classify may make.
+	ConfigSearchDiffering ConfigSearchOutcome = "differing"
+	// ConfigSearchUnreadable: a candidate exists and cannot be read. This is
+	// NOT absent, and the distinction is the whole of the fix that named it —
+	// see the loop in ResolveConfigDual.
+	ConfigSearchUnreadable ConfigSearchOutcome = "unreadable"
+)
+
+// ConfigSearchError carries the named outcome out of ResolveConfigDual.
+//
+// The outcome rides on the error rather than in a third return value because
+// this function's signature is fixed by its callers and its seals; what matters
+// is that the caller can ask WHICH failure this is rather than pattern-matching
+// on a message.
+type ConfigSearchError struct {
+	Outcome ConfigSearchOutcome
+	// Paths are the candidates the search considered, in search order.
+	Paths []string
+	// Err is the underlying cause, present for ConfigSearchUnreadable and nil
+	// otherwise: absent and differing are conclusions, not failures of an
+	// operation.
+	Err error
+	msg string
+}
+
+func (e *ConfigSearchError) Error() string { return e.msg }
+
+func (e *ConfigSearchError) Unwrap() error { return e.Err }
+
+// certifiedConfigRead carries the ONE read of the rule table from the step that
+// CERTIFIED it to the step that CONSUMES it.
+//
+// THE WINDOW THIS CLOSES. ResolveConfigDual read both candidates, digested
+// them, compared them and returned a PATH; the bytes went out of scope, and
+// loadConfig opened that path a second time. It was the second read that was
+// parsed into the rule table, classified against, and recorded as the config
+// channel's digest. Nothing bound the two reads together, so the agreement
+// between .agent and .claude was certified over bytes the run then never
+// consumed — and one write into that window turns a table that names the money
+// paths into one that does not, with the certificate still reading as valid.
+//
+// This codebase already wrote down why that matters, one file over.
+// unframedDigestSource records the config bytes AT THE READ rather than
+// recomputing from the path at emission time, because re-reading "would digest
+// whatever is on disk THEN, which is a different claim from 'these are the
+// bytes I classified'". That discipline closed the window between read and
+// emit. This closes the same gap one stage earlier — on the read that decides
+// whether the money gate runs at all.
+//
+// WHY A HANDOFF AND NOT A PARAMETER. loadConfig(path) is called by the seals
+// that hold this property and by run(); its signature is fixed. So the bytes
+// travel in a one-shot slot keyed by the exact path they were read from.
+// One-shot is the safety property: a second loadConfig of the same path is a
+// second consumption and gets its own read, so the slot can never serve bytes
+// to a caller the certifying step did not resolve for.
+type certifiedConfigRead struct {
+	mu   sync.Mutex
+	path string
+	data []byte
+	held bool
+}
+
+// certifiedConfig is the process-wide slot. Process-wide because the read it
+// carries is process-wide: one classify run resolves one rule table.
+var certifiedConfig = &certifiedConfigRead{}
+
+// certify records the bytes the agreement was decided over, for path.
+func (c *certifiedConfigRead) certify(path string, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Copied, for the same reason recordConfig copies: the caller owns its
+	// buffer, and the certificate must describe the bytes as they were read.
+	c.path, c.data, c.held = path, append([]byte(nil), data...), true
+}
+
+// take returns the certified bytes for p, and reports whether it had any. The
+// slot is emptied by a successful take.
+func (c *certifiedConfigRead) take(p string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.held || c.path != p {
+		return nil, false
+	}
+	data := c.data
+	c.path, c.data, c.held = "", nil, false
+	return data, true
+}
+
+// consumeCertifiedConfigRead returns the bytes already read and certified for
+// p, or reads p when no read has been certified for it.
+//
+// The second case is not a fallback that weakens the first. It is the explicit
+// -config path: that flag names exactly one file, there is no second table to
+// compare it against, so no agreement was certified over it and this read is
+// the only one. What must never happen is a certifying read followed by a
+// DIFFERENT consuming read of the same path, and the slot makes that
+// impossible.
+func consumeCertifiedConfigRead(p string) ([]byte, error) {
+	if data, ok := certifiedConfig.take(p); ok {
+		return data, nil
+	}
+	// #nosec G304 -- p is the -config flag: naming the rule table is the point.
+	return os.ReadFile(p)
+}
 
 // ResolveConfigDual applies the §3.3 config-path rule to the searched
 // candidates:
@@ -733,24 +940,37 @@ func WriteV2Sidecar(runState string, cls *Classification) error {
 // names exactly one file and bypasses the dual check — naming the rule table is
 // that flag's whole contract.
 //
-// SECURITY NOTE, deliberately left as a finding rather than silently fixed:
-// configCandidates (main.go:330) places $RISK_PATHS_CONFIG AHEAD of both
-// directories, so an agent that can set an environment variable redirects the
-// entire money-path table and this dual check never runs. That is an
-// authority-channel problem, it is out of B1's scope, and it must not be closed
-// by quietly reordering the candidate list here.
+// REACHABILITY. This function is called from resolveConfigPath (main.go), which
+// is the only directory search production performs. It was not, for the whole
+// of this unit's first pass: production went to findConfig, which returned the
+// first candidate that EXISTED and never compared the two, so the rule below —
+// and the six seals that certify it — described behaviour nothing ran. If a
+// future change routes the search around this function again, the rule goes
+// dark again and the seals stay green. TestSeal_Repair_LiveResolution_-
+// DifferingDualTablesMustNotResolveSilently is what makes that impossible: it
+// observes the live binary's decision, not this function's return value.
+//
+// AUTHORITY CHANNEL. $RISK_PATHS_CONFIG used to head configCandidates, ahead of
+// both directories, so an environment variable redirected the entire money-path
+// table and this dual check never ran. That is closed at the source: the
+// variable is no longer a candidate (see configCandidates in main.go for the
+// full reasoning and for what -config still does). This note used to say the
+// finding was out of scope and must not be closed by reordering the candidate
+// list; that is superseded, and it was not closed by reordering — the candidate
+// was removed.
 func ResolveConfigDual(worktree string) (path string, err error) {
-	// Derived from agentConfigDirs (main.go:352) rather than from two literals,
-	// so the preference order here is the same fact as the search order there.
-	// agentConfigDirs[0] is the preferred directory, which is what makes
-	// "both present, identical → use .agent" fall out of the ordering.
-	candidates := make([]string, 0, len(agentConfigDirs))
-	for _, dir := range agentConfigDirs {
-		candidates = append(candidates, filepath.Join(worktree, dir, "risk-paths.json"))
-	}
+	// The candidate list is configCandidates', not a second derivation from
+	// agentConfigDirs. It was the second derivation, and two lists of "where the
+	// rule table may live" are two lists that can disagree — one of them is what
+	// the operator is shown in the missing-config report, and the other is what
+	// was actually searched. agentConfigDirs[0] is the preferred directory,
+	// which is what makes "both present, identical → use .agent" fall out of the
+	// ordering.
+	candidates := configCandidates(worktree)
 
 	type found struct {
 		path   string
+		data   []byte
 		digest [sha256.Size]byte
 	}
 	var present []found
@@ -758,16 +978,40 @@ func ResolveConfigDual(worktree string) (path string, err error) {
 		// #nosec G304 -- a repo-derived config path; reading the caller's rule
 		// table is this tool's contract, and it reads nothing else.
 		data, readErr := os.ReadFile(c)
-		if readErr != nil {
+		if readErr == nil {
+			present = append(present, found{path: c, data: data, digest: sha256.Sum256(data)})
 			continue
 		}
-		present = append(present, found{path: c, digest: sha256.Sum256(data)})
+		if errors.Is(readErr, fs.ErrNotExist) {
+			// ABSENT. A legitimate, common, named state with a defined answer:
+			// it is not one of the tables, and the other one governs.
+			continue
+		}
+		// UNREADABLE, and it is NOT absent. The file is there, its contents are
+		// unknown, and whether it agrees with the other table is exactly the
+		// fact this gate needs. Swallowing the error — `if readErr != nil {
+		// continue }`, which is what stood here — made len(present) collapse to
+		// 1 and returned the other path with a nil error, so the gate that
+		// exists to stop classify guessing between two money tables was silenced
+		// by the one condition under which it knows least. It fails CLOSED now.
+		return "", &ConfigSearchError{
+			Outcome: ConfigSearchUnreadable,
+			Paths:   candidates,
+			Err:     readErr,
+			msg: fmt.Sprintf("risk-paths config %s exists but cannot be read: %v. Unreadable is not absent: absent means this table is not one of the two and the other governs, while unreadable means a table IS there and whether it agrees with %s is unknown — which is the fact the dual-config check needs. Fix the mode or the mount, or remove the file",
+				c, readErr, strings.Join(otherThan(candidates, c), " and ")),
+		}
 	}
 
 	switch len(present) {
 	case 0:
-		return "", fmt.Errorf("no risk-paths config found: looked in %s. The rule table is project-specific and there is no default — a missing config is INVALID_INPUT, because another project's table would classify this diff confidently and wrongly", strings.Join(candidates, " and "))
+		return "", &ConfigSearchError{
+			Outcome: ConfigSearchAbsent,
+			Paths:   candidates,
+			msg:     fmt.Sprintf("no risk-paths config found: looked in %s. The rule table is project-specific and there is no default — a missing config is INVALID_INPUT, because another project's table would classify this diff confidently and wrongly", strings.Join(candidates, " and ")),
+		}
 	case 1:
+		certifiedConfig.certify(present[0].path, present[0].data)
 		return present[0].path, nil
 	}
 
@@ -780,12 +1024,33 @@ func ResolveConfigDual(worktree string) (path string, err error) {
 	// something tomorrow.
 	for _, f := range present[1:] {
 		if f.digest != present[0].digest {
-			var lines []string
+			lines := make([]string, 0, len(present))
 			for _, p := range present {
 				lines = append(lines, fmt.Sprintf("%s (sha256 %s)", p.path, hex.EncodeToString(p.digest[:])))
 			}
-			return "", fmt.Errorf("two risk-paths tables are present and their bytes differ: %s. Which one names this project's money paths is not something classify may guess, so this is INVALID_SCHEMA — reconcile them, then delete one", strings.Join(lines, ", "))
+			return "", &ConfigSearchError{
+				Outcome: ConfigSearchDiffering,
+				Paths:   candidates,
+				msg:     fmt.Sprintf("two risk-paths tables are present and their bytes differ: %s. Which one names this project's money paths is not something classify may guess, so this is INVALID_SCHEMA — reconcile them, then delete one", strings.Join(lines, ", ")),
+			}
 		}
 	}
+	// The bytes agreement was decided over are handed to the consumer, not
+	// re-read from the path. This is the certificate: whatever is on disk after
+	// this instant, the run classifies what was compared.
+	certifiedConfig.certify(present[0].path, present[0].data)
 	return present[0].path, nil
+}
+
+// otherThan lists the candidates that are not p, so the unreadable message can
+// name what the missing comparison was against rather than saying "the other
+// one".
+func otherThan(candidates []string, p string) []string {
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if c != p {
+			out = append(out, c)
+		}
+	}
+	return out
 }

@@ -24,8 +24,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -269,9 +271,9 @@ func run(opts options) int {
 		return exitInvalid
 	}
 
-	cfgPath, ok := resolveConfigPath(opts)
-	if !ok {
-		printInvalidInput(Repo{Worktree: opts.worktree}, missingConfigMessage(opts.worktree))
+	cfgPath, outcome, cfgErr := resolveConfigPath(opts)
+	if outcome != ConfigSearchResolved {
+		reportConfigSearch(opts.worktree, outcome, cfgErr)
 		return exitInvalid
 	}
 
@@ -293,12 +295,68 @@ func run(opts options) int {
 	return persist(opts, repo, cls, contract)
 }
 
-// resolveConfigPath honours an explicit -config, else searches this project.
-func resolveConfigPath(opts options) (string, bool) {
+// resolveConfigPath honours an explicit -config, else searches this project
+// THROUGH ResolveConfigDual.
+//
+// It used to call findConfig, which returned the first candidate that EXISTS
+// and never compared the two. ResolveConfigDual — the function that implements
+// the §3.3 dual-config rule, and that six green seals certify — was never
+// reached from production at all. Six seals on a function nothing calls certify
+// a rule that never runs; the live-resolution row exists to seal this call
+// site, and it is the only thing that makes those six seals mean anything.
+//
+// An explicit -config still short-circuits the search. Its SCOPE note on
+// ResolveConfigDual says why: the flag names exactly one file, so there is no
+// second table to compare it against, and comparing is the whole of the dual
+// rule.
+//
+// The outcome is returned as a named state rather than a bool. "Not resolved"
+// is three different facts — nothing is there, two tables disagree, a table is
+// unreadable — and they call for different messages and, in the differing case,
+// a different diagnosis entirely. A bool collapses all three into the
+// missing-config report, which would tell an operator to create a table they
+// already have two of.
+func resolveConfigPath(opts options) (string, ConfigSearchOutcome, error) {
 	if opts.configPath != "" {
-		return opts.configPath, true
+		return opts.configPath, ConfigSearchResolved, nil
 	}
-	return findConfig(opts.worktree)
+	path, err := ResolveConfigDual(opts.worktree)
+	if err == nil {
+		return path, ConfigSearchResolved, nil
+	}
+	var searchErr *ConfigSearchError
+	if errors.As(err, &searchErr) {
+		return "", searchErr.Outcome, err
+	}
+	// An error from the resolver that does not carry a named outcome is not a
+	// case to absorb: it means the resolver grew a failure mode nobody named,
+	// and guessing which one it is here is how a differing-table refusal turns
+	// back into a missing-config message.
+	return "", ConfigSearchUnset, err
+}
+
+// reportConfigSearch turns a non-resolved search outcome into the operator's
+// INVALID_INPUT report. It is exhaustive over ConfigSearchOutcome and raises on
+// anything outside the closed set — including Resolved, which is not this
+// function's business and reaching it here means the caller's switch is wrong.
+func reportConfigSearch(worktree string, outcome ConfigSearchOutcome, err error) {
+	repo := Repo{Worktree: worktree}
+	switch outcome {
+	case ConfigSearchAbsent:
+		// The existing missing-config report, unchanged: it lists where it
+		// looked and how to scaffold a table.
+		printInvalidInput(repo, missingConfigMessage(worktree))
+	case ConfigSearchDiffering, ConfigSearchUnreadable:
+		// The resolver's own message names the files, which is the entire
+		// content of the diagnosis in both cases.
+		printInvalidInput(repo, []string{err.Error()})
+	case ConfigSearchUnset:
+		printInvalidInput(repo, []string{fmt.Sprintf("the config search returned no outcome: %v — %q means nobody decided, and it is never a legal answer", err, ConfigSearchUnset)})
+	case ConfigSearchResolved:
+		printInvalidInput(repo, []string{fmt.Sprintf("internal: the config search resolved, but the failure path was taken anyway (%v)", err)})
+	default:
+		printInvalidInput(repo, []string{fmt.Sprintf("the config search returned outcome %q, which is outside the closed set (%v)", outcome, err)})
+	}
 }
 
 func loadInputs(opts options, cfgPath string) (*Config, string, []string, error) {
@@ -334,7 +392,20 @@ func persist(opts options, repo Repo, cls *Classification, contract ContractVers
 	}
 	log.Printf("run state written to %s", opts.out)
 
-	if contract == ContractV2 {
+	// EVERY branch says what happens to the sidecar. It used to be written
+	// under ContractV2 and simply not mentioned otherwise, which is not the
+	// same as "there is no sidecar": a v1 re-run over an -out that a v2 run had
+	// already used left the PREVIOUS run's sidecar in place, still asserting the
+	// superseded verdict. A consumer reading it was told there was no human PR
+	// gate for a critical money diff. WriteV2Sidecar makes a failed write a hard
+	// error because "a silently missing sidecar is indistinguishable at the
+	// consumer from an old run"; a silently PRESENT one from an old run is
+	// indistinguishable from a current one, and it carries a verdict instead of
+	// nothing, which is worse.
+	//
+	// Exhaustive, with no default arm falling through to "leave it alone".
+	switch contract {
+	case ContractV2:
 		// Only under ContractV2 and only with -out: those two conditions are
 		// WriteV2Sidecar's stated guard, and this is the caller that owes it.
 		if err := WriteV2Sidecar(opts.out, cls); err != nil {
@@ -344,6 +415,24 @@ func persist(opts options, repo Repo, cls *Classification, contract ContractVers
 			log.Fatalf("%v", err)
 		}
 		log.Printf("v2 sidecar written to %s", V2SidecarPath(opts.out))
+	case ContractV1:
+		// A v1 run emits no v2 facts, so no v2 sidecar may be readable beside
+		// its run-state afterwards. Removal, not rewriting: the run has no v2
+		// envelope to put there, and inventing one would be a v1 run publishing
+		// a v2 claim.
+		removed, err := RemoveV2Sidecar(opts.out)
+		if err != nil {
+			// Same hard-error reasoning as the write. A sidecar this run failed
+			// to tear down is a verdict this run did not make, still readable.
+			log.Fatalf("%v", err)
+		}
+		if removed {
+			log.Printf("stale v2 sidecar removed from %s", V2SidecarPath(opts.out))
+		}
+	case ContractVersionUnset:
+		log.Fatalf("persist: contract is %s — nobody decided which contract this run is under, and the sidecar's fate is that decision", ContractVersionUnset)
+	default:
+		log.Fatalf("persist: contract %s is outside the closed set, so whether a sidecar should exist is undecided", contract)
 	}
 	return 0
 }
@@ -393,22 +482,52 @@ func emit(repo Repo, cls *Classification, asJSON bool, contract ContractVersion)
 
 // configCandidates lists where a project's rule table may live, in order.
 //
-// There is deliberately NO fallback to another checkout's config. The rule
-// table names one repository's money, auth and client paths; applied to a
-// different repository it produces confidently wrong answers — a diff certified
-// as touching no financial path because the paths it names do not exist here.
-// A missing config is INVALID_INPUT, not a default.
+// EVERY CANDIDATE IS ANCHORED TO THE WORKTREE UNDER REVIEW. There is
+// deliberately NO fallback to another checkout's config. The rule table names
+// one repository's money, auth and client paths; applied to a different
+// repository it produces confidently wrong answers — a diff certified as
+// touching no financial path because the paths it names do not exist here. A
+// missing config is INVALID_INPUT, not a default.
+//
+// WHAT THIS FUNCTION USED TO DO, and why it does not any more. It appended
+// agentConfigDirs[0]+"/risk-paths.json" with NO worktree prefix, which is
+// CWD-relative. The Tasker runs classify from the tooling checkout with
+// -worktree pointing at the project under review, and this repo ships
+// .agent/risk-paths.json at its root, so an empty worktree silently borrowed
+// THIS repository's money table — precisely the outcome the paragraph above
+// says deliberately cannot happen. TestConfigCandidates_PrefersVendorNeutralDir
+// did not catch it: it rejects candidates whose SPELLING contains
+// "claude-workflow", and the relative string ".agent/risk-paths.json" contains
+// no such substring while resolving into exactly that repo. A check on a
+// spelling is not a check on where a path lands.
+//
+// An unset -worktree still means "the directory I am standing in", so the
+// anchor falls back to "." — which filepath.Join cleans away, leaving the two
+// candidates byte-identical to what the old tail produced for that case. What
+// is gone is the cross-checkout leak that appeared only when a worktree WAS
+// named and had no table of its own.
+//
+// $RISK_PATHS_CONFIG IS NOT CONSULTED. It used to head this list, ahead of both
+// directories, so an agent that could set an environment variable redirected
+// the entire money-path table and the dual-config check never ran. Setting an
+// environment variable is not the same act as an operator naming a rule table:
+// -config still names one file explicitly and is honoured ahead of this search
+// (resolveConfigPath), which is that flag's whole contract. Restoring the
+// variable here reopens a money-gate bypass;
+// TestSeal_Repair_EnvVarMustNotOutrankTheWorktreeMoneyTable blocks it.
 func configCandidates(worktree string) []string {
-	var out []string
-	if env := os.Getenv("RISK_PATHS_CONFIG"); env != "" {
-		out = append(out, env)
+	// An unset worktree is the current directory, not "nowhere": naming the
+	// anchor explicitly is what keeps every candidate inside the tree under
+	// review instead of leaking into whichever checkout classify was started
+	// from.
+	root := worktree
+	if root == "" {
+		root = "."
 	}
+	out := make([]string, 0, len(agentConfigDirs))
 	for _, dir := range agentConfigDirs {
-		if worktree != "" {
-			out = append(out, filepath.Join(worktree, dir, "risk-paths.json"))
-		}
+		out = append(out, filepath.Join(root, dir, "risk-paths.json"))
 	}
-	out = append(out, filepath.Join(agentConfigDirs[0], "risk-paths.json"))
 	return dedupePaths(out)
 }
 
@@ -434,15 +553,6 @@ func dedupePaths(in []string) []string {
 		out = append(out, c)
 	}
 	return out
-}
-
-func findConfig(worktree string) (string, bool) {
-	for _, c := range configCandidates(worktree) {
-		if fileExists(c) {
-			return c, true
-		}
-	}
-	return "", false
 }
 
 // missingConfigMessage is what a caller sees instead of a wrong answer.
@@ -483,9 +593,15 @@ func fileExists(p string) bool {
 	return err == nil && !st.IsDir()
 }
 
+// loadConfig parses the rule table at p.
+//
+// It does NOT necessarily read p. If the agreement check already read that
+// exact path, those are the bytes parsed here, handed over by
+// consumeCertifiedConfigRead. The check and the use are one read, which is the
+// whole point: see certifiedConfigRead in contract.go for why re-opening the
+// path would leave a window the check cannot see across.
 func loadConfig(p string) (*Config, error) {
-	// #nosec G304 -- p is the -config flag: naming the rule table is the point.
-	data, err := os.ReadFile(p)
+	data, err := consumeCertifiedConfigRead(p)
 	if err != nil {
 		return nil, err
 	}
@@ -585,6 +701,26 @@ func readDiff(args []string) (string, error) {
 	return string(data), nil
 }
 
+// readAll drains f, and a read failure is an ERROR.
+//
+// There are exactly two ways this loop ends and they are named separately:
+// io.EOF, which is the stream finishing cleanly and is not a failure; and
+// anything else, which is a failure and is returned as one. The bytes read so
+// far are returned alongside the error so a caller that wants to report the
+// truncation can say how far it got — but no caller may treat them as a
+// complete stream, and none does: readDiff wraps the error and run() aborts.
+//
+// WHY THIS IS NOT TIDINESS. readDiff records whatever it got as the diff
+// channel's digest, and unframedDigestSource exists on the premise that the
+// digest describes "the bytes I classified". A diff truncated by a failing pipe
+// would otherwise be classified as the whole change and attested with a
+// valid-looking SHA-256; the files that fell off the end match no rule, so the
+// fail-closed tier never fires for a file that is not there.
+//
+// The EOF test is errors.Is(err, io.EOF), not a comparison against the string
+// "EOF". Deciding clean termination by a message means any wrapper, any
+// translated errno whose text happens to read "EOF", ends the stream
+// successfully.
 func readAll(f *os.File) ([]byte, error) {
 	var out []byte
 	buf := make([]byte, 64*1024)
@@ -592,13 +728,10 @@ func readAll(f *os.File) ([]byte, error) {
 		n, err := f.Read(buf)
 		out = append(out, buf[:n]...)
 		if err != nil {
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) {
 				return out, nil
 			}
-			if n == 0 {
-				return out, nil
-			}
-			return out, nil
+			return out, fmt.Errorf("read after %d bytes: %w", len(out), err)
 		}
 	}
 }

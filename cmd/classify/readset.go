@@ -957,10 +957,47 @@ type consumerInvocation struct {
 	name string
 	bin  string
 	args []string
-	// verdictExits marks a consumer whose non-zero exit is a VERDICT and not a
-	// failure. cmd/iterate exits 1 for ITERATE and 2 for ESCALATE, and treating
-	// either as a crash would abort the measurement on a healthy run.
+	// verdictExits marks a consumer whose non-zero exit MAY be a VERDICT and not
+	// a failure. cmd/iterate exits 1 for ITERATE and 2 for ESCALATE, and
+	// treating either as a crash would abort the measurement on a healthy run.
+	//
+	// It marks the consumer, not the exit code. WHICH codes are verdicts is
+	// verdictExitCodes below, and it is a closed set: "this consumer sometimes
+	// speaks in exit codes" is not the same claim as "every exit code this
+	// consumer produces is something it said".
 	verdictExits bool
+}
+
+// verdictExitCodes is the CLOSED SET of exit codes that are verdicts, per
+// consumer that has any.
+//
+// cmd/iterate writes its codes down at iterate/main.go:497 and :42-45 — 0
+// APPROVE, 1 ITERATE, 2 ESCALATE, 3 INVALID_INPUT. Three of the four are
+// verdicts. INVALID_INPUT is not: it is iterate saying it could not do the job,
+// and it is reachable from the stage immediately before it, because cmd/gates
+// is the component that destroys classification keys and iterate exits 3 on a
+// run-state carrying no classification. Anything outside the four is not
+// iterate speaking at all.
+//
+// A map and not a range check, because the set is enumerated rather than
+// bounded: 127 is not "too big", it is not a code iterate has.
+var verdictExitCodes = map[string]map[int]string{
+	"iterate": {0: "APPROVE", 1: "ITERATE", 2: "ESCALATE"},
+}
+
+// describeVerdictExits renders a verdict set for an error message, in code
+// order so two runs produce the same text.
+func describeVerdictExits(set map[int]string) string {
+	codes := make([]int, 0, len(set))
+	for code := range set {
+		codes = append(codes, code)
+	}
+	sort.Ints(codes)
+	parts := make([]string, 0, len(codes))
+	for _, code := range codes {
+		parts = append(parts, fmt.Sprintf("%d %s", code, set[code]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // frozenConsumerPipeline derives how to execute each frozen consumer.
@@ -1058,9 +1095,29 @@ func (inv consumerInvocation) run() error {
 	}
 	var exitErr *exec.ExitError
 	if inv.verdictExits && errors.As(err, &exitErr) {
-		// The process ran to completion and returned a verdict. That is the
-		// rewrite happening, which is what is being measured.
-		return nil
+		// NO VERDICT IS NOT A VERDICT. This branch used to accept every exit
+		// code: any exit at all was read as "the process ran to completion and
+		// returned a verdict". SidecarSurvives then treats the nil as "the
+		// rewrite happened" and reports survived=true — but a leg that exited 3
+		// rewrote nothing, so the sidecar's bytes are trivially unchanged and
+		// the survival is certified without ever being observed. That is the
+		// same shape as seal_verify's `exit_code is None -> passed`, which
+		// silently certified every seal in a repo whose test command could not
+		// launch.
+		verdicts, declared := verdictExitCodes[inv.name]
+		if !declared {
+			return fmt.Errorf("sidecar survival: consumer %q is marked verdictExits but no verdict exit set is declared for it, so there is no way to tell a verdict from a failure and guessing would certify a rewrite that may never have happened. Add its codes to verdictExitCodes\n%s", inv.name, out.String())
+		}
+		if _, isVerdict := verdicts[exitErr.ExitCode()]; isVerdict {
+			// The process ran to completion and returned a verdict. That is the
+			// rewrite happening, which is what is being measured.
+			return nil
+		}
+		// The child's output is carried, not dropped: this is the branch on
+		// which an operator most needs to know what the consumer said, and the
+		// buffer is already in hand.
+		return fmt.Errorf("sidecar survival: %s exited %d, which is not one of its verdicts (%s). It did not do the job, so the run-state rewrite this measurement depends on cannot be assumed to have happened\n%s",
+			inv.name, exitErr.ExitCode(), describeVerdictExits(verdicts), out.String())
 	}
 	return fmt.Errorf("sidecar survival: %s did not run: %w\n%s", inv.name, err, out.String())
 }
