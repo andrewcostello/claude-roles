@@ -29,19 +29,90 @@ func realConfig(t *testing.T) *Config {
 // The live config lives in the project. If this machine has that checkout, it
 // must still parse and still classify the money paths the fixture asserts —
 // otherwise the fixture is quietly testing a config nobody runs.
+//
+// ABSENCE IS TWO STATES HERE, NOT ONE, and this row names both instead of
+// collapsing them into a single skip:
+//
+//	evenplay-mono not checked out on this machine    → SKIP, reason named
+//	checked out, but no rule table at any candidate  → FAIL
+//	rule table found                                 → assert
+//
+// Collapsing them is precisely what cost us. Commit 2b18e02 (2026-07-31)
+// renamed the agent config directory .claude/ → .agent/ and updated main.go's
+// agentConfigDirs, but not the path literal this row used to hold; 2b18e02's
+// diff to this very file adds TestConfigCandidates_PrefersVendorNeutralDir and
+// leaves the literal below it untouched. From that commit until this one the
+// row read a path that no longer existed, reported "live project config not on
+// this machine", and counted as an environmental skip on a machine where the
+// project had been checked out the whole time. Measured here at 12d845a6:
+//
+//	~/Project/evenplay-mono/.claude/risk-paths.json   ABSENT
+//	~/Project/evenplay-mono/.agent/risk-paths.json    EXISTS, 31 rules
+//	--- SKIP: TestLiveProjectConfigStillClassifiesMoney (0.00s)
+//
+// So the only seal over the live evenplay money table had not run since the
+// rename. The live table was correct throughout, so no money escaped — but a
+// check that reports success by not looking is worth nothing.
+//
+// WHY IT STAYED INVISIBLE, precisely — because the obvious answer is wrong and
+// the wrong answer produces the wrong repair. It was NOT that the skip was
+// quiet. The old t.Skipf printed under -v, which is how this suite is run, and
+// it even named the missing file; it is on line 339 of the pre-fix verbose log:
+//
+//	main_test.go:37: live project config not on this machine:
+//	  open /home/andrew/Project/evenplay-mono/.claude/risk-paths.json:
+//	  no such file or directory
+//
+// That was read and believed. The failure is that the message DIAGNOSED THE
+// WRONG CAUSE: one os.ReadFile on one hardcoded path cannot tell "no checkout"
+// from "wrong path", and the wording chose the benign reading and stated it as
+// fact — while the project sat checked out at that very root the whole time.
+// Making a wrong diagnosis louder only propagates it faster. The repair is to
+// make the benign reading unreachable unless it is true, which is what the
+// os.Stat on the project root buys: after any future rename the checkout still
+// exists, so the row lands in the middle state and REDDENS on the next run
+// instead of misreporting itself as environmental for another eight days.
+//
+// The candidate list comes from configCandidates — the same function main.go
+// resolves with — so the row and the binary look in the same places and a
+// rename moves them together. Probing one hardcoded directory is what broke,
+// and probing only .agent/ would red on a project legitimately still using the
+// .claude/ compatibility path that configCandidates still honours.
 func TestLiveProjectConfigStillClassifiesMoney(t *testing.T) {
 	t.Parallel()
-	live := filepath.Join(os.Getenv("HOME"), "Project/evenplay-mono/.claude/risk-paths.json")
-	data, err := os.ReadFile(live)
-	if err != nil {
-		t.Skipf("live project config not on this machine: %v", err)
+	root := filepath.Join(os.Getenv("HOME"), "Project/evenplay-mono")
+	if _, err := os.Stat(root); err != nil {
+		// The surviving skip is narrow AND it is now the only reading of the
+		// evidence: the project directory itself is absent, so there is nothing
+		// on this machine this row could have checked. It can no longer be
+		// reached by a config that merely moved.
+		t.Skipf("LIVE MONEY-TABLE SEAL NOT RUN — evenplay-mono is not checked out at %s (%v); "+
+			"this run asserts nothing about the rule table the human PR gate reads", root, err)
 	}
+
+	candidates := configCandidates(root)
+	var live string
+	var data []byte
+	for _, c := range candidates {
+		b, err := os.ReadFile(c)
+		if err != nil {
+			continue
+		}
+		live, data = c, b
+		break
+	}
+	if data == nil {
+		t.Fatalf("evenplay-mono is checked out at %s but carries no rule table at any of %v — "+
+			"either the config moved again or classify itself can no longer find it. Both are "+
+			"defects, and neither may be reported as an environmental skip", root, candidates)
+	}
+
 	cfg, err := parseConfig(data)
 	if err != nil {
-		t.Fatalf("LIVE config is invalid: %v", err)
+		t.Fatalf("LIVE config %s is invalid: %v", live, err)
 	}
 	if cfg.Scaffold {
-		t.Error("live config is still marked scaffold — its money paths were never reviewed")
+		t.Errorf("live config %s is still marked scaffold — its money paths were never reviewed", live)
 	}
 	for _, f := range []string{
 		"apps/finance-domain/wallet/service/debit.go",
@@ -51,7 +122,7 @@ func TestLiveProjectConfigStillClassifiesMoney(t *testing.T) {
 		d := diffFor(f)
 		cls := classify(cfg, parseDiffFiles(d), d)
 		if !cls.FinancialPathsTouched {
-			t.Errorf("live config: %s is not financial — the human PR gate would not fire", f)
+			t.Errorf("live config %s: %s is not financial — the human PR gate would not fire", live, f)
 		}
 	}
 }
