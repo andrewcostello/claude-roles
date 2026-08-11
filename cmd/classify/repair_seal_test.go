@@ -32,11 +32,19 @@ package main
 // same non-evidence. So the wave-1 rows observe the LIVE config resolution
 // end-to-end, through a binary built from the current tree.
 //
-// They must not use ./classify. That is the pinned v1 differential baseline —
-// a tracked FIXTURE that predates this unit — and a seal measuring it can never
-// go red when the source is fixed. That is exactly the vacuity the panel found
-// in the recorded env-var seal (contract_seal_test.go:985). liveClassify builds
-// to a scratch path and proves the artifact it returns is not the pinned one.
+// They must not use ./classify. It is the DEPLOYED artifact, and it lags source
+// by exactly one rebuild — so a seal about SOURCE that read it would go red for
+// a fix that had landed and green for one that had not. liveClassify builds to a
+// scratch path and proves the artifact it returns is neither the deployed one
+// nor the frozen v1 baseline.
+//
+// P4 NOTE (adjudicate(B1-rebuild)): this paragraph used to say ./classify was
+// "the pinned v1 differential baseline — a tracked FIXTURE". That stopped being
+// true at the baseline split, which moved the reference to
+// testdata/baseline/classify-v1-ad289891e9c7, and this commit rebuilt ./classify
+// for the first time. Left uncorrected the sentence would tell the next reader
+// never to rebuild the deployed artifact, which is now the required action after
+// any source fix.
 
 import (
 	"bytes"
@@ -55,12 +63,18 @@ import (
 
 // liveClassify builds the CURRENT tree to a scratch path and returns it.
 //
-// THE TRAP, which two authors have already sprung: `go build` with no -o writes
-// cmd/classify/classify, which is the tracked pinned v1 producer the
-// differential compares against. One rebuild makes both differential seals
-// tautologies. This function always passes -o, and it hashes the pinned fixture
-// before and after so that a future edit which reintroduces a default-path
-// build fails here loudly instead of silently destroying the baseline.
+// THE TRAP, which two authors sprang before the baseline split: `go build` with
+// no -o writes cmd/classify/classify, which was then also the pinned v1 producer
+// the differential compares against, so one stray rebuild made both differential
+// seals tautologies. The split defused that — the reference now lives under
+// testdata/, where no documented build writes — and this function still always
+// passes -o, because writing over the DEPLOYED artifact from a test would leave
+// an unreviewed binary in the tree for the next `git status` to commit.
+//
+// The before/after hash of the frozen baseline is KEPT as a cheap invariant: it
+// costs one read and it is the thing that would notice a future edit pointing
+// `pinnedBinary` back at a build output. It can no longer fire on a default-path
+// build, and that is the split working, not the guard rotting.
 //
 // It also proves the returned artifact is NOT the pinned one. Without that, a
 // mistake in the build could leave these rows measuring the frozen baseline —
@@ -80,10 +94,10 @@ func liveClassify(t *testing.T) string {
 	}
 
 	if pinnedAfter := fileDigest(t, pinnedBinary); pinnedAfter != pinnedBefore {
-		t.Fatalf("THE PINNED BASELINE WAS OVERWRITTEN by this build (%s: %s -> %s).\n"+
-			"%s is a tracked FIXTURE — the v1 producer that predates this unit — and it is also the repo's default `go build` output path.\n"+
-			"Restore it with `git checkout -- cmd/classify/classify` and build only to a scratch path.",
-			pinnedBinary, pinnedBefore[:12], pinnedAfter[:12], pinnedBinary)
+		t.Fatalf("THE FROZEN v1 BASELINE WAS OVERWRITTEN by this build (%s: %s -> %s).\n"+
+			"%s is a tracked FIXTURE — the v1 producer that predates this unit — and it lives under testdata/ precisely because no documented build writes there. A build reaching it means something now points a build output at the reference.\n"+
+			"Restore it with `git checkout -- cmd/classify/%s` and build only to a scratch path.",
+			pinnedBinary, pinnedBefore[:12], pinnedAfter[:12], pinnedBinary, pinnedBinary)
 	}
 
 	// FRESHNESS, the anti-vacuity guard: the artifact under test must be a build
@@ -665,43 +679,51 @@ func TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes(t *t
 // of the list and findConfig takes the first hit, so no table in the worktree is
 // ever consulted.
 //
-// THE DIFFERENCE BETWEEN THIS ROW AND THE EXISTING ONE.
-// TestSeal_Recorded_EnvVarOutranksBothConfigDirectories (contract_seal_test.go)
-// RECORDS the behaviour as green. This row BLOCKS it.
-//
-// P4 RULING (adjudicate(B1-repair), dispute 1): THIS ROW GOVERNS THE SOURCE.
-// The body must close the bypass; the recorded row is not a licence to leave it
-// open. The recorded row is KEPT, with its doc corrected, because the two rows
-// do not actually assert opposite things about the same subject:
+// THE DIFFERENCE BETWEEN THIS ROW AND THE OTHER ONE.
+// TestSeal_Shipped_EnvVarDoesNotOutrankTheConfigDirectories (contract_seal_test.go)
+// judges the ARTIFACT. This row judges the SOURCE. Both now assert the bypass is
+// closed; they are not redundant, because they can disagree, and the disagreement
+// is the signal:
 //
 //   - this row builds the current tree to a scratch path. Subject: SOURCE.
-//   - the recorded row runs ./classify. Subject: THE SHIPPED ARTIFACT — every
-//     documented invocation (roles/tasker.md:224, skills/pr-raise.md:36,
-//     README.md:35) execs the committed cmd/classify/classify by absolute path.
+//   - that row runs ./classify. Subject: THE SHIPPED ARTIFACT — every documented
+//     invocation (roles/tasker.md:224, skills/pr-raise.md:36, README.md:35)
+//     execs the committed cmd/classify/classify by absolute path.
 //
-// The recorded row's stated trigger — "it turns red when someone fixes the
-// ordering" — is FALSE, and P4 verified it is false rather than reasoning about
-// it: under a reference implementation that deleted the env-var candidate, this
-// row went green and the recorded row STAYED GREEN. Its real trigger is the
-// rebuild-and-commit of cmd/classify/classify, which B1 must never do because
-// that file is the pinned v1 differential baseline.
+// THIS ROW GREEN + THAT ROW RED = the fix is in the tree and absent from the
+// artifact. That was the repo's actual state from the repair commit until the
+// rebuild, and it is the state the pair exists to make visible.
 //
-// THE CONSEQUENCE THE BODY MUST NOT MISREAD, because it is bigger than this row:
-// fixing main.go does not fix production. The Tasker runs the committed binary.
-// Until cmd/classify/classify is rebuilt and committed — an act that also
-// destroys the v1 differential baseline and therefore needs the operator, not
-// the body — every repair in this unit is green in the tree and absent from the
-// artifact that classifies real money diffs. Escalated to the operator; it is
-// not P3's to resolve and must not be resolved by rebuilding the baseline.
+// P4 UPDATE (adjudicate(B1-rebuild)). The paragraphs that used to sit here said
+// the other row "RECORDS the behaviour as green", that its trigger was
+// unreachable, and that rebuilding cmd/classify/classify "destroys the v1
+// differential baseline and therefore needs the operator". All three are now
+// history:
 //
-// MEASURED TODAY, live build, worktree holding the real table, non-scaffold
-// attacker table named by the variable:
+//   - the baseline split moved the differential's reference to a frozen,
+//     content-addressed copy under testdata/, so a rebuild destroys nothing;
+//   - the operator authorised the rebuild, it was performed from a clean clone,
+//     and the other row fired on its designed trigger and has been inverted;
+//   - so "fixing main.go does not fix production" is no longer this unit's
+//     standing condition. It is a transient one, between a source fix and the
+//     rebuild that ships it, and the pair above is what measures the gap.
+//
+// THE CONSEQUENCE THE NEXT SOURCE FIX MUST NOT MISREAD: the Tasker still runs
+// the committed binary, so a repair to main.go reaches production only when
+// cmd/classify/classify is rebuilt from a clean clone and committed. That is now
+// ordinary maintenance — no baseline is at risk — and
+// TestSeal_Drift_CommittedClassifyIsAFaithfulBuildOfItsSource
+// (baseline_seal_test.go) is what says out loud when it is owed.
+//
+// MEASURED AT THE TIME THIS ROW WAS WRITTEN, live build of the UNREPAIRED tree,
+// worktree holding the real table, non-scaffold attacker table named by the
+// variable:
 //
 //	exit 0, config_path = <attacker>, financial_paths_touched = false,
 //	human_pr_gate = false, risk = high
 //
 // on apps/finance-domain/wallet/service/debit.go. A clean bypass — not the
-// "luck, not design" scaffold case the recorded row notes at :1055.
+// "luck, not design" scaffold case the other row used to note.
 //
 // WHAT THE BODY MAY CHOOSE. Ignoring the variable and refusing outright both
 // close the harm, so this row asserts the harm and not the mechanism: the money

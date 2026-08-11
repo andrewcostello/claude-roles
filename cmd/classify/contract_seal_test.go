@@ -965,71 +965,84 @@ func TestSeal_ResolveConfigDual(t *testing.T) {
 	})
 }
 
-// RECORDED SECURITY FINDING — this row measures the SHIPPED BINARY.
+// SHIPPED-ARTIFACT GUARD — this row measures the SHIPPED BINARY.
 //
-// configCandidates (main.go:401-413) places $RISK_PATHS_CONFIG AHEAD of both
-// directories. An agent that can set an environment variable therefore
-// redirects the entire money-path table, and the dual-config check never runs
-// at all — ResolveConfigDual is not reached, so a differing pair is never
-// detected.
+// The finding it used to record: configCandidates (main.go:401-413) placed
+// $RISK_PATHS_CONFIG AHEAD of both config directories, so an agent that could
+// set an environment variable redirected the entire money-path table and the
+// dual-config check never ran at all — ResolveConfigDual was not reached, so a
+// differing pair was never detected.
 //
 // Sealed by EXEC rather than by mutating this process's environment: a child
 // process is both stronger evidence — config_path in its own output names the
 // file it used — and free of any risk of racing main_test.go's parallel
 // TestConfigCandidates_PrefersVendorNeutralDir, which reads the same variable.
 //
-// ─── P4 AMENDMENT (adjudicate(B1-repair), dispute 1) ─────────────────────────
+// WHICH ROW GOVERNS WHAT. TestSeal_Repair_EnvVarMustNotOutrankTheWorktreeMoneyTable
+// (repair_seal_test.go) governs the SOURCE: it builds the current tree to a
+// scratch path. This row governs the ARTIFACT: it runs ./classify, the tracked
+// committed binary that production execs — roles/tasker.md:224,
+// skills/pr-raise.md:36 and README.md:35 all name
+// ~/Project/claude-workflow/cmd/classify/classify by absolute path, and nothing
+// builds it at invocation time. Two rows, two subjects, and the gap between them
+// is the thing worth watching.
 //
-// This doc previously said the finding was "out of B1's scope", "must NOT be
-// closed by quietly reordering the candidate list", and that the row "turns red
-// when someone fixes the ordering". The first two are superseded and the third
-// is false. All three are corrected here; the CODE below is unchanged.
+// ─── P4 AMENDMENT (adjudicate(B1-rebuild)) · THE ROW IS INVERTED ─────────────
 //
-// WHICH ROW GOVERNS. TestSeal_Repair_EnvVarMustNotOutrankTheWorktreeMoneyTable
-// (repair_seal_test.go) now BLOCKS this behaviour and is the governing row for
-// the SOURCE. B1 is no longer recording this defect; it is fixing it. This row
-// does not contradict that one, and the reason is the whole point of the
-// amendment: THE TWO ROWS MEASURE DIFFERENT ARTIFACTS.
+// IT FIRED, ON ITS DESIGNED TRIGGER. This commit rebuilt and committed
+// cmd/classify/classify, so the repaired source finally reached the artifact and
+// the recorded finding stopped being true of it:
 //
-//   - the repair row builds the current tree to a scratch path. Subject: SOURCE.
-//   - this row runs ./classify, the tracked committed binary. Subject: the
-//     artifact PRODUCTION ACTUALLY INVOKES — roles/tasker.md:224,
-//     skills/pr-raise.md:36 and README.md:35 all exec
-//     ~/Project/claude-workflow/cmd/classify/classify by absolute path. Nothing
-//     builds it at invocation time.
+//	before the rebuild:  config_path = <attacker table>   the bypass was live
+//	after  the rebuild:  config_path = <worktree table>   the bypass is closed
 //
-// WHAT THE RED-TRIGGER REALLY IS. Not "someone fixes the ordering". VERIFIED by
-// P4 with a throwaway reference implementation that deleted the env-var
-// candidate outright: the repair row went green and THIS ROW STAYED GREEN. A
-// source fix cannot move it. It turns red only when cmd/classify/classify is
-// REBUILT AND COMMITTED — which B1 must never do, because that same file is the
-// pinned v1 differential baseline. So within this unit the trigger cannot fire;
-// across the repo it fires one commit later, on the rebuild.
+// The previous doc said "delete it in the commit that rebuilds
+// cmd/classify/classify". P4 declines to delete, and follows the ruling P4
+// (adjudicate G1) made when it rebuilt cmd/gates/gates and two recorded rows
+// fired: INVERT, do not delete. The subject is still worth a row — nothing else
+// in the suite execs the deployed artifact and asks it about the money table —
+// and a deleted row cannot notice the artifact regressing.
 //
-// THAT LAG IS THE VALUE, and it is why this row is kept rather than deleted.
-// Between P3 fixing main.go and someone rebuilding the binary, the repair row
-// is green while the money-gate bypass is STILL LIVE in the artifact the Tasker
-// runs. This row is the only thing in the suite that says so. Read it as "the
-// shipped classify still has the bypass", not as "the ordering is unfixed".
+// ─── WHY INVERSION NEEDS NEW MACHINERY, AND WHAT IT IS ───────────────────────
 //
-// Delete it in the commit that rebuilds cmd/classify/classify — and after the
-// split there is no longer a differential baseline to re-derive in that commit,
-// which is the whole point of the split.
+// G1's warning applies here verbatim and was tested against this row rather than
+// assumed: the row drew its non-vacuity FROM THE REDIRECT, which is exactly what
+// the fix removes. Inverted naively, the row's assertion — "config_path is the
+// worktree table under $RISK_PATHS_CONFIG=<attacker>" — becomes character for
+// character its own CONTROL, the run with no variable set at all. Two runs that
+// must now agree cannot tell "the artifact ignores the variable" from "the
+// variable never reached the artifact". A misspelled name, a dropped cmd.Env, an
+// unreadable attacker file: all of them pass. The strongest guard in the row had
+// become the weakest.
 //
-// AMENDED BY THE P4 (B1-baseline). The exec below named `pinnedBinary`. That
-// was correct only while `pinnedBinary` and `deployedClassifyPath` were the same
-// file; now that the differential's reference has moved to a frozen copy under
-// testdata/, `pinnedBinary` is frozen BY CONSTRUCTION and this row's trigger
-// could never fire again — strictly worse than the unfireability it already had,
-// and precisely the trap
-// TestSeal_Baseline_RecordedEnvVarRowFiresOnAFixedDeployedArtifact
-// (baseline_seal_test.go:614) was written to catch. It now names
-// `deployedClassifyPath`, which is what the paragraph above always claimed the
-// subject was: the tracked committed binary production execs. That is still the
-// ARTIFACT, not the source — nothing here builds anything — so the lag this row
-// exists to measure is unchanged. What changed is that the artifact may now be
-// rebuilt and committed, so the trigger fires one commit after the source fix.
-func TestSeal_Recorded_EnvVarOutranksBothConfigDirectories(t *testing.T) {
+// SO THE ROW CARRIES A CHANNEL WITNESS, and it is chosen so that it does not
+// depend on the defect being present IN THE SUBJECT. The frozen v1 producer
+// under testdata/ — content-addressed, sha256-pinned, verified at use, and
+// unable to change ever again — is run through the SAME closure, with the SAME
+// argv and the SAME environment slice, and must come out REDIRECTED. That
+// measures the plumbing rather than trusting it: the variable does reach a child
+// process here, the attacker table is readable and parseable from it, and the
+// two tables genuinely disagree about the wallet path. Only then does the
+// deployed artifact's refusal to be redirected mean anything.
+//
+// G1's P4 reached for `updated_at` as its proof of execution and it FAILED —
+// RFC3339 second resolution, and the field had been seeded microseconds earlier,
+// so the timestamps matched and proved nothing. Recorded here so nobody reaches
+// for a timestamp again. A frozen, content-addressed second binary has no
+// resolution to run out of.
+//
+// NOTE ON THE WITNESS'S IDENTITY. Exec'ing `pinnedBinary` here does NOT make
+// this row a measurement of the frozen baseline — that is the trap
+// TestSeal_Baseline_ShippedEnvVarRowFiresOnAnUnrepairedDeployedArtifact
+// (baseline_seal_test.go) exists to catch, and it still catches it, because the
+// ASSERTION below names `deployedClassifyPath` and the witness's verdict is a
+// t.Fatalf precondition, not a pass condition.
+//
+// WHAT TURNS IT RED NOW: the deployed artifact letting the environment govern
+// the money table again — a revert, or a source fix lost in a rebuild from the
+// wrong tree. That is the regression the rebuild was performed to prevent, and
+// this row is what would notice it.
+func TestSeal_Shipped_EnvVarDoesNotOutrankTheConfigDirectories(t *testing.T) {
 	t.Parallel()
 
 	wt := t.TempDir()
@@ -1059,25 +1072,27 @@ func TestSeal_Recorded_EnvVarOutranksBothConfigDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func(env []string) map[string]any {
+	// One closure for every run in this row, so the witness below exercises the
+	// same argv and the same environment plumbing as the assertion.
+	run := func(bin string, env []string) map[string]any {
 		t.Helper()
-		cmd := exec.Command(deployedClassifyPath, "-json", "-no-git", "-worktree", wt, diffPath)
+		cmd := exec.Command(bin, "-json", "-no-git", "-worktree", wt, diffPath) // #nosec G204 -- a tracked binary in this package
 		cmd.Env = append(os.Environ(), env...)
 		var out, errb bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errb
 		if err := cmd.Run(); err != nil {
-			t.Fatalf("the deployed artifact %s failed: %v\n%s", deployedClassifyPath, err, errb.String())
+			t.Fatalf("%s failed: %v\n%s", bin, err, errb.String())
 		}
 		var m map[string]any
 		if err := json.Unmarshal(out.Bytes(), &m); err != nil {
-			t.Fatalf("output is not JSON: %v\n%s", err, out.String())
+			t.Fatalf("%s: output is not JSON: %v\n%s", bin, err, out.String())
 		}
 		return m
 	}
 
 	// CONTROL: with no env var the worktree's .agent/ table is used and the
 	// money path is correctly critical and financial.
-	base := run([]string{"RISK_PATHS_CONFIG="})
+	base := run(deployedClassifyPath, []string{"RISK_PATHS_CONFIG="})
 	if base["config_path"] != trustedPath {
 		t.Fatalf("CONTROL used config_path %v, want the worktree's .agent table %q", base["config_path"], trustedPath)
 	}
@@ -1085,22 +1100,35 @@ func TestSeal_Recorded_EnvVarOutranksBothConfigDirectories(t *testing.T) {
 		t.Fatalf("CONTROL: the wallet path is not financial under the trusted table — the fixture is wrong")
 	}
 
-	redirected := run([]string{"RISK_PATHS_CONFIG=" + attackerPath})
-	if redirected["config_path"] != attackerPath {
-		t.Errorf("$RISK_PATHS_CONFIG no longer outranks the config directories (config_path = %v).\n"+
-			"If that is a deliberate fix, good — but it is a change to the authority channel: re-read the SECURITY NOTE on ResolveConfigDual (contract.go:458-463) and delete this recorded finding in the same commit.",
-			redirected["config_path"])
+	// CHANNEL WITNESS / PROOF OF EXECUTION. The assertion below is that a run
+	// WITH the variable looks exactly like the control WITHOUT it, so on its own
+	// it cannot distinguish an artifact that ignores the variable from a harness
+	// that never delivered it. The frozen v1 producer is the fixed point that
+	// settles it: same closure, same argv, same env slice, and it MUST be
+	// redirected. It is checked against its pinned digest first — presence is not
+	// identity, and a witness that is not the frozen v1 witnesses nothing.
+	if err := VerifyPinnedBaseline(pinnedBinary); err != nil {
+		t.Fatalf("the channel witness is not the frozen v1 producer: %v", err)
 	}
-	if redirected["financial_paths_touched"] == true {
-		t.Errorf("the redirected table still reports the wallet path as financial — the fixture no longer demonstrates the redirect")
+	witness := run(pinnedBinary, []string{"RISK_PATHS_CONFIG=" + attackerPath})
+	if witness["config_path"] != attackerPath {
+		t.Fatalf("CHANNEL WITNESS: the frozen v1 producer %s was NOT redirected by $RISK_PATHS_CONFIG (config_path = %v, want %q).\n"+
+			"v1 is the artifact whose env-var bypass this whole unit is about; if it is not redirected here, the variable is not reaching the child process or the attacker table is not readable from it. Either way the assertion below would pass for the wrong reason, so it is not run.",
+			pinnedBinary, witness["config_path"], attackerPath)
 	}
-	// The point, stated so the finding is legible in the failure output rather
-	// than only in this comment: an environment variable silenced the money
-	// gate, and ResolveConfigDual never ran.
-	if redirected["human_pr_gate"] == true && redirected["financial_paths_touched"] != true {
-		// human_pr_gate is forced true by the scaffold flag here, which is the
-		// only thing that stops this being a clean bypass. That is luck, not
-		// design: a non-scaffold attacker table would not set it.
-		t.Logf("note: human_pr_gate survived only because the redirected table is itself a scaffold; a hand-written attacker table would not set it")
+	if witness["financial_paths_touched"] == true {
+		t.Fatalf("CHANNEL WITNESS: the attacker table still reports the wallet path as financial, so the two tables do not actually disagree about money and \"not redirected\" would be indistinguishable from \"redirected to an identical table\". Re-derive the fixture.")
+	}
+
+	// THE ASSERTION. Same variable, same target, the artifact production execs.
+	redirected := run(deployedClassifyPath, []string{"RISK_PATHS_CONFIG=" + attackerPath})
+	if redirected["config_path"] != trustedPath {
+		t.Errorf("$RISK_PATHS_CONFIG OUTRANKS THE CONFIG DIRECTORIES IN THE DEPLOYED ARTIFACT AGAIN (config_path = %v, want the worktree table %q).\n"+
+			"The frozen v1 producer was redirected by the same variable one line above, so the channel works and this is the artifact's own answer. An agent that can set an environment variable is redirecting the money-path table, and ResolveConfigDual is never reached — see the SECURITY NOTE on ResolveConfigDual (contract.go:458-463).\n"+
+			"The source is governed separately by TestSeal_Repair_EnvVarMustNotOutrankTheWorktreeMoneyTable. If that row is GREEN and this one is RED, the fix is in the tree and absent from the artifact: rebuild and commit cmd/classify/classify from a clean clone.",
+			redirected["config_path"], trustedPath)
+	}
+	if redirected["financial_paths_touched"] != true {
+		t.Errorf("the deployed artifact does not report the wallet path as financial under the worktree's own table (financial_paths_touched = %v). The money gate is silent for a money diff.", redirected["financial_paths_touched"])
 	}
 }

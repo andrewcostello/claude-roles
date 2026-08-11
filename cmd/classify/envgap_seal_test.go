@@ -92,13 +92,12 @@ package main
 //
 //   - FROZEN ARTIFACT. Every behavioural row goes through liveClassify
 //     (repair_seal_test.go), which builds the CURRENT tree to a scratch path,
-//     hashes the pinned ./classify before and after to prove the baseline was
-//     not overwritten, proves the fresh artifact is not byte-identical to the
-//     baseline, and requires it to answer a probe the pinned binary predates.
-//     A row that exec'd ./classify would measure the v1 fixture and could never
-//     see a source fix — see the amendment on
-//     TestSeal_Recorded_EnvVarOutranksBothConfigDirectories, where P4 verified
-//     that a source fix left that recorded row green.
+//     proves the fresh artifact is not byte-identical to the frozen v1 baseline,
+//     and requires it to answer a probe that baseline predates. These rows are
+//     about SOURCE, so they must never read a committed binary: ./classify lags
+//     source by a rebuild, and testdata/'s v1 baseline is frozen forever. The
+//     artifact is judged separately, by
+//     TestSeal_Shipped_EnvVarDoesNotOutrankTheConfigDirectories.
 //   - EXECUTING NOTHING / A CONSTANT. Every row carries a positive CONTROL
 //     judged in the same call: a run that must come out the OTHER way. A body
 //     that refuses everything fails the controls; a body that permits

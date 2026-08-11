@@ -26,9 +26,11 @@ package main
 //   - rebuilding it silently retargets the differential at a build of the very
 //     source the differential is supposed to be checking (the B1 panel rated
 //     this HIGH: "one rebuild makes both seals tautologies");
-//   - TestSeal_Recorded_EnvVarOutranksBothConfigDirectories is structurally
-//     unfireable inside this unit — it measures the frozen artifact, so a source
-//     fix leaves it green, which the P4 verified by construction;
+//   - the env-var row on the deployed artifact (then
+//     TestSeal_Recorded_EnvVarOutranksBothConfigDirectories, now
+//     TestSeal_Shipped_EnvVarDoesNotOutrankTheConfigDirectories) was structurally
+//     unfireable inside this unit — it measured the frozen artifact, so a source
+//     fix left it green, which the P4 verified by construction;
 //   - two authors have destroyed the file with their first command.
 //
 // ─── WHAT IS BEING SEALED (operator decision, already made) ──────────────────
@@ -148,8 +150,17 @@ var differentialRows = []string{
 	"TestSeal_V1BytesAreIdenticalToThePinnedBinary",
 }
 
-// recordedEnvVarRow is the recording whose trigger cannot fire today.
-const recordedEnvVarRow = "TestSeal_Recorded_EnvVarOutranksBothConfigDirectories"
+// shippedEnvVarRow is the row that judges the DEPLOYED artifact on whether
+// $RISK_PATHS_CONFIG can redirect the money table.
+//
+// AMENDED BY THE P4 (B1-rebuild). It was `recordedEnvVarRow`, naming
+// TestSeal_Recorded_EnvVarOutranksBothConfigDirectories — a recording of a live
+// defect. The rebuild in this commit closed that defect in the artifact, the row
+// fired on its designed trigger, and it has been inverted rather than deleted
+// (contract_seal_test.go). A row whose name asserted the opposite of its body
+// would be exactly the stale artifact this unit exists to eliminate, so the name
+// moved with the polarity.
+const shippedEnvVarRow = "TestSeal_Shipped_EnvVarDoesNotOutrankTheConfigDirectories"
 
 // ─── ROW 1 ───────────────────────────────────────────────────────────────────
 
@@ -582,95 +593,92 @@ func TestSeal_Baseline_RebuildingTheDeployedArtifactChangesNoDifferentialAnswer(
 
 // ─── ROW 5 ───────────────────────────────────────────────────────────────────
 
-// ROW 5 — THE UNFIREABLE RECORDING BECOMES FIREABLE.
+// ROW 5 — THE SHIPPED-ARTIFACT ROW TRACKS THE DEPLOYED ARTIFACT, AND ONLY IT.
 //
 // ─── THE DECISION, AND WHY ───────────────────────────────────────────────────
 //
-// TestSeal_Recorded_EnvVarOutranksBothConfigDirectories KEEPS MEASURING THE
+// TestSeal_Shipped_EnvVarDoesNotOutrankTheConfigDirectories KEEPS MEASURING THE
 // DEPLOYED ARTIFACT. It is not repointed at source, it is not deleted, and it
 // is not weakened. A NEW row is not needed for source observability either,
 // because one already exists and governs:
 // TestSeal_Repair_EnvVarMustNotOutrankTheWorktreeMoneyTable builds the tree to
 // a scratch path and blocks the bypass in SOURCE (P4 ruling, dispute 1).
 //
-// So the two subjects are already covered and the P4's reason for keeping the
-// recording survives the split intact: between a source fix and a rebuild, the
-// recording is the ONLY row in the suite that says the money-gate bypass is
-// still live in the artifact the Tasker runs. Repointing it at source would
-// delete exactly that fact and leave the repo unable to tell "fixed" from
-// "shipped".
-//
-// WHAT THE SPLIT CHANGES IS THE SUBJECT'S MUTABILITY, NOT THE SUBJECT. Today
-// the recording execs `pinnedBinary`, which is simultaneously the frozen
-// differential baseline — a file this unit may never rebuild — so its trigger
-// is structurally unable to fire (P4 verified: under a reference fix, the
-// repair row went green and the recording STAYED GREEN). After the split the
-// recording execs the DEPLOYED artifact, which is an ordinary build output that
-// may be rebuilt and committed, so the trigger fires one commit after the
-// source fix — which is the right moment: the moment the bypass actually stops
-// in production.
+// So the two subjects are already covered, and the reason for keeping a row on
+// the artifact survives the split intact: between a source fix and a rebuild,
+// this is the ONLY row in the suite that can tell "fixed" from "shipped".
+// Repointing it at source would delete exactly that distinction.
 //
 // THE TRAP THIS ROW EXISTS TO CATCH: a body that "splits" by repointing
-// `pinnedBinary` at the frozen testdata copy and leaves the recording exec'ing
-// `pinnedBinary`. The recording would then measure a file that is frozen BY
-// CONSTRUCTION and could never fire again. That is worse than today.
+// `pinnedBinary` at the frozen testdata copy and leaves the shipped-artifact row
+// exec'ing `pinnedBinary`. That row would then measure a file that is frozen BY
+// CONSTRUCTION and could never respond to anything again.
+//
+// ─── P4 AMENDMENT (adjudicate(B1-rebuild)) · POLARITY INVERTED ───────────────
+//
+// This row was written while the deployed artifact still carried the bypass, so
+// it demonstrated sensitivity in the only direction available then: install a
+// REPAIRED artifact, watch the recording go RED. This commit rebuilt and
+// committed cmd/classify/classify, so the repaired artifact is now what an
+// untouched clone contains, and that construction has no defect left to install.
+//
+// The property being sealed is unchanged — THE SHIPPED-ARTIFACT ROW'S VERDICT IS
+// A FUNCTION OF THE BYTES AT `deployedClassifyPath` — so the demonstration is
+// simply mirrored: install an UNREPAIRED artifact and watch the row go RED.
+//
+// AND THE UNREPAIRED ARTIFACT IS FREE. It is the frozen v1 producer already
+// tracked under testdata/: content-addressed, sha256-pinned, verified at use,
+// and permanently in possession of the bypass. The previous version patched
+// main.go:403 and built a candidate; that machinery is deleted, because a patch
+// that must be re-derived whenever main.go moves is a maintenance burden the
+// pinned fixture does not have. `occurrences`, `patchSource` on this path and
+// the scratch build all go with it.
 //
 // ─── HOW IT IS MEASURED ──────────────────────────────────────────────────────
 //
-// Build a deployed artifact in which the env var does NOT govern, install it at
-// the deployed path in a clone, and require BOTH halves at once:
+// Install the frozen v1 producer at the deployed path in a clone, and require
+// BOTH halves at once:
 //
-//	(a) the recording goes RED, for its own stated reason; and
+//	(a) the shipped-artifact row goes RED, for its own stated reason; and
 //	(b) the differential's reference is byte-unchanged and the differential
 //	    still agrees.
 //
-// The "fixed" artifact is produced by a single-occurrence patch to main.go:403
-// (`os.Getenv("RISK_PATHS_CONFIG")`), and the fix is VERIFIED BY OBSERVATION
-// rather than by trusting the patch: the built binary is run with the variable
-// pointing at an attacker table and must report the worktree's own table. If
-// the tree has already been repaired in source, the patch is skipped and the
-// same observation is what decides.
+// (b) is the half that could not hold before the split: back then ./classify and
+// the reference were one file, so installing anything at the deployed path
+// re-derived the baseline (measured: ad289891... -> 52d92ecf...). It holds now
+// because they are two files, and that is the whole point of the split.
 //
-// MEASURED TODAY (clone of cmd/):
+// The unrepaired artifact is VERIFIED BY OBSERVATION rather than by assumption:
+// v1 is run with the variable pointing at an attacker table and must report the
+// attacker table. A fixture that is not actually bypassable cannot make anything
+// below mean what it says.
 //
-//	(a) FIRES.  --- FAIL: TestSeal_Recorded_EnvVarOutranksBothConfigDirectories
-//	            "$RISK_PATHS_CONFIG no longer outranks the config directories"
-//	(b) FAILS.  installing the fixed artifact at ./classify overwrote the
-//	            differential's reference: ad289891... -> 52d92ecf...
-//
-// which is the entanglement stated exactly: today you cannot make the recording
-// fire without destroying the baseline, and you cannot preserve the baseline
-// without leaving the recording unfireable.
-//
-// CONTROL, same call: on an untouched clone the recording must PASS. It records
-// a bypass that is live in the shipped artifact; a recording that is red
-// already, or red for a reason unrelated to the env var, cannot be read as
-// having fired.
-func TestSeal_Baseline_RecordedEnvVarRowFiresOnAFixedDeployedArtifact(t *testing.T) {
+// CONTROL, same call: on an untouched clone the shipped-artifact row must PASS.
+// It now records a bypass that is CLOSED in the shipped artifact; if it is red
+// before anything is installed, nothing below can be read as the installation
+// having caused it.
+func TestSeal_Baseline_ShippedEnvVarRowFiresOnAnUnrepairedDeployedArtifact(t *testing.T) {
 	defer red(t)
 
-	rows := []string{recordedEnvVarRow}
+	rows := []string{shippedEnvVarRow}
 
-	// ── CONTROL: the recording is green against the artifact as shipped ──
+	// ── CONTROL: the row is green against the artifact as shipped ──
 	control := cloneModule(t)
 	cv, cOut := runRows(t, control, rows)
-	if cv[recordedEnvVarRow] != "PASS" {
-		t.Fatalf("CONTROL: %s is %s on an UNTOUCHED clone. It records a bypass that is live in the shipped artifact; if it is already red, nothing below can be read as it firing.\n%s", recordedEnvVarRow, cv[recordedEnvVarRow], cOut)
+	if cv[shippedEnvVarRow] != "PASS" {
+		t.Fatalf("CONTROL: %s is %s on an UNTOUCHED clone. It records that the bypass is CLOSED in the shipped artifact; if it is already red, nothing below can be read as the installed artifact having caused it.\n%s", shippedEnvVarRow, cv[shippedEnvVarRow], cOut)
 	}
 
-	// ── build a deployed artifact in which the variable does not govern ──
-	patchDir := cloneModule(t)
-	const envCall = `os.Getenv("RISK_PATHS_CONFIG")`
-	src := filepath.Join(patchDir, "main.go")
-	if occurrences(t, src, envCall) == 1 {
-		patchSource(t, src, envCall, `os.Getenv("RISK_PATHS_CONFIG_DISABLED_BY_SEAL")`)
+	// ── the unrepaired artifact: the frozen v1 producer, checked then observed ──
+	if err := VerifyPinnedBaseline(pinnedBinary); err != nil {
+		t.Fatalf("the unrepaired artifact this row installs is not the frozen v1 producer: %v", err)
 	}
-	fixed := filepath.Join(t.TempDir(), "classify-fixed")
-	if out, err := goTool(t, patchDir, "build", "-o", fixed, "."); err != nil {
-		t.Fatalf("building the fixed artifact failed: %v\n%s", err, out)
+	unrepaired, err := os.ReadFile(pinnedBinary) // #nosec G304 -- the tracked baseline fixture
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// FIXTURE VALIDITY, BY OBSERVATION. Do not trust the patch: run the thing.
+	// FIXTURE VALIDITY, BY OBSERVATION. Do not assume v1 is bypassable: run it.
 	money, drifted := realTable(t), driftedTable(t)
 	assertTablesDisagreeOnMoney(t, money, drifted)
 	wt := writeDual(t, money, nil)
@@ -679,53 +687,51 @@ func TestSeal_Baseline_RecordedEnvVarRowFiresOnAFixedDeployedArtifact(t *testing
 		t.Fatal(err)
 	}
 	diffPath := writeDiff(t, wt, walletPath)
-	trusted := filepath.Join(wt, ".agent", "risk-paths.json")
-	check := runLive(t, fixed, filepath.Dir(fixed), []string{"RISK_PATHS_CONFIG=" + attacker},
-		"-json", "-no-git", "-worktree", wt, diffPath)
-	if check.exit != 0 {
-		t.Fatalf("the candidate fixed artifact exited %d, not 0 — it is not a working classifier and cannot stand in for a repaired deployment\n%s", check.exit, check.all())
-	}
-	if got := check.json(t)["config_path"]; got != trusted {
-		t.Fatalf("the candidate fixed artifact still lets $RISK_PATHS_CONFIG govern (config_path = %v, want the worktree table %q). This row needs a genuinely repaired artifact; re-derive the patch at main.go:403.", got, trusted)
-	}
-
-	// ── install it at the DEPLOYED path in a fresh, unpatched clone ──
-	pkg := cloneModule(t)
-	refBefore := fileDigest(t, filepath.Join(pkg, pinnedBinary))
-	fixedBytes, err := os.ReadFile(fixed) // #nosec G304 -- this test's own scratch build
+	pkgDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(pkg, deployedClassifyPath), fixedBytes, 0o700); err != nil { // #nosec G306 -- an executable in this test's own scratch clone
+	check := runLive(t, filepath.Join(pkgDir, pinnedBinary), pkgDir, []string{"RISK_PATHS_CONFIG=" + attacker},
+		"-json", "-no-git", "-worktree", wt, diffPath)
+	if check.exit != 0 {
+		t.Fatalf("the frozen v1 producer exited %d, not 0 — it is not a working classifier and cannot stand in for an unrepaired deployment\n%s", check.exit, check.all())
+	}
+	if got := check.json(t)["config_path"]; got != attacker {
+		t.Fatalf("the frozen v1 producer did NOT let $RISK_PATHS_CONFIG govern (config_path = %v, want the attacker table %q). This row needs a genuinely bypassable artifact to install; if v1 is not bypassable, the finding this whole unit is built on has been mis-stated.", got, attacker)
+	}
+
+	// ── install it at the DEPLOYED path in a fresh clone ──
+	pkg := cloneModule(t)
+	refBefore := fileDigest(t, filepath.Join(pkg, pinnedBinary))
+	if err := os.WriteFile(filepath.Join(pkg, deployedClassifyPath), unrepaired, 0o700); err != nil { // #nosec G306 -- an executable in this test's own scratch clone
 		t.Fatal(err)
 	}
 
-	// (a) the recording must fire, for its own reason.
+	// (a) the row must fire, for its own reason.
 	got, out := runRows(t, pkg, rows)
-	if got[recordedEnvVarRow] != "FAIL" {
-		t.Errorf("THE RECORDING DID NOT FIRE AGAINST A REPAIRED DEPLOYED ARTIFACT (%s).\n"+
-			"  %s was rebuilt from source in which $RISK_PATHS_CONFIG does not govern — verified by running it — and the recording is still %s.\n"+
-			"It is measuring something other than the deployed artifact. If it now execs the frozen baseline under testdata/, its trigger can NEVER fire again, which is a worse version of the defect this unit is closing: the recording's job is to say whether the bypass is still live in the artifact production runs.\n%s",
-			recordedEnvVarRow, deployedClassifyPath, got[recordedEnvVarRow], out)
-	} else if !strings.Contains(out, "no longer outranks") {
+	if got[shippedEnvVarRow] != "FAIL" {
+		t.Errorf("THE SHIPPED-ARTIFACT ROW DID NOT FIRE AGAINST AN UNREPAIRED DEPLOYED ARTIFACT (%s).\n"+
+			"  %s was replaced by the frozen v1 producer, in which $RISK_PATHS_CONFIG DOES govern — verified by running it — and the row is still %s.\n"+
+			"It is measuring something other than the deployed artifact. If it now judges only the frozen baseline under testdata/, its verdict can never respond to a rebuild again: its job is to say whether the bypass is live in the artifact production runs.\n%s",
+			shippedEnvVarRow, deployedClassifyPath, got[shippedEnvVarRow], out)
+	} else if !strings.Contains(out, "OUTRANKS THE CONFIG DIRECTORIES IN THE DEPLOYED ARTIFACT AGAIN") {
 		// A red for the wrong reason is not this row firing. This is a check on
 		// the REASON for a failure, never a pass condition.
-		t.Errorf("%s failed, but not with its own trigger message (\"no longer outranks\"). It went red for some other reason, so this row has not observed the recording firing.\n%s", recordedEnvVarRow, out)
+		t.Errorf("%s failed, but not with its own trigger message (\"OUTRANKS THE CONFIG DIRECTORIES IN THE DEPLOYED ARTIFACT AGAIN\"). It went red for some other reason, so this row has not observed it firing.\n%s", shippedEnvVarRow, out)
 	}
 
 	// (b) and the differential must not have noticed any of it.
 	refAfter := fileDigest(t, filepath.Join(pkg, pinnedBinary))
 	if refAfter != refBefore {
-		t.Errorf("MAKING THE RECORDING FIRE DESTROYED THE DIFFERENTIAL'S BASELINE.\n"+
-			"  writing a repaired artifact to %s changed %s: sha256 %s -> %s\n"+
-			"They are the same file, so the only act that can fire the recording — shipping a fixed binary — is the same act that re-derives the reference the differential trusts. Today the repo can have a fireable recording or a meaningful differential, not both.\n"+
-			"After the split, (a) and (b) hold together: the recording watches the deployed artifact, the differential watches a frozen copy under testdata/, and rebuilding one says nothing about the other.",
+		t.Errorf("MAKING THE SHIPPED-ARTIFACT ROW FIRE DISTURBED THE DIFFERENTIAL'S BASELINE.\n"+
+			"  writing an unrepaired artifact to %s changed %s: sha256 %s -> %s\n"+
+			"These are supposed to be two files after the split. If writing one moves the other, the split has been undone — by a hard link, a symlink, or a path that resolves back to the same inode — and the repo is back to being able to have a responsive artifact row or a meaningful differential, not both.",
 			deployedClassifyPath, pinnedBinary, refBefore[:12], refAfter[:12])
 	}
 	dv, dOut := runRows(t, pkg, differentialRows)
 	for _, row := range differentialRows {
 		if dv[row] != "PASS" {
-			t.Errorf("after a repaired artifact was installed at %s, %s is %s. Shipping a fix must not be able to disturb the differential.\n%s", deployedClassifyPath, row, dv[row], dOut)
+			t.Errorf("after an unrepaired artifact was installed at %s, %s is %s. What sits at the deployed path must not be able to disturb the differential, in either direction.\n%s", deployedClassifyPath, row, dv[row], dOut)
 		}
 	}
 }
@@ -1115,15 +1121,12 @@ func scanPackageSource(t *testing.T, needle string) (int, []string) {
 	return scanned, hits
 }
 
-// occurrences counts how many times old appears in a file.
-func occurrences(t *testing.T, path, old string) int {
-	t.Helper()
-	data, err := os.ReadFile(path) // #nosec G304 -- a source file in this test's own scratch clone
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Count(string(data), old)
-}
+// `occurrences` lived here. Its only caller was row 5's main.go:403 patch, which
+// the P4 (B1-rebuild) deleted when it inverted that row onto the frozen v1
+// producer — a pinned fixture needs no anchor counted. Removed rather than left
+// dark: an uncalled helper is what `unused` reports and what the next reader
+// mistakes for machinery in service. patchSource below is still live (rows 4,
+// 6a, 6b) and does its own exactly-once check.
 
 // patchSource rewrites one unique literal in a source file inside a clone.
 //

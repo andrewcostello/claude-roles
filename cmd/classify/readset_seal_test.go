@@ -1244,8 +1244,32 @@ func TestSeal_Recorded_V1ProjectionDoesNotSurviveGates(t *testing.T) {
 	}
 }
 
-// seedRunState writes a complete, real run-state using the PINNED binary, so
-// the measurement starts from bytes production actually produces.
+// seedRunState writes a complete, real run-state using the frozen v1 producer
+// under testdata/.
+//
+// AMENDED BY THE P4 (B1-rebuild). This said "using the PINNED binary, so the
+// measurement starts from bytes production actually produces". That sentence was
+// true only while `pinnedBinary` and the deployed artifact were the same file.
+// They are not: the baseline split moved the reference under testdata/, and this
+// commit rebuilt the deployed artifact, so the frozen v1 is now emphatically NOT
+// what production produces. A previous P4 ruled this call site correct and left
+// it; the ruling stands, but its stated reason has to be replaced with the real
+// one.
+//
+// THE REAL REASON: the subject of the row this seeds
+// (TestSeal_Recorded_V1ProjectionDoesNotSurviveGates) is cmd/gates, not
+// cmd/classify. A seed taken from the deployed classify would make a row about
+// one binary's behaviour move whenever a DIFFERENT binary was rebuilt. The
+// frozen v1 is content-addressed and cannot move, so the only thing that can
+// change this row's answer is cmd/gates — which is what it claims to measure.
+//
+// AND THE CHOICE IS IMMATERIAL TO THE LOSS, measured rather than assumed at the
+// rebuild. Seeded from the frozen v1 and seeded from the newly rebuilt deployed
+// artifact, the classification carries the same 15 keys before gates and the
+// same 3 after it (changed_files, components, risk). That is the differential's
+// guarantee showing up end to end: live EmitV1 and v1 agree on the wire, so the
+// two seeds cannot differ here. The frozen seed is chosen for determinism, not
+// because the answers diverge.
 func seedRunState(t *testing.T, runState string) {
 	t.Helper()
 	f := sealFixtures()[0]
