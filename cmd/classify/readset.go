@@ -894,6 +894,30 @@ func replaceAbsentMarkers(v any) any {
 // rather than assert it away. Do not "fix" this by widening the frozen
 // consumers' structs: cmd/gates and cmd/iterate are frozen, and the differential
 // is only meaningful while they stay untouched.
+//
+// SUPERSEDED IN PART BY UNIT G1 — P4 (adjudicate(G1)). The baseline above is
+// left standing because it is what was measured, and because the CONTRACT of
+// this function is unchanged by the fix. What changed underneath it:
+//
+//   - cmd/gates no longer round-trips the run-state through its structs. It
+//     merges into the document's own bytes (gates/preserve.go), and the tracked
+//     cmd/gates/gates was rebuilt from that source. Re-measured on the same
+//     wallet fixture: 15 classification keys in, 15 out, values and sub-paths
+//     included. So v1KeysLost is now [] for a gates-only pipeline, and an empty
+//     list here means "nothing was lost", not "nothing ran" — the seal's
+//     proof-of-execution moved accordingly.
+//   - THE FREEZE WAS NOT BROKEN by this. G1 changed how cmd/gates WRITES; it
+//     changed nothing about what cmd/gates decides, and the differential's
+//     baseline artifact is cmd/classify/classify, which is untouched and
+//     remains pinned at 9542fe1b.
+//   - cmd/iterate was NOT fixed and is still frozen in the original sense. Its
+//     Classification declares four fields (iterate/main.go:86-91) and
+//     appendRound marshals the whole state back from it (:461-466), so
+//     `iterate run` still destroys eleven of the fifteen keys. The pipeline this
+//     function runs invokes `iterate next`, which only reads. The sidecar's
+//     justification therefore stands, halved: one of the two frozen writers now
+//     preserves the document. Retiring it needs a unit against cmd/iterate.
+//
 // HOW THIS ONE EXECUTES, and why that is the whole implementation:
 //
 // A body that stats the run-state, runs NOTHING, and returns a loss list read

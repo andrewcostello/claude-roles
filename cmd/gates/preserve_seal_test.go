@@ -892,6 +892,17 @@ func TestSeal_G1_EndToEnd_FromSource_TheTwoLiveRegressions(t *testing.T) {
 // in their own text, and a body author may not edit seals, so that amendment
 // needs the operator to route it to a seal author.
 //
+// DONE — P4 (adjudicate(G1)). The rebuild landed in the adjudicator's commit
+// rather than the body's, for the sequencing reason preserve.go finding (4)
+// gives: it needed the two cmd/classify amendments in the same commit, and only
+// P4 may amend a seal. This row went GREEN on that rebuild, and the two
+// cmd/classify rows fired exactly as predicted and were amended there —
+// TestSeal_Recorded_V1ProjectionDoesNotSurviveGates is now
+// TestSeal_Recorded_V1ProjectionSurvivesGates, and
+// TestSeal_SidecarSurvives_AndRecordsTheV1Loss is now
+// TestSeal_SidecarSurvives_AndSoDoesTheV1Projection. Both keep measuring the
+// committed artifact; neither was deleted.
+//
 // CONTROL, same call: the artifact must still exit 0 and must still record its
 // gate results. Without it, "the artifact preserves the classification" would
 // go green against a binary that had stopped working altogether.

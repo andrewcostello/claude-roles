@@ -1242,6 +1242,55 @@ func licensedDivergence(at JSONPath, container bool, subtrees []JSONPath) bool {
 // make it. UNTIL THAT COMMIT LANDS, PRODUCTION STILL HAS THE DEFECT — the fix is
 // in the source and every documented invocation execs the artifact.
 //
+// THAT COMMIT IS adjudicate(G1), AND IT HAS LANDED — P4. The body's sequencing
+// argument is accepted in full: the rebuild needed the two cmd/classify
+// amendments in the same commit, only P4 may amend a seal, and one red row
+// naming the missing rebuild was the correct state to hand over in. The rebuild,
+// the amendments and the rulings above are one commit.
+//
+// ONE FACT THE REBUILD TURNED UP, recorded because this repo commits binaries.
+// `go build` inside a linked git WORKTREE does not stamp this repository. Go's
+// VCS detection looks for a `.git` DIRECTORY; a worktree's `.git` is a FILE, so
+// the search walks past it and stamps the first enclosing repo it finds —
+// here /home/andrew/Project (github.com/andrewcostello/indy), revision 154201c,
+// "first commit". A binary built that way carries `go version -m` provenance
+// pointing at an unrelated project. This artifact was therefore built from a
+// clean CLONE of feat/G1-body, and stamps vcs.revision=75d3ef30a364,
+// vcs.modified=false — the commit that carries the fixed source. Anyone
+// rebuilding this artifact from a worktree must check `go version -m` before
+// committing it, or the repo acquires an artifact that lies about where it came
+// from — the same class of defect this whole unit exists to remove.
+//
+// AND A CORRECTION P4 OWES ITS OWN COMMIT MESSAGE. P4 first asserted that
+// because every edit this commit makes to preserve.go is a COMMENT after the
+// last line of code (1103), the committed artifact would be byte-reproducible
+// from this commit as well as from 75d3ef3. That was reasoned, not measured, and
+// it is FALSE. MEASURED, both commits built at an identical path with
+// -buildvcs=false:
+//
+//	75d3ef3        sha256 3fefd56d...388
+//	this commit    sha256 83bdc46b...315
+//	                59 bytes differ, of 4044004, all in bytes 3977-4096
+//	                go tool buildid: the last two components — the CONTENT id —
+//	                are IDENTICAL; the first two — the ACTION id — differ
+//
+// So the compiled code really is byte-identical, and the difference is entirely
+// the embedded build ID: Go's action ID hashes every source byte, comments
+// included. THE GENERAL FACT, which matters to any repo that commits binaries: a
+// committed artifact can never be byte-reproducible from the commit that
+// contains it, because the commit that adds the artifact also touches source. It
+// is reproducible from the commit it names. This one names 75d3ef3 and
+// reproduces from it exactly:
+//
+//	git clone -b feat/G1-body <repo> t && cd t/cmd/gates && go build -o gates .
+//
+// The alternative — building with -buildvcs=false so the artifact carries no
+// provenance and reproduces from its own commit — was considered and REJECTED: a
+// stamp naming a permanent, reachable commit that carries the fixed source is
+// worth more than reproducibility from a commit hash that could only be obtained
+// by discarding the stamp. It is stated here so the choice is visible rather
+// than inherited.
+//
 // (5) OUT OF SCOPE, RECORDED SO IT IS NOT LOST. cmd/gates writes gate keys of
 // the form "<gate>:<module-rel>" — "build:." in the measurement — but
 // config/run-state.schema.json constrains `gates` with propertyNames.enum to
@@ -1294,3 +1343,163 @@ func licensedDivergence(at JSONPath, container bool, subtrees []JSONPath) bool {
 // shape of gates' control flow rather than what it writes, and B1's differential
 // exists to hold that shape still. Recorded for whoever takes it; it is not a
 // preservation bug, it is a staleness one.
+//
+// ─── P4 RULINGS (adjudicate(G1)) ─────────────────────────────────────────────
+//
+// Four questions were put to P4 with the rebuild. All four are ruled here.
+// Rulings (A) and (D) required correcting something the body or the seals
+// asserted; (B) and (C) confirm what they argued, with conditions attached.
+//
+// (A) THE escapeHTML FINDING — FidelityPathwise IS STILL THE RIGHT NORMATIVE
+// CHOICE, AND THE FINDING IS STRONGER THAN THE BODY REALISED.
+//
+// CONFIRMED BY MEASUREMENT, all four of the body's claims, re-run by P4 rather
+// than taken on trust:
+//
+//	an untouched member "a < b && c > d" comes out with every
+//	  '<', '>' and '&' replaced by its \u00XX escape             confirmed
+//	VerifyPreservation at FidelityPathwise: 0 violations;
+//	  Diverge reports only the two licensed edits                 confirmed
+//	pre-G1 json.MarshalIndent escaped a DECLARED string
+//	  field identically — not a behaviour change                  confirmed
+//	the pinned cmd/classify emits no '<', '>' or '&'              confirmed
+//
+// THE CORRECTION. "Unexercised in production today" is true of cmd/classify and
+// FALSE of the pipeline. cmd/gates ITSELF emits '<' into the run-state: a
+// coverage floor violation writes "<pkg> at 10.0% < floor 95%" into
+// gates[key].metrics.violations (main.go:1016), and a mutation efficacy
+// violation writes "... % < floor %" (main.go:831). Both land under `gates`,
+// which is the one subtree cmd/gates is licensed to write, and the second one
+// only fires on the financial-grade tier — so the escape is exercised precisely
+// on the money paths this repo cares most about. It is happening today.
+//
+// WHAT HAPPENS THE DAY A PRODUCER EMITS ONE — and the answer is "nothing", for
+// four measured reasons rather than one asserted one:
+//
+//  1. THE VALUE IS INTACT. The escape decodes back to '<'. Every consumer in
+//     this pipeline parses JSON — cmd/iterate, cmd/gates, and the `jq`
+//     invocations in README.md and roles/*.md — so every one of them sees '<'.
+//     Measured: the round trip returns the original string.
+//  2. IT IS A FIXED POINT, NOT A DRIFT. Running the editor again over its own
+//     output produces byte-identical bytes; '\' and 'u' are not escaped, so the
+//     escape cannot compound over gate rounds. Measured across two passes. This
+//     is the claim that matters most, because a normalisation that compounded
+//     would turn every round into a new document.
+//  3. THE ONE PROPERTY IT BREAKS IS ONE NOTHING RELIES ON. Only a BYTE
+//     comparison can see it. The one byte comparison in this project is
+//     SidecarSurvives', and it compares the v2 SIDECAR — a separate file
+//     cmd/gates never opens.
+//  4. THE STRONGER LEVEL REFUSES RATHER THAN LYING. VerifyPreservation at
+//     FidelityByteIdentical does not silently mis-certify; it raises (:1015-1022),
+//     naming FidelityPathwise as normative. So a future caller who wants
+//     byte-identity is told this build cannot check it, which is the correct
+//     shape for exactly this situation.
+//
+// SO: FidelityPathwise is not a concession, it is the only level that is TRUE of
+// this encoder. FidelityByteIdentical's doc comment must stop calling the
+// sub-property "free under the adopted design" — it is not free, it is not
+// achievable with encoding/json, and two independent mechanisms break it
+// (re-indentation, seal dispute (ii); HTML escaping, body finding (6)). The one
+// thing that would change this ruling is a producer that writes '<' into a
+// member cmd/gates does NOT touch AND a consumer that reads that member's raw
+// bytes rather than its value. Neither exists; if one is proposed, it needs an
+// order-preserving document model, which is a different unit.
+//
+// (B) THE readRunState NON-DELEGATION — THE DUPLICATION STANDS.
+//
+// The body is right and the reason is sharper than "a function that is its own
+// oracle certifies nothing". Row 9 asserts BOTH directions of "G1 neither
+// tightens nor loosens validation" by comparing LoadRunStateDocument against
+// readRunState on the same two documents. Under delegation both legs become
+// tautologies — reflect.DeepEqual over two calls of one function, and an
+// accept/reject pair that agrees by construction — so the row would go green
+// having measured nothing. Six duplicated lines is the price of the only
+// instrument that can see that class of drift.
+//
+// AND THE USUAL COST OF DUPLICATION IS NOT INCURRED HERE, which is what makes
+// this an easy call rather than a trade. Duplication is dangerous when the
+// copies can diverge silently; these two cannot, because the row that NEEDS
+// them separate is also the row that DETECTS their divergence. The part that
+// could really drift — the rule set — is not duplicated at all: both call the
+// one validateRunState.
+//
+// THE CONDITION, and it is load-bearing. readRunState has exactly one remaining
+// caller, prepare() at main.go:253. If a later unit moves that caller to
+// LoadRunStateDocument — which is precisely what ruling (C)'s unit would do —
+// readRunState becomes dead code, someone deletes it as tidy-up, and row 9's
+// oracle silently vacates: the row keeps passing while asserting nothing. THE
+// ORDER IS NOT OPTIONAL. Row 9 must be re-based on a hand-built expectation
+// BEFORE readRunState loses its last caller, not after. This is the "staged/dark
+// code is rated by what it gates" shape, arriving as a deletion instead of an
+// addition.
+//
+// (C) THE RESIDUAL STALENESS WINDOW — OUT OF G1'S SCOPE. ITS OWN UNIT.
+//
+// The body's classification is correct: this is a staleness bug, not a
+// preservation one, and the two are not the same defect wearing different
+// clothes. Preservation is "the document that goes in comes out with only the
+// licensed edits applied", and mergeGates now satisfies that for whatever
+// document it reads. If the file changed under it, mergeGates preserves the NEW
+// document faithfully. Nothing about preservation is contingent on the window.
+//
+// THREE FACTS THAT DECIDE SCOPE:
+//
+//  1. G1 STRICTLY IMPROVED IT. There were two reads and two windows; there is
+//     now one read for the merge and one window. G1 did not create the residue
+//     and did not widen it.
+//  2. THE HAZARD IS BOUNDED IN A WAY WORTH STATING. mergeGates validates the
+//     bytes it just read, so a mid-run rewrite that produces an INVALID document
+//     is REFUSED rather than merged into. What remains is the narrower case: a
+//     mid-run rewrite producing a valid but different document, where gates
+//     records results it planned from stale inputs. The documented pipeline
+//     (roles/tasker.md) is sequential, so that needs a concurrent writer nobody
+//     has today.
+//  3. CLOSING IT IS NOT PLUMBING. The body describes the cost as threading raw
+//     bytes through run() and finish(). That is the smaller half. The real cost
+//     is that the unit must DECIDE what gates does when the document changed
+//     underneath it — refuse and exit non-zero, re-plan, or merge anyway — and
+//     each answer is a new user-visible failure path with its own contract and
+//     its own exit code. A unit whose entire constraint is "do not disturb what
+//     gates decides" is the wrong place to introduce a new refusal.
+//
+// SO IT IS ITS OWN UNIT, and it inherits ruling (B)'s ordering condition: that
+// unit will move prepare() off readRunState, so it must re-base row 9 first.
+// G1 must not be read as having closed the window — finding (7) says so, and
+// LoadRunStateDocument's contract paragraph still describes the pre-body call
+// sites ("readRunState is called twice per invocation"), which after the body is
+// one readRunState in prepare() and one LoadRunStateDocument in mergeGates. The
+// residue is the same either way; the line numbers in that sentence are stale
+// and finding (7) is the current statement.
+//
+// (D) repo.dirty:false — THE ROW IS HONEST ABOUT THE PROBE, AND WRONG ABOUT
+// WHICH LEG CARRIES IT. CORRECTED IN preserve_seal_helpers_test.go.
+//
+// CONFIRMED: repo.dirty:false is not producible by any writer here.
+// config/run-state.schema.json says `repo` is "Resolved ONCE by cmd/classify",
+// and classify declares Dirty with `omitempty` (classify/main.go:121). The seal
+// says so plainly in its dispute note and seals the probe anyway, which is the
+// right call — it is free under passthrough, and G1 must not be the unit that
+// argues itself out of preserving a key.
+//
+// CORRECTED: the seal's resolution — "`round: 0` carries the zero-value
+// property, because round: 0 IS producible" — does not hold, and the
+// producibility table at preserve_seal_helpers_test.go calls round: 0
+// "PRODUCIBLE AND SCHEMA-LEGAL ... owned by the driver". MEASURED: top-level
+// `round` is declared `json:"round,omitempty"` by ALL THREE writers —
+// classify/main.go:108, gates/main.go:104, iterate/main.go:69 — so none of them
+// can emit round: 0 either. No driver in this repo writes a run-state; the only
+// thing that creates one is `classify -out`. round: 0 is schema-legal
+// (schema:236, integer, minimum 0) and NOT PRODUCED, which is the same standing
+// as repo.dirty:false, not a stronger one. Two probes in the same position are
+// not a probe plus a backstop.
+//
+// AND THE PROPERTY IS CARRIED ANYWAY, by a leg already in the fixture and
+// already asserted, which is why this is a correction and not a hole.
+// cmd/classify declares FinancialPathsTouched, ClientOnly, ServerSurface and
+// Migration WITHOUT `omitempty` (classify/main.go:128-131), so it emits their
+// zero values on every run. MEASURED on the wallet fixture: the pinned producer
+// writes classification.client_only:false and classification.migration:false;
+// the PRE-G1 binary destroyed both, collapsing the classification 15 -> 3; the
+// REBUILT binary preserves both as false. That is a producible, driver-written,
+// consequential zero value that G1 demonstrably restored — and unlike the two
+// probes, a reviewer can point at a production document containing it.

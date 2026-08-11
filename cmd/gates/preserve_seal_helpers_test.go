@@ -212,14 +212,35 @@ func g1AssertFixtureIsRich(t *testing.T, doc []byte) {
 //
 // PRODUCIBILITY, key by key, because three of these are not alike:
 //
-//	round: 0                    PRODUCIBLE AND SCHEMA-LEGAL.
-//	                            config/run-state.schema.json:236 types `round`
-//	                            as integer, minimum 0, owned by the driver. It
-//	                            is destroyed by RunState.Round's `omitempty`.
-//	                            This is the zero-value leg the rows lean on.
-//	repo.dirty: false           NOT PRODUCED BY ANY WRITER TODAY — see the
-//	                            DISPUTE note on g1SeedProbes. Sealed as the
-//	                            second zero-value probe, never as the only one.
+//	round: 0                    SCHEMA-LEGAL, NOT PRODUCED — CORRECTED BY P4
+//	                            (adjudicate(G1)). This entry read "PRODUCIBLE AND
+//	                            SCHEMA-LEGAL ... owned by the driver". Only the
+//	                            second half survives. schema:236 does type `round`
+//	                            as integer, minimum 0 — but top-level `round` is
+//	                            declared `json:"round,omitempty"` by ALL THREE
+//	                            writers (classify/main.go:108, gates/main.go:104,
+//	                            iterate/main.go:69), and nothing else in this repo
+//	                            creates a run-state: `classify -out` is the only
+//	                            producer, and there is no driver that writes this
+//	                            field. So no writer here emits round: 0 either.
+//	repo.dirty: false           SCHEMA-LEGAL, NOT PRODUCED — see the DISPUTE note
+//	                            on g1SeedProbes. THE SAME STANDING AS round: 0,
+//	                            not a weaker one, which is the point of the
+//	                            correction above: two probes in the same position
+//	                            are not a probe plus a backstop.
+//	                            THE ZERO-VALUE LEG THE ROWS ACTUALLY LEAN ON is
+//	                            neither of them. cmd/classify declares
+//	                            FinancialPathsTouched, ClientOnly, ServerSurface
+//	                            and Migration WITHOUT `omitempty`
+//	                            (classify/main.go:128-131), so it emits their zero
+//	                            values on every run. Measured on this fixture: the
+//	                            pinned producer writes
+//	                            classification.client_only:false and
+//	                            classification.migration:false; the pre-G1 binary
+//	                            destroyed both with the rest of the classification
+//	                            (15 keys -> 3); the rebuilt binary preserves both
+//	                            as false. Producible, driver-written, and already
+//	                            asserted by rows 1, 11 and 12.
 //	deferred_findings[0].line   SCHEMA-LEGAL: the schema types `line` as an
 //	                            integer with no maximum, and deferred_findings
 //	                            is driver-written. Any integer above 2^53 in
@@ -253,6 +274,18 @@ func g1AssertFixtureIsRich(t *testing.T, doc []byte) {
 // correct and costs nothing under passthrough, and G1 must not be the unit that
 // argues itself out of preserving a key. It is sealed here, and `round: 0`
 // carries the zero-value property, because round: 0 IS producible.
+//
+// P4 RULING (adjudicate(G1)): the dispute is UPHELD on repo.dirty:false and the
+// resolution is CORRECTED. Sealing the probe anyway was right. But `round: 0` is
+// not producible either — all three writers declare it `omitempty` — so it
+// cannot carry the zero-value property, and neither probe can. The property is
+// carried by classification.client_only:false and classification.migration:false,
+// which the pinned producer emits on every run because cmd/classify declares
+// those fields without `omitempty`. See the corrected producibility table above
+// and preserve.go's ruling (D). Nothing in this file's ASSERTIONS changes: both
+// probes stay sealed, and the leg that carries the property was already being
+// asserted by rows 1, 11 and 12. What changes is which leg the reader is told to
+// lean on.
 func g1SeedProbes(t *testing.T, doc []byte) []byte {
 	t.Helper()
 	doc = g1SetTopLevel(t, doc,
