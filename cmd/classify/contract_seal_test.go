@@ -965,23 +965,55 @@ func TestSeal_ResolveConfigDual(t *testing.T) {
 	})
 }
 
-// RECORDED SECURITY FINDING, deliberately left as a finding rather than fixed.
+// RECORDED SECURITY FINDING — this row measures the SHIPPED BINARY.
 //
-// configCandidates (main.go:330-341) places $RISK_PATHS_CONFIG AHEAD of both
+// configCandidates (main.go:401-413) places $RISK_PATHS_CONFIG AHEAD of both
 // directories. An agent that can set an environment variable therefore
-// redirects the entire money-path table, and the new dual-config check never
-// runs at all — ResolveConfigDual is not reached, so a differing pair is never
-// detected. This is an authority-channel problem and is out of B1's scope; it
-// must NOT be closed by quietly reordering the candidate list.
+// redirects the entire money-path table, and the dual-config check never runs
+// at all — ResolveConfigDual is not reached, so a differing pair is never
+// detected.
 //
-// Sealed by EXEC rather than by mutating this process's environment: the
-// pinned binary in a child process is both stronger evidence — it is the real
-// end-to-end behaviour, config_path in its own output names the file it used —
-// and free of any risk of racing main_test.go's parallel
+// Sealed by EXEC rather than by mutating this process's environment: a child
+// process is both stronger evidence — config_path in its own output names the
+// file it used — and free of any risk of racing main_test.go's parallel
 // TestConfigCandidates_PrefersVendorNeutralDir, which reads the same variable.
 //
-// Green today. It turns red when someone fixes the ordering, which is the
-// moment the finding should be re-read and the fix credited.
+// ─── P4 AMENDMENT (adjudicate(B1-repair), dispute 1) ─────────────────────────
+//
+// This doc previously said the finding was "out of B1's scope", "must NOT be
+// closed by quietly reordering the candidate list", and that the row "turns red
+// when someone fixes the ordering". The first two are superseded and the third
+// is false. All three are corrected here; the CODE below is unchanged.
+//
+// WHICH ROW GOVERNS. TestSeal_Repair_EnvVarMustNotOutrankTheWorktreeMoneyTable
+// (repair_seal_test.go) now BLOCKS this behaviour and is the governing row for
+// the SOURCE. B1 is no longer recording this defect; it is fixing it. This row
+// does not contradict that one, and the reason is the whole point of the
+// amendment: THE TWO ROWS MEASURE DIFFERENT ARTIFACTS.
+//
+//   - the repair row builds the current tree to a scratch path. Subject: SOURCE.
+//   - this row runs ./classify, the tracked committed binary. Subject: the
+//     artifact PRODUCTION ACTUALLY INVOKES — roles/tasker.md:224,
+//     skills/pr-raise.md:36 and README.md:35 all exec
+//     ~/Project/claude-workflow/cmd/classify/classify by absolute path. Nothing
+//     builds it at invocation time.
+//
+// WHAT THE RED-TRIGGER REALLY IS. Not "someone fixes the ordering". VERIFIED by
+// P4 with a throwaway reference implementation that deleted the env-var
+// candidate outright: the repair row went green and THIS ROW STAYED GREEN. A
+// source fix cannot move it. It turns red only when cmd/classify/classify is
+// REBUILT AND COMMITTED — which B1 must never do, because that same file is the
+// pinned v1 differential baseline. So within this unit the trigger cannot fire;
+// across the repo it fires one commit later, on the rebuild.
+//
+// THAT LAG IS THE VALUE, and it is why this row is kept rather than deleted.
+// Between P3 fixing main.go and someone rebuilding the binary, the repair row
+// is green while the money-gate bypass is STILL LIVE in the artifact the Tasker
+// runs. This row is the only thing in the suite that says so. Read it as "the
+// shipped classify still has the bypass", not as "the ordering is unfixed".
+//
+// Delete it in the commit that rebuilds cmd/classify/classify, and re-derive
+// the v1 differential baseline in that same commit.
 func TestSeal_Recorded_EnvVarOutranksBothConfigDirectories(t *testing.T) {
 	t.Parallel()
 

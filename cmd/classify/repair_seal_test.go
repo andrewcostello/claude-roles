@@ -530,6 +530,43 @@ func checkUnreadable(t *testing.T, why, wt, absentPath string, absentErr error, 
 // that makes the env-var row (D) and the framed-stdin work of unit B2
 // necessary. A run whose diff and config live in a tree another process is
 // still writing is the normal case, not the adversarial one.
+//
+// ─── P4 RULING (adjudicate(B1-repair), dispute 2) ────────────────────────────
+//
+// The dispute: this row seals the property THROUGH loadConfig rather than
+// directly, because a seal naming a not-yet-existing symbol fails compilation
+// for the whole package and would take all 76 green rows down with it. That
+// reasoning is correct and is affirmed. A body that prefers to thread the bytes
+// through new signatures satisfies the same property but needs this row moved.
+//
+// RULED: THIS ROW STANDS AS WRITTEN AND IS THE DEFAULT. Relocation is permitted
+// but CONDITIONAL, and the body does not perform it — body agents do not edit
+// seals. P3 escalates with a concrete signature and the row is amended by that
+// route. An amended row must keep all five of:
+//
+//  1. the CONTROL leg — nothing rewrites the file, consumed == certified;
+//  2. the certified digest taken from what the CERTIFYING step actually read,
+//     never from the fixture bytes the test wrote. This is the one that decides
+//     whether the relocation is honest: assert on the bytes the resolver
+//     RETURNED, or a body that hands back the .claude copy while the run
+//     consumes .agent passes a row that was only ever checking its own input;
+//  3. the interposed write into the window, still actually performed;
+//  4. the consumed digest read from the production channel
+//     (unframedDigests.ConsumedDigests()), never from the new function's return
+//     value. Six green seals in this unit already certify a function production
+//     never calls — asserting that a new resolver returns the bytes it read
+//     would be that same non-evidence;
+//  5. a demonstration that the amended row is RED against the unrepaired tree.
+//     A relocated row that cannot be shown failing is a description, not a seal.
+//
+// WHY NOT RELOCATE IT END-TO-END, which would dissolve the dispute outright:
+// the property IS observable from outside — `-contract-version 2` emits
+// computed_config_sha256 in the response wrapper (contract.go:638-663), and P4
+// confirmed it equals the SHA-256 of the table on disk. But the DEFECT leg
+// cannot be reached that way without winning a real timing window inside a
+// child process. This row's entire merit is that it needs no race. A racy seal
+// is worse than a signature-coupled one, so the coupling is accepted
+// deliberately rather than traded for flakiness.
 func TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes(t *testing.T) {
 	defer red(t)
 
@@ -628,17 +665,34 @@ func TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes(t *t
 // of the list and findConfig takes the first hit, so no table in the worktree is
 // ever consulted.
 //
-// THE DIFFERENCE BETWEEN THIS ROW AND THE EXISTING ONE, stated plainly because
-// they assert opposite things. TestSeal_Recorded_EnvVarOutranksBothConfigDirect-
-// ories (contract_seal_test.go:985) RECORDS the behaviour as green and asks to
-// be deleted when someone fixes it. This row BLOCKS it. That is the panel's
-// instruction, and the recorded row's own stated red-trigger — "it turns red
-// when someone fixes the ordering" — cannot fire, because it runs ./classify,
-// the pinned FIXTURE, which no fix to main.go can change. Recording a live
-// money-gate bypass against a frozen artifact is the vacuity the panel names in
-// wave 4 (J). This row runs the live build. DISPUTE FOR P4: which of the two
-// governs. They can be green simultaneously today only because they measure
-// different binaries, which is itself the finding.
+// THE DIFFERENCE BETWEEN THIS ROW AND THE EXISTING ONE.
+// TestSeal_Recorded_EnvVarOutranksBothConfigDirectories (contract_seal_test.go)
+// RECORDS the behaviour as green. This row BLOCKS it.
+//
+// P4 RULING (adjudicate(B1-repair), dispute 1): THIS ROW GOVERNS THE SOURCE.
+// The body must close the bypass; the recorded row is not a licence to leave it
+// open. The recorded row is KEPT, with its doc corrected, because the two rows
+// do not actually assert opposite things about the same subject:
+//
+//   - this row builds the current tree to a scratch path. Subject: SOURCE.
+//   - the recorded row runs ./classify. Subject: THE SHIPPED ARTIFACT — every
+//     documented invocation (roles/tasker.md:224, skills/pr-raise.md:36,
+//     README.md:35) execs the committed cmd/classify/classify by absolute path.
+//
+// The recorded row's stated trigger — "it turns red when someone fixes the
+// ordering" — is FALSE, and P4 verified it is false rather than reasoning about
+// it: under a reference implementation that deleted the env-var candidate, this
+// row went green and the recorded row STAYED GREEN. Its real trigger is the
+// rebuild-and-commit of cmd/classify/classify, which B1 must never do because
+// that file is the pinned v1 differential baseline.
+//
+// THE CONSEQUENCE THE BODY MUST NOT MISREAD, because it is bigger than this row:
+// fixing main.go does not fix production. The Tasker runs the committed binary.
+// Until cmd/classify/classify is rebuilt and committed — an act that also
+// destroys the v1 differential baseline and therefore needs the operator, not
+// the body — every repair in this unit is green in the tree and absent from the
+// artifact that classifies real money diffs. Escalated to the operator; it is
+// not P3's to resolve and must not be resolved by rebuilding the baseline.
 //
 // MEASURED TODAY, live build, worktree holding the real table, non-scaffold
 // attacker table named by the variable:
@@ -755,6 +809,15 @@ func TestSeal_Repair_EnvVarMustNotOutrankTheWorktreeMoneyTable(t *testing.T) {
 // while resolving into precisely that repo. The seal certifies the doc by
 // checking a spelling. Not a contradiction with this row — a coverage hole — so
 // nothing there needs changing.
+//
+// P4 RULING (adjudicate(B1-repair)): CONFIRMED, and confirmed by running it
+// rather than by reading it. Under a reference implementation that drops the
+// CWD-relative candidate at main.go:411, this row goes GREEN and
+// TestConfigCandidates_PrefersVendorNeutralDir stays GREEN — the surviving
+// candidate list is exactly the two worktree-anchored paths it already asserts.
+// No amendment anywhere. The coverage hole is real and stays open by design:
+// that seal would still pass if a CWD-relative candidate came back under a
+// different spelling, and THIS row is what closes it, behaviourally.
 //
 // PRODUCTION ROUTE: the Tasker runs classify from the tooling checkout with
 // -worktree pointing at the project under review. That is the documented

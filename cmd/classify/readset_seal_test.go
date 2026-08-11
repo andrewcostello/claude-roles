@@ -1154,10 +1154,46 @@ func TestSeal_SidecarSurvives_ErrorsRatherThanReportingUnobservedSurvival(t *tes
 // implemented, and so the seal states what it measured rather than what it was
 // told.
 //
-// GREEN TODAY, and that is the point: it pins a defect. It turns RED when
-// cmd/gates stops destroying the classification, which is exactly when someone
-// should be told that iterate's severity floor and the panel's tier have come
-// back to life and the follow-up unit can close.
+// GREEN TODAY, and that is the point: it pins a defect.
+//
+// ─── P4 RULING (adjudicate(B1-repair)) ───────────────────────────────────────
+//
+// The panel filed a CRITICAL saying this row institutionalizes the cmd/gates
+// classification loss. Whether to record rather than fix is the OPERATOR's
+// call and is not disturbed. P4 was asked only whether the row is HONEST —
+// whether its red-trigger can fire, given the frozen-artifact shape found in
+// the env-var recording (contract_seal_test.go).
+//
+// IT IS HONEST. It is NOT another unfireable recording, and the two differ on a
+// fact worth stating: cmd/classify/classify may never be rebuilt inside this
+// unit — it is the pinned v1 differential baseline — so no work here can ever
+// fire the env-var row. cmd/gates/gates carries no such prohibition, and the
+// repo's convention is to rebuild and commit it in the same commit as a source
+// change (bdecc7f did exactly that). So this trigger can fire.
+//
+// VERIFIED, not assumed: P4 built cmd/gates from current source to a scratch
+// path and ran it against the same seeded run-state as the tracked binary.
+// Both reduce the classification to the same three keys, so the tracked binary
+// is faithful to its source today and this recording describes both.
+//
+// THE TRIGGER, STATED CORRECTLY. Not "when cmd/gates stops destroying the
+// classification" — this row execs a BINARY, so a source-only fix leaves it
+// green, and CI would not catch that either (.github/workflows/gates.yml runs
+// `go test` over the checked-out tree and never rebuilds). It turns RED when
+// the COMMITTED cmd/gates/gates stops destroying the classification. That
+// binary is the deployed artifact — roles/tasker.md:193, roles/coder.md:318 and
+// README.md:39 all exec it by absolute path — so the trigger fires exactly when
+// the loss stops in production, which is the right moment, one commit later
+// than the source fix.
+//
+// THE ONE WAY IT COULD ROT into the env-var row's shape: a cmd/gates source fix
+// merged WITHOUT rebuilding the tracked binary. This row would then be green,
+// accurate about the shipped artifact, and silently stale about the source.
+// P4 did not add a source-vs-binary drift guard — that is new machinery, and
+// this ruling is scoped to honesty — but it is the one guard this row wants.
+//
+// When it does turn red, that is someone being told iterate's severity floor
+// and the panel's tier have come back to life and the follow-up unit can close.
 func TestSeal_Recorded_V1ProjectionDoesNotSurviveGates(t *testing.T) {
 	t.Parallel()
 
