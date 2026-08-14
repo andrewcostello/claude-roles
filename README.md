@@ -19,7 +19,7 @@ Each is a standalone stdlib-only Go module. Build with `go build -o <name> .` in
 
 | Binary | Owns | Exit codes |
 |---|---|---|
-| `cmd/classify` | Diff → risk tier, component presets, panel shape, financial/migration flags, human-PR-gate decision, skill routing, and the argv for `cmd/reviewer`. Resolves `base_ref` once for the whole run and rejects a stale local base. Writes the run state. | 0 classified, 3 INVALID_INPUT |
+| `cmd/classify` | Diff → risk tier, component presets, **panel preset (solo/standard/full/deep, graded by risk AND production diff size)**, financial/migration flags, flow-diagram request, human-PR-gate decision, skill routing, and the argv for `cmd/reviewer`. `-panel <preset>` overrides at or above the computed floor; below-floor overrides are rejected. Resolves `base_ref` once for the whole run and rejects a stale local base. Writes the run state. | 0 classified, 3 INVALID_INPUT |
 | `cmd/gates` | Deterministic verification gates: build, test, coverage, lint, complexity, gosec, staticcheck, semgrep, mutation, benchmarks. Derives the gate set from the classification, runs each **per Go module**, writes raw output to disk and status into the run state. A gate that cannot run FAILS unless waived by name with a reason. | 0 all pass, 1 a gate failed or could not run, 3 INVALID_INPUT |
 | `cmd/reviewer` | Parallel review panel: seat dispatch, per-scout role slicing, finding dedup, tier consensus floors, component dimension floors, merged verdict, `-findings-out` JSON | 0 complete, 2 REVIEW_UNAVAILABLE, 3 INVALID_INPUT |
 | `cmd/recheck` | Rounds 3+ targeted verification: verifies each prior at-or-above-floor finding as RESOLVED/STILL_OPEN/REGRESSED, hunts new findings in changed files only, computes the convergence verdict mechanically | 0 APPROVE, 1 ITERATE, 2 ESCALATE |
@@ -50,7 +50,7 @@ Configuration:
 
 | File | Owns |
 |---|---|
-| `config/risk-paths.json` | Path → risk/component/financial/presentation rules, plus the gate-signal patterns that revoke the reduced-panel carve-out |
+| `config/risk-paths.json` | Path → risk/component/financial/presentation rules, per-rule `panel_floor` pins (e.g. client money UI floors at `full` despite medium risk), plus the gate-signal patterns that revoke the reduced-panel carve-out |
 | `config/gates.json` | Gate commands, triggers, scopes, timeouts, coverage floors and exemptions, mutation/benchmark thresholds |
 | `config/run-state.schema.json` | The run-state contract and which node owns which field |
 
@@ -85,6 +85,7 @@ Composable workflow primitives the Tasker loads on demand. Each skill is self-co
 | `skills/plan-based-execution.md` | `docs/plans/*.md` exists | Plan-based dispatch with batch checkpoints |
 | `skills/iteration-protocol.md` | Verdict = ITERATE | Targeted re-review scope, full domain test gate, iteration cap |
 | `skills/explicit-state.md` | Task touches a gate, guard, verdict or auth check | The no-implicit-states constraint: absence must be a named state, never a default or a falsy value |
+| `skills/review-language.md` | Every review and PR comment | Plain-English contract for an ESL team: ≤ 15-word sentences, no idioms, imperative fixes, the What-is-wrong / What-happens / What-to-do finding template |
 
 ## Other directories
 
@@ -97,9 +98,22 @@ Composable workflow primitives the Tasker loads on demand. Each skill is self-co
 
 ## Prerequisites
 
-### Five-seat review panel
+### Panel presets
 
-`cmd/reviewer` dispatches five independent seats in parallel (its `-reviewers` default is `claude,claude-scouts,codex,grok,agy`):
+`cmd/classify` grades the panel by risk tier AND production diff size (tests and generated files do not count), and emits the seat list as `-reviewers` — never hand-assemble it:
+
+| Preset | Seats | Typical trigger |
+|--------|-------|-----------------|
+| `solo` | claude | client-only presentation (the old carve-out, unchanged) |
+| `standard` | claude, codex, agy | Low/Medium risk, ≤ 400 production lines, no blockers |
+| `full` | + claude-scouts, grok | High risk, gate signals, migrations, components, or Medium at size |
+| `deep` | + grok-scouts | Critical risk, financial paths, scaffold config, unmatched paths, or a full floor at > 400 lines |
+
+The floor (money, Critical, gate signals, …) can never be overridden downward. `classify -panel <preset>` records a human's explicit choice at or above the floor; the report always prints recommendation, floor, and how to override.
+
+### Review seats
+
+`cmd/reviewer` dispatches the seats classify names (its `-reviewers` default remains `claude,claude-scouts,codex,grok,agy`):
 
 | Seat | Model | Transport | Setup |
 |------|-------|-----------|--------|

@@ -41,6 +41,7 @@ type ReviewResponse struct {
 	TestQualityAssessment string             `json:"test_quality_assessment"`
 	DesignCoherence       string             `json:"design_coherence"`
 	DataFlowTrace         string             `json:"data_flow_trace"`
+	FlowDiagram           string             `json:"flow_diagram,omitempty"`
 	Findings              []Finding          `json:"findings"`
 }
 
@@ -127,6 +128,7 @@ func main() {
 	codexEffortFlag := flag.String("codex-effort", "high", "model_reasoning_effort for the codex broad seat on high/critical risk (high|xhigh). Default high; xhigh for the strongest pass on money PRs.")
 	kimiModelFlag := flag.String("kimi-model", "", "Model alias for the kimi broad seat (e.g. moonshot-ai/kimi-k3). Empty inherits the kimi CLI's configured default_model.")
 	scoutPreloadFlag := flag.String("scout-preload", "none", "Scout file-preload mode. \"none\" (default): preload no file contents — each scout tool-reads what it needs from the full diff + Changed Files table it always receives (robust: coverage never keyed on guessed paths, and it can't exceed the context window). \"all\": paste every high-signal changed file into every scout — measured to OVERFLOW the context window on a 26-file PR (209k > 200k tokens) and is expensive elsewhere; only safe for small diffs.")
+	flowDiagramFlag := flag.Bool("flow-diagram", false, "Ask the broad claude seat to also emit a mermaid flow/state diagram of the changed behaviour (flow_diagram field). Set by cmd/classify when the diff touches gates, migrations, components, or High+ risk at size.")
 	changeMapFlag := flag.Bool("scout-change-map", false, "EXPERIMENTAL: before dispatching scouts, run one cheap map-model pass over the diff to produce a per-file orientation map, injected as a shared cached prefix in every scout's system prompt. Aims to cut scout investigation turns. The map orients only — scouts still read code for verdicts.")
 	mapModelFlag := flag.String("map-model", "claude-haiku-4-5-20251001", "Model for the -scout-change-map orientation pass (cheap by design).")
 	sharedContextFlag := flag.Bool("shared-context", false, "EXPERIMENTAL: move the review context (metadata, changed-file table, precomputed sibling trace) + the diff — all identical across scouts — into a SHARED cached system-prompt prefix instead of re-sending them in each scout's stdin. Content-addressed prompt caching then pays them once (cache-create) + N-1 cache-reads (~10% price) rather than 6x fresh. With -scout-preload all, the (capped) read-pack rides the same shared prefix. Off by default until A/B-validated.")
@@ -207,6 +209,7 @@ func main() {
 		promptBody:    promptBody,
 		sharedBody:    sharedBody,
 		roleText:      roleText,
+		flowDiagram:   *flowDiagramFlag,
 		claudeModel:   *claudeModelFlag,
 		deepseekModel: *deepseekModelFlag,
 		codexModel:    *codexModelFlag,
@@ -363,6 +366,7 @@ type reviewEnv struct {
 	promptBody    string
 	sharedBody    string
 	roleText      string
+	flowDiagram   bool   // broad claude seat also emits a mermaid flow/state diagram
 	claudeModel   string
 	deepseekModel string
 	codexModel    string // model for the codex broad seat; empty = codex CLI config default
@@ -680,6 +684,14 @@ func printReviewReport(status, verdict, consensus string, inputCtx ReviewInputCo
 		fmt.Printf("%s\n\n", nr.Response.Summary)
 	}
 
+	if d := firstFlowDiagram(responses); d != "" {
+		fmt.Println("## Change Flow Diagram")
+		fmt.Println("```mermaid")
+		fmt.Println(strings.TrimSpace(d))
+		fmt.Println("```")
+		fmt.Println()
+	}
+
 	fmt.Println("## Critical Dimensions")
 	for _, nr := range responses {
 		d := nr.Response.CriticalDimensions
@@ -823,6 +835,7 @@ type FindingsExport struct {
 	BaseRef     string          `json:"base_ref"`
 	Risk        string          `json:"risk"`
 	Verdict     string          `json:"verdict"`
+	FlowDiagram string          `json:"flow_diagram,omitempty"`
 	Findings    []ExportFinding `json:"findings"`
 }
 
@@ -844,6 +857,7 @@ func writeFindingsJSON(path string, inputCtx ReviewInputContext, risk, verdict s
 		BaseRef:     inputCtx.BaseRef,
 		Risk:        risk,
 		Verdict:     verdict,
+		FlowDiagram: firstFlowDiagram(responses),
 	}
 	for _, g := range dedupeFindings(responses) {
 		export.Findings = append(export.Findings, ExportFinding{
@@ -863,6 +877,18 @@ func writeFindingsJSON(path string, inputCtx ReviewInputContext, risk, verdict s
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// firstFlowDiagram returns the first non-empty flow_diagram across seats.
+// Only the broad claude seat is instructed to produce one, so "first" is
+// effectively "the broad seat's, if any".
+func firstFlowDiagram(responses []NamedResponse) string {
+	for _, nr := range responses {
+		if strings.TrimSpace(nr.Response.FlowDiagram) != "" {
+			return nr.Response.FlowDiagram
+		}
+	}
+	return ""
 }
 
 func appendUnique(list []string, s string) []string {
@@ -970,7 +996,11 @@ func callLLMProvider(ctx context.Context, provider string, env reviewEnv) (Revie
 		// The 52KB reviewer.md rides --append-system-prompt (cached, shared
 		// prefix) rather than stdin — the single biggest input-cost lever.
 		cmd = claudeCmd(ctx, env.cwd, claudeEffort(env.risk), env.schemaStr, env.roleText, env.claudeModel)
-		cmd.Stdin = strings.NewReader(buildClaudeBroadStdin(env.sharedBody))
+		broadStdin := buildClaudeBroadStdin(env.sharedBody)
+		if env.flowDiagram {
+			broadStdin = flowDiagramInstruction + "\n\n" + broadStdin
+		}
+		cmd.Stdin = strings.NewReader(broadStdin)
 	case "deepseek":
 		cmd = claudeCmd(ctx, env.cwd, claudeEffort(env.risk), env.schemaStr, env.roleText, env.deepseekModel)
 		cmd.Stdin = strings.NewReader(buildClaudeBroadStdin(env.sharedBody))
@@ -1286,6 +1316,11 @@ Use the Review Metadata and Precomputed Context as evidence. Do not report dirty
 
 	Key source files are pre-loaded under "Pre-loaded Source Files" — read them there first before using tools. Use your tools only for files not pre-loaded or for grep searches.`
 
+// flowDiagramInstruction is prepended to the broad claude seat's stdin when
+// classify requested a change diagram. Only this seat produces it; every other
+// seat leaves flow_diagram empty.
+const flowDiagramInstruction = `DIAGRAM REQUEST: this change alters a flow or state machine. In the flow_diagram field, return a mermaid diagram (stateDiagram-v2, sequenceDiagram, or flowchart — pick the one that fits) of the CHANGED behaviour. Rules: show before/after only where they differ, or mark changed transitions with (NEW) / (REMOVED); use the code's real state and message names; 15 nodes maximum — collapse anything that did not change; no styling directives. Return ONLY the mermaid source in the field, no fences. Leave the field empty if the change genuinely has no flow to draw.`
+
 // buildPrompt is the FULL broad-review prompt WITH the role inline — used by the
 // codex/grok/agy seats (which have no system-prompt slot) and written to the
 // shared review-request.md that agy reads.
@@ -1558,6 +1593,7 @@ func reviewResponseSchema() map[string]any {
 				[]string{"resilience", "idempotency", "observability", "performance", "maintainability"},
 			),
 			"quality_score":           intSchema,
+			"flow_diagram":            stringSchema,
 			"test_quality_assessment": stringSchema,
 			"design_coherence":        stringSchema,
 			"data_flow_trace":         stringSchema,

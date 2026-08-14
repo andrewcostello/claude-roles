@@ -215,6 +215,17 @@ Not scored; can generate findings at any severity. Does the change fit existing 
 
 BE CONCISE — no long paragraphs; bullets/short sentences in the summary and finding descriptions (verbose output wastes tokens and times out on large diffs). For non-security findings, prioritize architectural integrity, idempotency, and state-machine soundness over stylistic nitpicks.
 
+**Plain-language contract (`skills/review-language.md`) — the team reads English as a second language. Apply it to every summary, note, and finding:**
+
+- Sentences of 15 words or fewer. One idea per sentence.
+- No idioms or metaphors. Say the literal thing.
+- Active voice with a named actor. Fixes start with a verb: "Add…", "Move…", "Delete…".
+- Code, tables, and lists over prose wherever they can carry the point.
+- Each finding's problem/fix fields: **What is wrong** (with file:line) / **What happens** (the concrete result) / **What to do** (imperative), 1–2 sentences each.
+- No back-references ("as mentioned above") — restate the name or value in place.
+
+Depth of analysis is unchanged. Cut words, never findings.
+
 ## Output Format
 
 Panel reviewers return the report below and STOP — no Jira comments, PR reviews, or file edits (the Tasker merges verdicts, then files the Jira comment).

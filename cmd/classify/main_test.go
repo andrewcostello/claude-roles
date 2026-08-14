@@ -49,7 +49,7 @@ func TestLiveProjectConfigStillClassifiesMoney(t *testing.T) {
 		"libs/go/wallet/balance.go",
 	} {
 		d := diffFor(f)
-		cls := classify(cfg, parseDiffFiles(d), d)
+		cls := classify(cfg, parseDiffFiles(d), d, "")
 		if !cls.FinancialPathsTouched {
 			t.Errorf("live config: %s is not financial — the human PR gate would not fire", f)
 		}
@@ -219,7 +219,7 @@ func TestClassify_ValidationSweepGaps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			d := diffFor(tt.file)
-			cls := classify(cfg, parseDiffFiles(d), d)
+			cls := classify(cfg, parseDiffFiles(d), d, "")
 			if len(cls.UnmatchedFiles) != 0 {
 				t.Errorf("%s is unclassified: %v", tt.file, cls.UnmatchedFiles)
 			}
@@ -254,19 +254,19 @@ func TestClassify_ClientMoneyUIIsNotPresentation(t *testing.T) {
 		t.Run(f, func(t *testing.T) {
 			t.Parallel()
 			d := diffFor(f)
-			cls := classify(cfg, parseDiffFiles(d), d)
+			cls := classify(cfg, parseDiffFiles(d), d, "")
 			if cls.ClientOnly {
 				t.Error("client_only = true — money UI must not qualify for the carve-out")
 			}
-			if cls.Panel.Reduced || cls.Panel.Seats != 5 {
-				t.Errorf("panel = %+v, want the full 5-seat panel", cls.Panel)
+			if cls.Panel.Reduced || presetRank[cls.Panel.Preset] < presetRank[presetFull] {
+				t.Errorf("panel = %+v, want at least the full panel", cls.Panel)
 			}
 		})
 	}
 
 	// A genuinely presentational mobile screen still gets the carve-out.
 	d := diffFor("apps/skillstrike-mobile/src/screens/Leaderboard/Row.tsx")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	if !cls.Panel.Reduced {
 		t.Errorf("non-money mobile UI should still qualify: %+v", cls.Panel)
 	}
@@ -276,7 +276,7 @@ func TestClassify_WalletIsCriticalAndGated(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("apps/finance-domain/wallet/service/debit.go")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 
 	if cls.Risk != "critical" {
 		t.Errorf("risk = %q, want critical", cls.Risk)
@@ -293,8 +293,8 @@ func TestClassify_WalletIsCriticalAndGated(t *testing.T) {
 	if cls.RecheckMinSeverity != "medium" {
 		t.Errorf("recheck_min_severity = %q, want medium (component preset applies)", cls.RecheckMinSeverity)
 	}
-	if cls.Panel.Seats != 5 || cls.Panel.Reduced {
-		t.Errorf("panel = %+v, want 5 seats not reduced", cls.Panel)
+	if cls.Panel.Preset != presetDeep || cls.Panel.Reduced {
+		t.Errorf("panel = %+v, want the deep preset not reduced", cls.Panel)
 	}
 }
 
@@ -316,7 +316,7 @@ func TestClassify_BaySessionMoneyPathsAreFinancial(t *testing.T) {
 		t.Run(f, func(t *testing.T) {
 			t.Parallel()
 			d := diffFor(f)
-			cls := classify(cfg, parseDiffFiles(d), d)
+			cls := classify(cfg, parseDiffFiles(d), d, "")
 			if cls.Risk != "critical" {
 				t.Errorf("risk = %q, want critical", cls.Risk)
 			}
@@ -334,7 +334,7 @@ func TestClassify_BaySessionNonMoneyStaysHigh(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("apps/platform-domain/bay-session/store/bay_station_register.go")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	if cls.Risk != "high" {
 		t.Errorf("risk = %q, want high", cls.Risk)
 	}
@@ -347,7 +347,7 @@ func TestClassify_ClientPresentationGetsReducedPanel(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("apps/skillstrike-mobile/src/components/Scoreboard.tsx")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 
 	if !cls.ClientOnly {
 		t.Error("client_only = false, want true")
@@ -370,7 +370,7 @@ func TestClassify_GateSignalRevokesCarveOut(t *testing.T) {
 	d := "diff --git a/" + f + " b/" + f + "\n--- a/" + f + "\n+++ b/" + f +
 		"\n@@ -1 +1 @@\n-const show = false\n+const show = __DEV__ || process.env.SHOW_DEBUG === '1'\n"
 
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	if !cls.ClientOnly {
 		t.Fatal("expected client_only true — the path is presentational")
 	}
@@ -386,7 +386,7 @@ func TestClassify_ClientAuthIsNotPresentation(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("apps/skillstrike-mobile/src/auth/token.ts")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	if cls.ClientOnly {
 		t.Error("client_only = true for client auth — token handling is a security surface")
 	}
@@ -405,7 +405,7 @@ func TestClassify_MixedDiffTakesMaxAndDisqualifiesCarveOut(t *testing.T) {
 		"apps/skillstrike-mobile/src/components/Scoreboard.tsx",
 		"apps/finance-domain/wallet/service/debit.go",
 	)
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	if cls.Risk != "critical" {
 		t.Errorf("risk = %q, want critical (max wins)", cls.Risk)
 	}
@@ -421,7 +421,7 @@ func TestClassify_UnmatchedPathFailsClosed(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("apps/brand-new-service/handler.go")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 
 	if len(cls.UnmatchedFiles) != 1 {
 		t.Fatalf("unmatched_files = %v, want 1 entry", cls.UnmatchedFiles)
@@ -438,7 +438,7 @@ func TestClassify_MigrationRoutesSkill(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("apps/platform-domain/core/dao/migrations/017_add_col.sql")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	if !cls.Migration {
 		t.Error("migration = false on a migrations/*.sql change")
 	}
@@ -454,7 +454,7 @@ func TestClassify_DocsOnlyStaysLow(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("docs/plans/2026-07-29-graph-spine.md", "README.md")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	if cls.Risk != "low" {
 		t.Errorf("risk = %q, want low", cls.Risk)
 	}
@@ -470,7 +470,7 @@ func TestReviewerArgs_AlwaysCarriesRiskAndComponents(t *testing.T) {
 	t.Parallel()
 	cfg := realConfig(t)
 	d := diffFor("apps/finance-domain/wallet/service/debit.go")
-	cls := classify(cfg, parseDiffFiles(d), d)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
 	args := reviewerArgs(Repo{Worktree: "/wt", BaseRef: "origin/main"}, cls)
 	joined := strings.Join(args, " ")
 
@@ -590,5 +590,104 @@ func TestConfigCandidates_PrefersVendorNeutralDir(t *testing.T) {
 		if strings.Contains(c, "claude-workflow") {
 			t.Errorf("candidate %q reaches into the tooling repo — that is the cross-project bug", c)
 		}
+	}
+}
+
+// ─── panel presets (size grading, floors, overrides) ─────────────────────────
+
+// diffOfSize builds a diff for one file with n changed (+) lines.
+func diffOfSize(file string, n int) string {
+	var b strings.Builder
+	b.WriteString("diff --git a/" + file + " b/" + file + "\n")
+	b.WriteString("--- a/" + file + "\n+++ b/" + file + "\n@@ -1 +1 @@\n")
+	for i := 0; i < n; i++ {
+		b.WriteString("+line\n")
+	}
+	return b.String()
+}
+
+func TestMeasureSize_Buckets(t *testing.T) {
+	t.Parallel()
+	d := diffOfSize("apps/x/service/logic.go", 10) +
+		diffOfSize("apps/x/service/logic_test.go", 20) +
+		diffOfSize("libs/protos/pkg/x/x.pb.go", 30)
+	s := measureSize(parseDiffFiles(d), d)
+	if s.ProductionLines != 10 || s.TestLines != 20 || s.GeneratedLines != 30 || s.ProductionFiles != 1 {
+		t.Fatalf("size = %+v, want 10 prod / 20 test / 30 generated / 1 prod file", s)
+	}
+}
+
+func TestDecidePanel_SizeGrading(t *testing.T) {
+	t.Parallel()
+	cfg := realConfig(t)
+	// docs are low-risk in the fixture; engine paths are medium.
+	cases := []struct {
+		name   string
+		diff   string
+		preset string
+	}{
+		{"medium small -> standard", diffOfSize("scripts/cleanup.go", 50), presetStandard},
+		{"medium large -> full", diffOfSize("scripts/cleanup.go", 600), presetFull},
+		{"low docs small -> solo carve-out", diffFor("docs/notes.md"), presetSolo},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cls := classify(cfg, parseDiffFiles(tc.diff), tc.diff, "")
+			if cls.Panel.Preset != tc.preset {
+				t.Fatalf("preset = %s (risk %s, size %+v, reasons %v), want %s",
+					cls.Panel.Preset, cls.Risk, cls.Size, cls.Panel.Reasons, tc.preset)
+			}
+		})
+	}
+}
+
+func TestDecidePanel_OverrideCannotGoBelowFloor(t *testing.T) {
+	t.Parallel()
+	cfg := realConfig(t)
+	d := diffOfSize("apps/finance-domain/wallet/service/debit.go", 5)
+	cls := classify(cfg, parseDiffFiles(d), d, "solo")
+	if cls.Panel.Overridden {
+		t.Fatalf("override below floor was accepted: %+v", cls.Panel)
+	}
+	if cls.Panel.Preset != presetDeep {
+		t.Fatalf("preset = %s, want deep kept on rejected override", cls.Panel.Preset)
+	}
+}
+
+func TestDecidePanel_OverrideUpgradeAccepted(t *testing.T) {
+	t.Parallel()
+	cfg := realConfig(t)
+	d := diffOfSize("tools/scripts/cleanup.go", 10)
+	cls := classify(cfg, parseDiffFiles(d), d, "deep")
+	if !cls.Panel.Overridden || cls.Panel.Preset != presetDeep {
+		t.Fatalf("panel = %+v, want accepted deep override", cls.Panel)
+	}
+}
+
+func TestClassify_RulePanelFloorPins(t *testing.T) {
+	t.Parallel()
+	cfg := realConfig(t)
+	d := diffOfSize("apps/skillstrike-mobile/src/components/WalletBalance.tsx", 5)
+	cls := classify(cfg, parseDiffFiles(d), d, "")
+	if cls.Panel.Floor != presetFull {
+		t.Fatalf("floor = %s (reasons %v), want full from client-money-ui panel_floor", cls.Panel.Floor, cls.Panel.Reasons)
+	}
+	if cls.Panel.Preset != presetFull {
+		t.Fatalf("preset = %s, want full", cls.Panel.Preset)
+	}
+}
+
+func TestClassify_FlowDiagramTrigger(t *testing.T) {
+	t.Parallel()
+	cfg := realConfig(t)
+	small := diffOfSize("scripts/cleanup.go", 20)
+	if cls := classify(cfg, parseDiffFiles(small), small, ""); cls.FlowDiagram {
+		t.Fatal("flow diagram requested for a small diff with no triggers")
+	}
+	big := diffOfSize("apps/finance-domain/wallet/service/debit.go", 300)
+	if cls := classify(cfg, parseDiffFiles(big), big, ""); !cls.FlowDiagram {
+		t.Fatal("flow diagram not requested for a large wallet (component) diff")
 	}
 }

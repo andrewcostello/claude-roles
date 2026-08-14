@@ -190,7 +190,7 @@
     },
     {
       "id": "client-money-ui",
-      "note": "Client-side withdrawal, wallet, deposit and card-entry surfaces. NOT presentation: these display balances and submit money movements, and PR 1294's escaped regression was a display bug. The 60-PR sweep found PR 1262 (40 files, native card tokenization) and PR 1350 (43 files, autoplay wager preference) both taking the single-reviewer carve-out because every path sat under src/ \u2014 this rule closes that.",
+      "note": "Client-side withdrawal, wallet, deposit and card-entry surfaces. NOT presentation: these display balances and submit money movements, and PR 1294's escaped regression was a display bug. The 60-PR sweep found PR 1262 (40 files, native card tokenization) and PR 1350 (43 files, autoplay wager preference) both taking the single-reviewer carve-out because every path sat under src/ \u2014 this rule closes that. panel_floor=full: medium risk alone would under-panel a money surface.",
       "paths": [
         "apps/*/src/**/[Ww]allet/**",
         "apps/*/src/**/withdraw*/**",
@@ -205,7 +205,8 @@
         "apps/*/src/**/*[Pp]ayment*",
         "apps/*/src/**/*[Bb]alance*"
       ],
-      "risk": "medium"
+      "risk": "medium",
+      "panel_floor": "full"
     },
     {
       "id": "deploy-manifests",

@@ -84,6 +84,11 @@ type Rule struct {
 	Financial    bool     `json:"financial,omitempty"`
 	Presentation bool     `json:"presentation,omitempty"`
 	Migration    bool     `json:"migration,omitempty"`
+	// PanelFloor pins a minimum panel preset for any diff touching this
+	// rule's paths, independent of risk tier. Used for surfaces whose risk
+	// tier alone under-panels them — e.g. client money UI at medium risk
+	// still gets the full panel. Value must be a preset name.
+	PanelFloor string `json:"panel_floor,omitempty"`
 }
 
 type GateSignal struct {
@@ -131,7 +136,11 @@ type Classification struct {
 	ServerSurface         bool        `json:"server_surface"`
 	Migration             bool        `json:"migration"`
 	GateSignals           []GateHit   `json:"gate_signals,omitempty"`
+	Size                  Size        `json:"size"`
+	RulePanelFloor        string      `json:"rule_panel_floor,omitempty"`
+	RulePanelFloorRule    string      `json:"rule_panel_floor_rule,omitempty"`
 	Panel                 Panel       `json:"panel"`
+	FlowDiagram           bool        `json:"flow_diagram"`
 	HumanPRGate           bool        `json:"human_pr_gate"`
 	RecheckMinSeverity    string      `json:"recheck_min_severity"`
 	Skills                []string    `json:"skills,omitempty"`
@@ -154,6 +163,26 @@ type Panel struct {
 	Seats    int      `json:"seats"`
 	Reduced  bool     `json:"reduced"`
 	Reasons  []string `json:"reasons,omitempty"`
+	// Preset is the panel level this run uses: solo | standard | full | deep.
+	// Recommended is what the rules computed; Floor is the minimum the hard
+	// blockers allow. Preset == Recommended unless -panel overrode it, in
+	// which case Overridden is true. An override below Floor is rejected at
+	// parse time, so Preset >= Floor always holds.
+	Preset      string   `json:"preset"`
+	Recommended string   `json:"recommended"`
+	Floor       string   `json:"floor"`
+	Overridden  bool     `json:"overridden,omitempty"`
+	Reviewers   []string `json:"reviewers"`
+}
+
+// Size is the diff-size evidence the panel preset is derived from. Only
+// ProductionLines drives decisions; test and generated volume is reported so
+// a human can audit the split.
+type Size struct {
+	ProductionLines int `json:"production_lines"`
+	ProductionFiles int `json:"production_files"`
+	TestLines       int `json:"test_lines"`
+	GeneratedLines  int `json:"generated_lines"`
 }
 
 type FileClass struct {
@@ -170,6 +199,7 @@ type options struct {
 	out        string
 	json       bool
 	noGit      bool
+	panel      string
 	args       []string
 }
 
@@ -208,6 +238,7 @@ func parseFlags() options {
 	outFlag := flag.String("out", "", "Run-state JSON to create or update. Preserves gates/rounds/pr written by other nodes.")
 	jsonFlag := flag.Bool("json", false, "Print the classification JSON to stdout instead of the report")
 	noGitFlag := flag.Bool("no-git", false, "Skip base/head resolution. For classifying a bare diff with no worktree.")
+	panelFlag := flag.String("panel", "", "Override the panel preset (solo|standard|full|deep). An override below the computed floor is rejected — money/critical/gate-signal floors cannot be waived from the command line.")
 	flag.Parse()
 
 	log.SetFlags(0)
@@ -221,6 +252,7 @@ func parseFlags() options {
 		out:        *outFlag,
 		json:       *jsonFlag,
 		noGit:      *noGitFlag,
+		panel:      *panelFlag,
 		args:       flag.Args(),
 	}
 }
@@ -238,12 +270,26 @@ func run(opts options) int {
 	}
 
 	repo, problems := validateInput(diff, files, opts.worktree, opts.base, opts.noGit)
+	if opts.panel != "" && !validPreset(opts.panel) {
+		problems = append(problems, fmt.Sprintf("-panel %q is not a preset (want solo|standard|full|deep)", opts.panel))
+	}
 	if len(problems) > 0 {
 		printInvalidInput(repo, problems)
 		return exitInvalid
 	}
 
-	cls := buildClassification(cfg, files, diff, repo, cfgPath)
+	cls := buildClassification(cfg, files, diff, repo, cfgPath, opts.panel)
+	if opts.panel != "" && !cls.Panel.Overridden {
+		// The override named a preset below the floor. Refuse loudly rather
+		// than silently upgrading: the caller's mental model is wrong and the
+		// report says why.
+		msg := []string{fmt.Sprintf("-panel %s is below the floor %s for this diff. Floor reasons:", opts.panel, cls.Panel.Floor)}
+		for _, r := range cls.Panel.Reasons {
+			msg = append(msg, "      "+r)
+		}
+		printInvalidInput(repo, msg)
+		return exitInvalid
+	}
 	emit(repo, cls, opts.json)
 	return persist(opts, repo, cls)
 }
@@ -268,8 +314,8 @@ func loadInputs(opts options, cfgPath string) (*Config, string, []string, error)
 	return cfg, diff, parseDiffFiles(diff), nil
 }
 
-func buildClassification(cfg *Config, files []string, diff string, repo Repo, cfgPath string) *Classification {
-	cls := classify(cfg, files, diff)
+func buildClassification(cfg *Config, files []string, diff string, repo Repo, cfgPath string, panelOverride string) *Classification {
+	cls := classify(cfg, files, diff, panelOverride)
 	cls.ConfigPath = cfgPath
 	cls.ClassifiedAt = time.Now().UTC().Format(time.RFC3339)
 	cls.ReviewerArgs = reviewerArgs(repo, cls)
@@ -459,6 +505,9 @@ func parseConfig(data []byte) (*Config, error) {
 			if !knownComponents[c] {
 				return nil, fmt.Errorf("rule %q: unknown component %q (cmd/reviewer would reject it)", r.ID, c)
 			}
+		}
+		if r.PanelFloor != "" && !validPreset(r.PanelFloor) {
+			return nil, fmt.Errorf("rule %q: panel_floor %q is not a preset (want solo|standard|full|deep)", r.ID, r.PanelFloor)
 		}
 		// A presentation rule that also carries money/component weight is a
 		// contradiction: it would make a money change reduced-panel eligible.
@@ -665,6 +714,8 @@ type fileVerdict struct {
 	Components   []string
 	Financial    bool
 	Migration    bool
+	PanelFloor   string
+	FloorRule    string
 }
 
 // classifyOne applies every rule to one file. Risk is the max over matches,
@@ -686,6 +737,10 @@ func classifyOne(cfg *Config, file string) fileVerdict {
 		v.Financial = v.Financial || r.Financial
 		v.Migration = v.Migration || r.Migration
 		v.Presentation = v.Presentation && r.Presentation
+		if presetRank[r.PanelFloor] > presetRank[v.PanelFloor] {
+			v.PanelFloor = r.PanelFloor
+			v.FloorRule = r.ID
+		}
 	}
 	if !v.Matched {
 		// Fail closed: an unclassified path takes the configured tier and is
@@ -703,7 +758,78 @@ func reasonFor(v fileVerdict) string {
 	return fmt.Sprintf("%s → %s via %s", v.Class.Path, v.Class.Risk, strings.Join(v.Class.Rules, "+"))
 }
 
-func classify(cfg *Config, files []string, diff string) *Classification {
+// parseDiffStats counts added + deleted lines per file. Keyed by the same
+// path form parseDiffFiles emits, so the two can be joined. Hunk context and
+// the +++/--- headers do not count.
+func parseDiffStats(diff string) map[string]int {
+	stats := map[string]int{}
+	current := ""
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++ b/"):
+			current = strings.TrimPrefix(line, "+++ b/")
+		case strings.HasPrefix(line, "--- a/") && current == "":
+			current = strings.TrimPrefix(line, "--- a/")
+		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+			// /dev/null or a non-git header — keep the current file.
+		case strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-"):
+			if current != "" {
+				stats[current]++
+			}
+		case strings.HasPrefix(line, "diff --git "):
+			current = ""
+		}
+	}
+	return stats
+}
+
+// isTestPath and isGeneratedPath split the diff into the three size buckets.
+// The lists are heuristics, not policy: a wrong bucket changes a size number,
+// never a risk tier or a floor.
+func isTestPath(p string) bool {
+	base := p[strings.LastIndex(p, "/")+1:]
+	for _, s := range []string{"_test.go", ".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx", ".spec.js", "_test.py"} {
+		if strings.HasSuffix(base, s) {
+			return true
+		}
+	}
+	for _, d := range []string{"/__tests__/", "/testdata/", "/tests/e2e/", "/test/"} {
+		if strings.Contains(p, d) {
+			return true
+		}
+	}
+	return strings.HasPrefix(base, "test_")
+}
+
+func isGeneratedPath(p string) bool {
+	base := p[strings.LastIndex(p, "/")+1:]
+	for _, s := range []string{".pb.go", "_pb.ts", ".pb.gw.go", ".connect.go", "_grpc.pb.go", ".sql.go", ".swagger.json", ".gen.go", ".generated.ts", "go.sum", "package-lock.json", "yarn.lock"} {
+		if strings.HasSuffix(base, s) {
+			return true
+		}
+	}
+	return strings.Contains(p, "/generated/") || strings.Contains(p, "/sqlc/")
+}
+
+func measureSize(files []string, diff string) Size {
+	stats := parseDiffStats(diff)
+	var s Size
+	for _, f := range files {
+		lines := stats[f]
+		switch {
+		case isGeneratedPath(f):
+			s.GeneratedLines += lines
+		case isTestPath(f):
+			s.TestLines += lines
+		default:
+			s.ProductionLines += lines
+			s.ProductionFiles++
+		}
+	}
+	return s
+}
+
+func classify(cfg *Config, files []string, diff string, panelOverride string) *Classification {
 	cls := &Classification{Risk: "low"}
 
 	componentSet := map[string]bool{}
@@ -720,6 +846,10 @@ func classify(cfg *Config, files []string, diff string) *Classification {
 		cls.Migration = cls.Migration || v.Migration
 		cls.ServerSurface = cls.ServerSurface || isServerSurface(cfg, f)
 		cls.Risk = maxRisk(cls.Risk, v.Class.Risk)
+		if presetRank[v.PanelFloor] > presetRank[cls.RulePanelFloor] {
+			cls.RulePanelFloor = v.PanelFloor
+			cls.RulePanelFloorRule = v.FloorRule
+		}
 
 		if !v.Matched {
 			cls.UnmatchedFiles = append(cls.UnmatchedFiles, f)
@@ -750,7 +880,13 @@ func classify(cfg *Config, files []string, diff string) *Classification {
 	// until someone completes the table and clears the flag.
 	cls.ConfigScaffold = cfg.Scaffold
 
-	cls.Panel = decidePanel(cls)
+	cls.Size = measureSize(files, diff)
+	cls.Panel = decidePanel(cls, panelOverride)
+	// A flow/state diagram earns its place when the change alters behaviour a
+	// reader has to hold as a machine — gates, migrations, component
+	// lifecycles, High+ risk — and is big enough that prose alone gets long.
+	cls.FlowDiagram = cls.Size.ProductionLines >= diagramMinProductionLines &&
+		(len(cls.GateSignals) > 0 || cls.Migration || riskRank[cls.Risk] >= riskRank["high"] || len(cls.Components) > 0)
 	cls.HumanPRGate = cls.Risk == "critical" || cls.FinancialPathsTouched
 	if cfg.Scaffold {
 		cls.HumanPRGate = true
@@ -841,46 +977,162 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// decidePanel encodes tasker.md's mandatory-panel rule. required is always
-// true: no PR is ever raised with zero AI review. The only question is 5 seats
-// or 1, and the carve-out is narrow by construction.
-func decidePanel(cls *Classification) Panel {
-	p := Panel{Required: true, Seats: 5}
+// Panel presets, smallest to largest. The preset names the seat list; the
+// consensus floor in cmd/reviewer scales with whatever list it receives, so
+// no floor number is recited here.
+const (
+	presetSolo     = "solo"
+	presetStandard = "standard"
+	presetFull     = "full"
+	presetDeep     = "deep"
+)
 
-	var blockers []string
-	if !cls.ClientOnly {
-		blockers = append(blockers, "not client-only presentation")
+var presetRank = map[string]int{presetSolo: 0, presetStandard: 1, presetFull: 2, presetDeep: 3}
+
+var presetReviewers = map[string][]string{
+	presetSolo:     {"claude"},
+	presetStandard: {"claude", "codex", "agy"},
+	presetFull:     {"claude", "claude-scouts", "codex", "grok", "agy"},
+	presetDeep:     {"claude", "claude-scouts", "grok-scouts", "codex", "grok", "agy"},
+}
+
+func validPreset(p string) bool { _, ok := presetRank[p]; return ok }
+
+// Size thresholds for preset selection, in production lines changed
+// (adds + deletes, tests and generated files excluded). Small enough that a
+// single-function fix stays solo-eligible; large enough that a real feature
+// always clears them.
+const (
+	soloMaxProductionLines     = 80
+	standardMaxProductionLines = 400
+	diagramMinProductionLines  = 150
+)
+
+// decidePanel keeps tasker.md's mandatory-panel rule — Required is always
+// true, no PR ships with zero AI review — but grades the panel by risk and
+// size instead of the old 5-or-1 binary.
+//
+// Two layers, deliberately separate:
+//
+//   - floor: the minimum the HARD blockers allow. Money, Critical risk, a
+//     scaffold config and unclassified paths force deep; gate signals,
+//     migrations, High risk and component presets force full. The floor can
+//     never be overridden from the command line.
+//   - recommendation: the floor, upgraded by size when the diff is large for
+//     its tier, or relaxed within the safe band (Low/Medium, no blockers)
+//     when the diff is small.
+//
+// An override (the -panel flag) is honoured only at or above the floor.
+// Overridden=false on a rejected override; run() turns that into
+// INVALID_INPUT rather than silently upgrading.
+func decidePanel(cls *Classification, override string) Panel {
+	floor, floorReasons := panelFloor(cls)
+	recommended, sizeReasons := recommendPreset(cls, floor)
+	reasons := append(floorReasons, sizeReasons...)
+
+	preset := recommended
+	overridden := false
+	if override != "" {
+		if presetRank[override] >= presetRank[floor] {
+			preset = override
+			overridden = true
+			if override != recommended {
+				reasons = append(reasons, fmt.Sprintf("-panel %s override (recommended %s, floor %s)", override, recommended, floor))
+			}
+		}
+		// Below-floor override: leave preset at recommended and Overridden
+		// false; run() rejects the invocation.
 	}
-	if cls.ServerSurface {
-		blockers = append(blockers, "server/wire surface touched (.go/.java/.py/.sql/.proto/.tf)")
+
+	reviewers := presetReviewers[preset]
+	return Panel{
+		Required:    true,
+		Seats:       len(reviewers),
+		Reduced:     preset == presetSolo,
+		Reasons:     reasons,
+		Preset:      preset,
+		Recommended: recommended,
+		Floor:       floor,
+		Overridden:  overridden,
+		Reviewers:   reviewers,
 	}
+}
+
+// panelFloor names the minimum preset the hard blockers allow, with one
+// reason per blocker. An empty blocker set floors at solo.
+func panelFloor(cls *Classification) (string, []string) {
+	floor := presetSolo
+	var reasons []string
+	raise := func(to, why string) {
+		if presetRank[to] > presetRank[floor] {
+			floor = to
+		}
+		reasons = append(reasons, why)
+	}
+
 	if cls.FinancialPathsTouched {
-		blockers = append(blockers, "financial path touched")
+		raise(presetDeep, "financial path touched — deep floor")
 	}
-	if len(cls.Components) > 0 {
-		blockers = append(blockers, "component preset applies: "+strings.Join(cls.Components, ","))
-	}
-	if len(cls.GateSignals) > 0 {
-		blockers = append(blockers, fmt.Sprintf("gate/guard/flag signal in changed lines (%s) — decides whether something is allowed, not presentation", signalNames(cls.GateSignals)))
-	}
-	if riskRank[cls.Risk] > riskRank["low"] {
-		blockers = append(blockers, "risk tier "+cls.Risk+" (>= medium always gets the panel)")
-	}
-	if len(cls.UnmatchedFiles) > 0 {
-		blockers = append(blockers, fmt.Sprintf("%d unclassified path(s) — fail closed", len(cls.UnmatchedFiles)))
+	if cls.Risk == "critical" {
+		raise(presetDeep, "risk tier critical — deep floor")
 	}
 	if cls.ConfigScaffold {
-		blockers = append(blockers, "risk-paths config is still a scaffold — its money paths have not been reviewed, so nothing can be certified safe")
+		raise(presetDeep, "risk-paths config is still a scaffold — its money paths have not been reviewed, so nothing can be certified safe")
+	}
+	if len(cls.UnmatchedFiles) > 0 {
+		raise(presetDeep, fmt.Sprintf("%d unclassified path(s) — fail closed to deep", len(cls.UnmatchedFiles)))
+	}
+	if cls.Risk == "high" {
+		raise(presetFull, "risk tier high — full floor")
+	}
+	if len(cls.GateSignals) > 0 {
+		raise(presetFull, fmt.Sprintf("gate/guard/flag signal in changed lines (%s) — decides whether something is allowed, not presentation", signalNames(cls.GateSignals)))
+	}
+	if cls.Migration {
+		raise(presetFull, "schema migration touched — full floor")
+	}
+	if len(cls.Components) > 0 {
+		raise(presetFull, "component preset applies: "+strings.Join(cls.Components, ","))
+	}
+	if cls.RulePanelFloor != "" && presetRank[cls.RulePanelFloor] > presetRank[presetSolo] {
+		raise(cls.RulePanelFloor, fmt.Sprintf("rule %q pins panel floor %s", cls.RulePanelFloorRule, cls.RulePanelFloor))
+	}
+	return floor, reasons
+}
+
+// recommendPreset upgrades or relaxes within the band the floor leaves open,
+// using production diff size as the only extra signal.
+func recommendPreset(cls *Classification, floor string) (string, []string) {
+	prod := cls.Size.ProductionLines
+
+	// The floor already answers everything at full or above; size only adds.
+	if presetRank[floor] >= presetRank[presetFull] {
+		if floor == presetFull && prod > standardMaxProductionLines {
+			return presetDeep, []string{fmt.Sprintf("%d production lines at a full floor — upgraded to deep", prod)}
+		}
+		return floor, nil
 	}
 
-	if len(blockers) == 0 {
-		p.Seats = 1
-		p.Reduced = true
-		p.Reasons = []string{"client-only presentation, no server/money/auth surface, no gate signals — reduced single-reviewer panel"}
-		return p
+	// Below the full floor the risk is low or medium with no hard blockers.
+	if cls.Risk == "medium" {
+		if prod > standardMaxProductionLines {
+			return presetFull, []string{fmt.Sprintf("medium risk, %d production lines (> %d) — full panel", prod, standardMaxProductionLines)}
+		}
+		return presetStandard, []string{fmt.Sprintf("medium risk, %d production lines — standard panel", prod)}
 	}
-	p.Reasons = blockers
-	return p
+
+	// Low risk. The old client-only carve-out keeps its solo seat; a small
+	// server-side diff earns standard, a large one earns full.
+	if cls.ClientOnly && !cls.ServerSurface {
+		return presetSolo, []string{"client-only presentation, no server/money/auth surface, no gate signals — solo reviewer"}
+	}
+	if prod <= soloMaxProductionLines {
+		return presetStandard, []string{fmt.Sprintf("low risk, %d production lines (<= %d) — standard panel", prod, soloMaxProductionLines)}
+	}
+	if prod > standardMaxProductionLines {
+		return presetFull, []string{fmt.Sprintf("low risk but %d production lines (> %d) — full panel", prod, standardMaxProductionLines)}
+	}
+	return presetStandard, []string{fmt.Sprintf("low risk, %d production lines — standard panel", prod)}
 }
 
 func signalNames(hits []GateHit) string {
@@ -912,8 +1164,11 @@ func reviewerArgs(repo Repo, cls *Classification) []string {
 	if len(cls.Components) > 0 {
 		args = append(args, "-component", strings.Join(cls.Components, ","))
 	}
-	if cls.Panel.Reduced {
-		args = append(args, "-reviewers", "claude")
+	// The preset owns the seat list; emit it explicitly so nobody
+	// hand-assembles -reviewers downstream.
+	args = append(args, "-reviewers", strings.Join(cls.Panel.Reviewers, ","))
+	if cls.FlowDiagram {
+		args = append(args, "-flow-diagram")
 	}
 	return args
 }
@@ -1058,9 +1313,20 @@ func printReport(repo Repo, cls *Classification) {
 	fmt.Printf("Financial:  %v    Migration: %v    Server surface: %v    Client-only: %v\n",
 		cls.FinancialPathsTouched, cls.Migration, cls.ServerSurface, cls.ClientOnly)
 
-	fmt.Printf("\nPanel:      %d seat(s)%s\n", cls.Panel.Seats, reducedTag(cls.Panel.Reduced))
+	fmt.Printf("Size:       %d production lines in %d files (tests %d, generated %d — not counted)\n",
+		cls.Size.ProductionLines, cls.Size.ProductionFiles, cls.Size.TestLines, cls.Size.GeneratedLines)
+
+	overrideTag := ""
+	if cls.Panel.Overridden {
+		overrideTag = " (OVERRIDDEN by -panel)"
+	}
+	fmt.Printf("\nPanel:      %s — %d seat(s): %s%s\n", strings.ToUpper(cls.Panel.Preset), cls.Panel.Seats, strings.Join(cls.Panel.Reviewers, ","), overrideTag)
+	fmt.Printf("            recommended %s · floor %s · override with -panel <preset> (never below the floor)\n", cls.Panel.Recommended, cls.Panel.Floor)
 	for _, r := range cls.Panel.Reasons {
 		fmt.Printf("            · %s\n", r)
+	}
+	if cls.FlowDiagram {
+		fmt.Println("Diagram:    flow/state diagram requested from the broad reviewer seat")
 	}
 
 	if len(cls.GateSignals) > 0 {
@@ -1098,7 +1364,7 @@ func dirtyTag(dirty bool) string {
 	return ""
 }
 
-func reducedTag(reduced bool) string {
+func reducedTag(reduced bool) string { // retained for run-state readers
 	if reduced {
 		return " — REDUCED carve-out"
 	}

@@ -288,11 +288,13 @@ Every inline comment must be self-contained — the engineer should understand t
 ```markdown
 ### ⛔ [Critical] <title>
 
-**Problem:** <1-2 sentences: what is wrong and the concrete risk if not fixed>
+**What is wrong:** <1-2 short sentences, with file:line>
 
-**Why this matters:** <the underlying principle — this is what turns a code review into a learning experience>
+**What happens:** <the concrete result — who sees what, when>
 
-**Suggested fix:**
+**Why this matters:** <the principle, one plain sentence>
+
+**What to do:**
 ```<language>
 <minimal code change that resolves the issue>
 ```
@@ -336,6 +338,9 @@ Severity icons:
 **Quality Score:** X/25
 **Verdict:** APPROVE / REQUEST CHANGES / REJECT
 
+### Change Flow Diagram
+<Include ONLY when the PR changes a state machine, lifecycle, or multi-service flow AND the change is big enough that prose alone gets long. A mermaid block (stateDiagram-v2, sequenceDiagram, or flowchart) of the CHANGED behaviour: real state/message names from the code, changed transitions marked (NEW)/(REMOVED), 15 nodes maximum. GitHub renders mermaid inline. Omit the section entirely for small or flow-free changes.>
+
 ### Test Quality Assessment
 <2-3 sentences on overall test health: behavior vs. implementation coupling, coverage gaps, readability>
 
@@ -361,6 +366,8 @@ Severity icons:
 ---
 
 ## Universal Rules (apply to both subroles)
+
+**Write for readers with English as a second language (`skills/review-language.md`).** Sentences of 15 words or fewer. One idea per sentence. No idioms or metaphors. Active voice. Fixes start with a verb. Code and tables over prose. Every finding body: **What is wrong** / **What happens** / **What to do**, 1-2 sentences each. Cut words, never findings.
 
 **One review, not many.** Batch all findings into a single API call. Multiple partial reviews create timeline noise.
 
