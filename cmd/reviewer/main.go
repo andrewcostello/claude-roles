@@ -1592,8 +1592,11 @@ func reviewResponseSchema() map[string]any {
 				},
 				[]string{"resilience", "idempotency", "observability", "performance", "maintainability"},
 			),
-			"quality_score":           intSchema,
-			"flow_diagram":            stringSchema,
+			"quality_score": intSchema,
+			"flow_diagram": map[string]any{
+				"type":        "string",
+				"description": "Mermaid source for a change-flow diagram. Return \"\" unless your instructions explicitly request a diagram.",
+			},
 			"test_quality_assessment": stringSchema,
 			"design_coherence":        stringSchema,
 			"data_flow_trace":         stringSchema,
@@ -1602,7 +1605,7 @@ func reviewResponseSchema() map[string]any {
 				"items": findingSchema(),
 			},
 		},
-		[]string{"status", "verdict", "summary", "critical_dimensions", "quality_scores", "quality_score", "test_quality_assessment", "design_coherence", "data_flow_trace", "findings"},
+		[]string{"status", "verdict", "summary", "critical_dimensions", "quality_scores", "quality_score", "flow_diagram", "test_quality_assessment", "design_coherence", "data_flow_trace", "findings"},
 	)
 }
 
