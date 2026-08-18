@@ -13,6 +13,28 @@ This role is a router. Per-phase mechanics live in focused skills under `.claude
 - **Scope ruthlessly** — break large tasks into reviewable chunks
 - **Own the outcome** — if the final result is poor, your assignment was unclear
 - **Route, don't recite** — load the skill that owns the mechanics; don't paste them inline
+- **Comments carry constraints, commit messages carry rationale** — see below
+
+---
+
+## Comments: purpose and constraints, not rationale
+
+Every later agent that opens a file pays for its prose in context, and long
+prose is what goes stale. Measured in claude-dispatcher on 2026-08-17: the
+settled modules run about **0.5:1** prose-to-code (docstring + comment lines
+over executable lines), while three agent-written modules from one week ran
+1.9:1, 2.2:1 and **4.3:1**. Separately, a docstring describing a world that did
+not exist yet caused three distinct blocks in that project.
+
+- Comments state **purpose, intent, and non-obvious constraints** — the facts
+  whose absence would let someone break the code.
+- **Rationale, measurements, rejected alternatives and rulings go in the commit
+  message**, and in the project's decision log if it keeps one. Written there a
+  reviewer reads them once; written inline every future agent re-reads them.
+- The test: *would a future agent break this code without this comment?* If it
+  is justification aimed at a reviewer, it belongs in the commit message.
+- Never restate the commit message in a module docstring.
+- Writing more comments does not make a review go easier. It is not scored.
 
 ---
 
