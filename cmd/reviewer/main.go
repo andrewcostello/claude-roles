@@ -115,7 +115,7 @@ type DiffFile struct {
 
 func main() {
 	cwdFlag := flag.String("cwd", ".", "Workspace context for the review")
-	reviewersFlag := flag.String("reviewers", "claude,claude-scouts,codex,grok,agy", "Comma-separated list of reviewers to run (claude, claude-scouts, grok-scouts, codex, grok, agy, deepseek-scouts, kimi)")
+	reviewersFlag := flag.String("reviewers", "claude,claude-scouts,codex,grok", "Comma-separated list of reviewers to run (claude, claude-scouts, grok-scouts, codex, grok, agy, deepseek-scouts, kimi). agy is dispatchable by name but is in no preset — see presetReviewers in cmd/classify.")
 	baseFlag := flag.String("base", "", "Base branch or commit for review metadata")
 	strictCleanFlag := flag.Bool("strict-clean", false, "Treat a dirty worktree as INVALID_INPUT")
 	riskFlag := flag.String("risk", "medium", "Risk tier of the change (critical|high|medium|low). Scales reviewer reasoning effort, consensus floor, and Claude focused-scope fan-out.")
@@ -366,7 +366,7 @@ type reviewEnv struct {
 	promptBody    string
 	sharedBody    string
 	roleText      string
-	flowDiagram   bool   // broad claude seat also emits a mermaid flow/state diagram
+	flowDiagram   bool // broad claude seat also emits a mermaid flow/state diagram
 	claudeModel   string
 	deepseekModel string
 	codexModel    string // model for the codex broad seat; empty = codex CLI config default
@@ -740,10 +740,11 @@ type findingGroup struct {
 var severityRank = map[string]int{"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
 
 // dedupeFindings clusters findings that name the same file within 15 lines
-// AND share enough title+problem vocabulary (Jaccard >= 0.3) — proximity
-// alone is not enough, so two different defects at one call site stay
-// separate. The representative is the most detailed member (longest
-// problem+evidence). Deterministic: responses arrive sorted by reviewer name.
+// AND share enough title+problem vocabulary (see exactLineJaccard /
+// nearLineJaccard) — proximity alone is not enough, so two different defects
+// at one call site stay separate. The representative is the most detailed
+// member (longest problem+evidence). Deterministic: responses arrive sorted by
+// reviewer name.
 func dedupeFindings(responses []NamedResponse) []findingGroup {
 	var groups []findingGroup
 	for _, nr := range responses {
@@ -787,6 +788,30 @@ func dedupeFindings(responses []NamedResponse) []findingGroup {
 	return groups
 }
 
+// Vocabulary thresholds for clustering, graded by how precisely two findings
+// agree on WHERE the defect is. An exact line match is much stronger evidence
+// of the same defect than "somewhere in this 30-line window", so it buys a
+// lower vocabulary bar.
+//
+// Calibrated on 76 same-file/same-line finding pairs across four real panel
+// runs (PR #1416, SMG-4111 r1/r2/r4). At an exact line the 0.15-0.30 band is
+// almost entirely genuine duplicates — it contained two findings with
+// IDENTICAL titles (Jaccard 0.279) and one defect reported by four seats in
+// three separate clusters (0.245-0.281). The nearest true-negative in that
+// band sits at 0.208 (a missing tier gate and a pre-lock TOCTOU, two real
+// defects on the same call site), so 0.22 separates them.
+//
+// Raising either number buries corroboration and inflates every seat's
+// "unique findings" count. Lowering exactLineJaccard below 0.21 starts
+// merging distinct defects that share a call site. Re-run the calibration
+// before changing them.
+const (
+	exactLineJaccard = 0.22
+	nearLineJaccard  = 0.30
+	exactLineWindow  = 2
+	nearLineWindow   = 15
+)
+
 // matchesGroup reports whether f is a near-duplicate of an existing cluster:
 // same file, within 15 lines of the cluster's observed line RANGE (reviewers
 // anchor the same bug at different lines of the same flow — bake-off evidence:
@@ -796,18 +821,27 @@ func matchesGroup(g *findingGroup, f Finding) bool {
 	if g.Finding.File != f.File {
 		return false
 	}
-	if f.Line < g.minLine-15 || f.Line > g.maxLine+15 {
+	if f.Line < g.minLine-nearLineWindow || f.Line > g.maxLine+nearLineWindow {
 		return false
 	}
-	return jaccard(findingWords(g.Finding), findingWords(f)) >= 0.3
+	threshold := nearLineJaccard
+	if f.Line >= g.minLine-exactLineWindow && f.Line <= g.maxLine+exactLineWindow {
+		threshold = exactLineJaccard
+	}
+	return jaccard(findingWords(g.Finding), findingWords(f)) >= threshold
 }
 
+// findingWords tokenises a finding for the vocabulary comparison. The minimum
+// length is 3, not 4: this domain's most discriminating tokens are exactly
+// three characters (USD, SQL, PII, KYC, DOB, RTP), and dropping them made
+// findings about different currencies look alike while findings about the same
+// currency lost their strongest shared signal.
 func findingWords(f Finding) map[string]bool {
 	words := map[string]bool{}
 	for _, w := range strings.FieldsFunc(strings.ToLower(f.Title+" "+f.Problem), func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
 	}) {
-		if len(w) >= 4 {
+		if len(w) >= 3 {
 			words[w] = true
 		}
 	}

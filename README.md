@@ -105,7 +105,7 @@ Composable workflow primitives the Tasker loads on demand. Each skill is self-co
 | Preset | Seats | Typical trigger |
 |--------|-------|-----------------|
 | `solo` | claude | client-only presentation (the old carve-out, unchanged) |
-| `standard` | claude, codex, agy | Low/Medium risk, ≤ 400 production lines, no blockers |
+| `standard` | claude, codex | Low/Medium risk, ≤ 400 production lines, no blockers |
 | `full` | + claude-scouts, grok | High risk, gate signals, migrations, components, or Medium at size |
 | `deep` | + grok-scouts | Critical risk, financial paths, scaffold config, unmatched paths, or a full floor at > 400 lines |
 
@@ -113,7 +113,7 @@ The floor (money, Critical, gate signals, …) can never be overridden downward.
 
 ### Review seats
 
-`cmd/reviewer` dispatches the seats classify names (its `-reviewers` default remains `claude,claude-scouts,codex,grok,agy`):
+`cmd/reviewer` dispatches the seats classify names (its `-reviewers` default is `claude,claude-scouts,codex,grok`):
 
 | Seat | Model | Transport | Setup |
 |------|-------|-----------|--------|
@@ -121,7 +121,7 @@ The floor (money, Critical, gate signals, …) can never be overridden downward.
 | **claude-scouts** | Claude — 8 parallel dimension scouts, fanned out and reduced to one verdict | `claude` CLI | Built-in |
 | **codex** | Codex | `codex` CLI | Codex CLI + OpenAI auth |
 | **grok** | Grok | `grok` CLI | [Grok CLI](https://grok.com) on `PATH`, `grok login` once per host |
-| **agy** | Gemini | `agy` CLI | Antigravity / Gemini credentials |
+| **agy** | Gemini | `agy` CLI | Antigravity / Gemini credentials. **In no preset** — pass `-reviewers ...,agy` to dispatch it. Removed 2026-08-18: 2-4 findings per run across four runs against 8-47 for its siblings, and 0/2 verified precision on the one hand-checked run. |
 
 Optional additional seats: `deepseek-scouts`, `kimi`.
 
@@ -310,7 +310,7 @@ cmd/classify  → risk · components · panel shape · gates · reviewer argv �
 (Critical only) → [Security Linter] → PASS / FLAG / FAIL
      ↓
 cmd/reviewer — 5 seats in parallel, argv from classification.reviewer_args
-  claude · claude-scouts (8 dimension scouts) · codex · grok · agy
+  claude · claude-scouts (8 dimension scouts) · codex · grok
      ↓
   dedup → tier consensus floor → component dimension floors → merged verdict
      ↓

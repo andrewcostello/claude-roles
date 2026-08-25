@@ -989,11 +989,22 @@ const (
 
 var presetRank = map[string]int{presetSolo: 0, presetStandard: 1, presetFull: 2, presetDeep: 3}
 
+// presetReviewers names the seats each preset dispatches.
+//
+// agy is NOT in any preset. Measured across four panel runs (PR #1416 and
+// SMG-4111 rounds 1/2/4) it returned 2, 3, 4 and 2 findings while the other
+// seats returned 8 to 47. Its raw output on #1416 was 4.7KB against 10-52KB
+// for every sibling, with an empty .err and well-formed JSON — so the seat is
+// wired correctly and simply reviews shallowly, not truncated or failing.
+// On the one run whose findings were hand-verified, both of its findings were
+// rejected: one contradicted a design decision documented in the code it was
+// reviewing. Re-add it here if a later run shows it earning a slot; it stays
+// dispatchable by name via `reviewer -reviewers`.
 var presetReviewers = map[string][]string{
 	presetSolo:     {"claude"},
-	presetStandard: {"claude", "codex", "agy"},
-	presetFull:     {"claude", "claude-scouts", "codex", "grok", "agy"},
-	presetDeep:     {"claude", "claude-scouts", "grok-scouts", "codex", "grok", "agy"},
+	presetStandard: {"claude", "codex"},
+	presetFull:     {"claude", "claude-scouts", "codex", "grok"},
+	presetDeep:     {"claude", "claude-scouts", "grok-scouts", "codex", "grok"},
 }
 
 func validPreset(p string) bool { _, ok := presetRank[p]; return ok }

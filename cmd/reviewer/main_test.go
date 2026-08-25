@@ -700,3 +700,69 @@ func TestScoutModelTiering(t *testing.T) {
 		t.Error("concurrency-resilience must stay hard")
 	}
 }
+
+// TestDedupeFindingsMergesSameDefectAtIdenticalLine uses the verbatim titles
+// and problem text four seats produced for ONE defect on PR #1416: the
+// settle-path engine mint at session_logic.go:531. Before the exact-line
+// threshold these clustered as THREE findings, which triple-counted the defect
+// and made each seat look more original than it was. Their pairwise Jaccard is
+// 0.245-0.281, so this test fails if exactLineJaccard drifts back above 0.24.
+func TestDedupeFindingsMergesSameDefectAtIdenticalLine(t *testing.T) {
+	const file = "apps/platform-domain/bay-session/cmd/bay-session/session_logic.go"
+	responses := []NamedResponse{
+		{Name: "claude", Response: ReviewResponse{Findings: []Finding{
+			{Severity: "CRITICAL", File: file, Line: 531,
+				Title:   "Settle-path engine mint still sends USD at a REAL_MONEY_GAMING-denied bay",
+				Problem: "This PR adds resolveEngineJoinCurrency so JoinSession never asks the engine to mint USD at a denied bay. The sibling mint path signalEngineOnSettle was not changed: it passes the raw next_wager_currency straight to TriggerBetCreation. JoinSession also never persists that pin."},
+		}}},
+		{Name: "claude-scouts", Response: ReviewResponse{Findings: []Finding{
+			{Severity: "CRITICAL", File: file, Line: 531, Source: "scout: integrity",
+				Title:   "Settle re-arm mints USD at a REAL_MONEY_GAMING-denied station",
+				Problem: "signalEngineOnSettle passes resolveNextWagerCurrency straight to TriggerBetCreation with no REAL_MONEY_GAMING check. The engine turns an empty currency into USD. The diff closed this exact hole on the join path only."},
+		}}},
+		{Name: "grok", Response: ReviewResponse{Findings: []Finding{
+			{Severity: "HIGH", File: file, Line: 531,
+				Title:   "Settle remint still mints USD at a denied bay",
+				Problem: "What is wrong: signalEngineOnSettle still forwards an empty pin. The engine defaults empty to USD. What happens: After a POINTS join at a REAL_MONEY_GAMING-off bay, the next settle mints a USD accepted bet. AcceptBet would reject that bet."},
+		}}},
+	}
+
+	groups := dedupeFindings(responses)
+	if len(groups) != 1 {
+		for _, g := range groups {
+			t.Logf("group: [%s] %s:%d %q sources=%v", g.Severity, g.Finding.File, g.Finding.Line, g.Finding.Title, g.Sources)
+		}
+		t.Fatalf("groups = %d, want 1 — one defect reported by three seats", len(groups))
+	}
+	if len(groups[0].Sources) != 3 {
+		t.Errorf("sources = %v, want all 3 seats credited", groups[0].Sources)
+	}
+	if groups[0].Severity != "CRITICAL" {
+		t.Errorf("severity = %s, want CRITICAL (max across members)", groups[0].Severity)
+	}
+}
+
+// TestDedupeFindingsKeepsDistinctDefectsAtIdenticalLine is the guard rail for
+// the test above. Both findings are verbatim from PR #1416 at
+// switch_wager_currency_logic.go:334 and are genuinely different defects — a
+// missing tier gate and a pre-lock TOCTOU. Their Jaccard is 0.208, the nearest
+// true negative to the 0.22 threshold, so this fails if the threshold is
+// lowered far enough to start burying distinct defects.
+func TestDedupeFindingsKeepsDistinctDefectsAtIdenticalLine(t *testing.T) {
+	const file = "apps/platform-domain/bay-session/cmd/bay-session/switch_wager_currency_logic.go"
+	responses := []NamedResponse{
+		{Name: "claude-scouts", Response: ReviewResponse{Findings: []Finding{
+			{Severity: "CRITICAL", File: file, Line: 334, Source: "scout: auth-security",
+				Title:   "SwitchWagerCurrency mints a USD bet with no player-tier gate",
+				Problem: "SwitchWagerCurrency inserts an accepted USD bet with no per-player tier gate, while AcceptBet, matched ResizeWager and SetWagerMode all gate that same decision, so an out-of-tier subject clears a compliance gate about themselves."},
+		}}},
+		{Name: "claude", Response: ReviewResponse{Findings: []Finding{
+			{Severity: "HIGH", File: file, Line: 334,
+				Title:   "Switch checks REAL_MONEY_GAMING pre-lock, mints the USD bet in a later tx",
+				Problem: "gateSwitchRealMoneyCapability reads the projection through the pooled Store in prepareSwitchWork. The accepted USD bet is inserted in a later MutateStation transaction with a wallet RPC inside the window, so an admin disable during that window still mints the bet."},
+		}}},
+	}
+	if groups := dedupeFindings(responses); len(groups) != 2 {
+		t.Fatalf("groups = %d, want 2 — a missing tier gate and a TOCTOU are different defects", len(groups))
+	}
+}

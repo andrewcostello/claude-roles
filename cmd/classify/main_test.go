@@ -377,8 +377,14 @@ func TestClassify_GateSignalRevokesCarveOut(t *testing.T) {
 	if len(cls.GateSignals) == 0 {
 		t.Fatal("no gate signals detected on a __DEV__/env gate")
 	}
-	if cls.Panel.Reduced || cls.Panel.Seats != 5 {
-		t.Errorf("panel = %+v, want full 5-seat panel", cls.Panel)
+	// Assert the PRESET, not a seat count: the carve-out revocation is the
+	// contract here, and the roster behind each preset changes as seats earn
+	// or lose their slot.
+	if cls.Panel.Reduced || cls.Panel.Preset != presetFull {
+		t.Errorf("panel = %+v, want the full preset (carve-out revoked)", cls.Panel)
+	}
+	if cls.Panel.Seats != len(presetReviewers[presetFull]) {
+		t.Errorf("seats = %d, want %d to match the full roster", cls.Panel.Seats, len(presetReviewers[presetFull]))
 	}
 }
 

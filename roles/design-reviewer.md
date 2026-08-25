@@ -80,3 +80,49 @@ For each dimension you own: the findings (severity-ordered), then a one-line dim
 - An overall verdict: is this enterprise/reference grade, and how many focused iterations from it.
 
 Do NOT rubber-stamp. A design with no BLOCKING/MAJOR findings on first pass almost certainly wasn't probed hard enough — re-read for the unstated failure mode before concluding it's clean.
+
+## Recurring Holes (check every one, every round)
+
+Every item below was found at least twice across thirteen rounds of the
+leaderboard design (2026-08). They are a checklist now, not insight; a round
+that does not try each of them against the changed surface is not finished.
+
+- **A CHECK satisfied by NULL.** `a = b` is NULL when either side is NULL,
+  and a CHECK passes on NULL. Every comparison of nullable columns needs
+  `IS NOT NULL` first, or `IS NOT DISTINCT FROM`, or `coalesce(…, false)`.
+- **An assertion that passes on empty input.** `count(*) = 0`, a `FOR EACH`
+  over an empty list, an invariant whose subject set is empty in the estate.
+  Ask: what is the estate shape that would make this fire, and does it exist?
+- **An invariant with no mutant, and a mutant two invariants share.** Delete
+  the branch in your head: does a mutant survive? Does the fragment name one
+  branch alone?
+- **A guard that skips by the wrong signal.** `last_seq IS NULL` meant
+  "ledger dropped" and also "never played". Skip by the fact itself
+  (`ledger_dropped_at`), never by a proxy.
+- **A marker that grants what its operation refused.** If the reference
+  operation checks A, B and C before setting a marker, the rule that lets the
+  marker be set must check A, B and C too — or a guarded session sets the
+  marker and takes the shortcut.
+- **A record the invariants compare against that anyone can append to, or
+  that has no shape.** One row per subject by partial unique index; a CHECK
+  on the members the invariants will cast; written by the operation, not by
+  hand.
+- **A rule that says *which* column but not *when*.** One predicate per row
+  authorised a beneficiary swap on the way from owed to paid. Per column, per
+  transition; a delete is a transition too; TRUNCATE is a delete.
+- **"Set once" without "set to what".** The first write of a timestamp or a
+  clock is where a backdated resolve or a short clock enters.
+- **Two mutable timestamps authenticating each other.** An invariant
+  anchored on an unprotected column protects nothing; anchor on a witness
+  that cannot move (a record row, a registry rule).
+- **A witness in one direction.** Drop record → void record and void record →
+  drop record; placing → reading record and reading record → placing. Read
+  both ways or the pair can be walked one step at a time.
+- **A transaction-start timestamp under a monotone rule.** `now()` runs
+  backwards under lock waits; `clock_timestamp()` after the lock does not.
+- **A correction that recomputes the world.** A void that refolds every
+  actor holds the lock for O(ledger); the aggregate is per actor, so the
+  refold is per actor.
+- **Text that describes the previous revision.** A comment, a decision
+  sentence or a proof count that the DDL no longer matches is where the next
+  reader learns the wrong rule. Counts come from the run, never from hand.
