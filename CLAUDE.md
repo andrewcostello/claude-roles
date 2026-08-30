@@ -89,8 +89,36 @@ expected — the seals task adds them — but do not read a green gate as covera
 Carried from `evenplay-mono`, whose convention this org follows.
 
 **No attribution anywhere** — not in commits, not in file headers, not in
-architecture docs. No `Co-Authored-By`, no author names. Code and docs belong
-to the team; attribution creates silos and false ownership.
+architecture docs, and **not in symbol names**. No `Co-Authored-By`, no author
+names, no class or function named after whoever or whatever wrote it. Code and
+docs belong to the team; attribution creates silos and a false sense of
+ownership.
+
+Naming a symbol after the thing it INTEGRATES WITH is not attribution and is
+fine — `ClaudeReviewer` names the CLI it drives, the way `PostgresStore` names
+a database. Naming one after its author is not.
+
+**Keep the provenance, drop the credit.** The one thing a `Co-Authored-By`
+trailer was buying is the ability to ask, months later, *how* a change was
+produced — dispatched under a panel, or hand-edited — which is an audit
+question, not a credit question. Record the process instead of the person:
+
+```
+type(scope): short description [TASK-KEY]
+
+Dispatched-Task: TASK-KEY
+Dispatcher-Run: <run id>
+```
+
+That travels with the commit into every clone and names nobody. It matters
+because the richer provenance — journal, summaries, task rows — lives in
+`runs_dir`, which is deliberately OUTSIDE the repo and disposable; lose that
+directory and a commit's origin is unrecoverable without this.
+
+The `[TASK-KEY]` in the subject is already load-bearing, not decoration:
+`dispatcher audit`'s `landed-by-message` route greps for the bracketed form to
+tell a landed-and-pruned branch from work that went missing. Bare mentions do
+not count, so keep the brackets.
 
 ```
 type(scope): short description
