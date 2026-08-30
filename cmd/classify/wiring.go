@@ -206,6 +206,7 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 )
 
@@ -225,21 +226,26 @@ var ErrWiringNotImplemented = errors.New(
 // that only happened twice is this project's whole failure class. An exit code
 // outside this set is a finding, not a new feature — the header of main.go
 // advertises "0 classified, 3 INVALID_INPUT" and usage() adds
-// "4 CAPABILITY_INCOMPLETE (probe only)"; neither mentions 1, and 1 is
+// "4 CAPABILITY_INCOMPLETE (probe only)"; neither mentions 1, 2 and 1 is
 // nonetheless reachable from seven log.Fatalf call sites inside run() and
 // persist(). It is listed because it is REAL, not because it is intended; see
-// hole H2 in docs/DECISIONS.md.
+// hole H2 in docs/DECISIONS.md. Exit 2 comes from the flag package when an
+// unknown flag is passed; it is an observable exit code but is NOT advertised
+// in usage() — see hole H3 in docs/DECISIONS.md.
 var DeclaredExitCodes = []int{
 	exitOK,
-	exitInternal,
 	exitInvalid,
+	exitInternal,
+	exitFlagError,
 	exitCapabilityIncomplete,
 }
 
 const (
 	// exitOK is a completed classification. Named rather than written as a
 	// bare 0 so that "the run succeeded" and "the zero value of an int nobody
-	// set" stop being the same token in this package's signatures.
+	// set" stop being the same token in this package's signatures. exitInvalid (3)
+	// is defined in main.go, exitInternal (1) is defined below, and
+	// exitCapabilityIncomplete (4) is defined in capability.go.
 	exitOK = 0
 	// exitInternal is what log.Fatalf produces. It is UNDOCUMENTED in usage()
 	// and it is the code an operator actually receives when the config is
@@ -247,9 +253,19 @@ const (
 	// written, or persist's sidecar write or teardown fails. Naming it does not
 	// bless it.
 	exitInternal = 1
+	// exitFlagError is what the flag package produces when an unknown flag is
+	// passed or a flag has an invalid argument. It is UNDOCUMENTED in usage() and
+	// not advertised as a possible exit code, but it is observable when passing
+	// unknown flags like --unknown or -contract-version without a value.
+	exitFlagError = 2
 )
 
 // ─── the artifact set ────────────────────────────────────────────────────────
+
+// ExitCode is a named type for the process exit code returned by a classify run.
+// Unlike a plain int, its zero value is invalid — RunWiring always returns an
+// ExitCode that is one of the DeclaredExitCodes, never the zero value.
+type ExitCode int
 
 // ArtifactState is what a single run did to a single file on disk.
 //
@@ -278,18 +294,23 @@ const (
 	// ArtifactAbsent: not present before the run, not present after. The run
 	// neither wrote nor removed it.
 	ArtifactAbsent
-	// ArtifactWritten: present after, and its bytes are this run's. Covers
-	// both creation and overwrite; the caller compares Bytes if it cares which.
+	// ArtifactWritten: present after, and EITHER did not exist before OR its
+	// bytes differ from before. Covers creation and any modification. If the
+	// bytes are identical to the before state, the outcome is ArtifactStale,
+	// not ArtifactWritten — a deterministic replay that writes identical bytes
+	// is not a write, it is a preservation of the previous state.
 	ArtifactWritten
 	// ArtifactRemoved: present before, absent after, because this run removed
 	// it. The correct outcome for a v2 sidecar under ContractV1 with -out.
 	ArtifactRemoved
-	// ArtifactStale: present before AND after, byte-identical, NOT written by
-	// this run. Correct on the exit-3 paths, which make no verdict and so may
-	// disturb nothing. A DEFECT on the persist() paths, where it means a
-	// superseded verdict is still readable beside a fresh run state. The state
-	// is the same; only the path decides the verdict, which is exactly why it
-	// must be reported rather than folded into ArtifactWritten.
+	// ArtifactStale: present before AND after, byte-identical. The run did not
+	// modify it (or modified it and wrote identical bytes). Correct on the
+	// exit-3 paths, which make no verdict and so may disturb nothing. A DEFECT
+	// on the persist() paths, where it means a superseded verdict is still
+	// readable beside a fresh run state. The state is the same; only the path
+	// decides the verdict, which is exactly why it must be reported rather than
+	// folded into ArtifactWritten. On deterministic replays, ArtifactStale is
+	// the expected outcome for files whose content is identical before and after.
 	ArtifactStale
 )
 
@@ -298,17 +319,31 @@ const (
 // out-of-set value in a form that keeps the raw integer visible, for the reason
 // ContractVersion.String gives.
 func (s ArtifactState) String() string {
-	// Stub. GO-1-3 owns the body.
-	_ = s
-	return ""
+	switch s {
+	case ArtifactStateUnset:
+		return "unset"
+	case ArtifactAbsent:
+		return "absent"
+	case ArtifactWritten:
+		return "written"
+	case ArtifactRemoved:
+		return "removed"
+	case ArtifactStale:
+		return "stale"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(s))
+	}
 }
 
 // Valid reports membership in the closed set {Absent, Written, Removed, Stale}.
 // ArtifactStateUnset is NOT valid.
 func (s ArtifactState) Valid() bool {
-	// Stub. GO-1-3 owns the body.
-	_ = s
-	return false
+	switch s {
+	case ArtifactAbsent, ArtifactWritten, ArtifactRemoved, ArtifactStale:
+		return true
+	default:
+		return false
+	}
 }
 
 // FileArtifact is one on-disk output of a run, with the state that produced it.
@@ -327,11 +362,20 @@ type FileArtifact struct {
 // Artifacts is the COMPLETE, CLOSED set of things one classify invocation may
 // leave behind. Closed is the operative word: if the wiring grows a third
 // output file, it goes here, and a row that asserts on this struct starts
-// failing to mention it rather than silently ignoring it.
+// failing to mention it rather than silently ignoring it. Subcommands (init,
+// capabilities, help) are in scope and their output (exit codes, stdout, stderr)
+// is reported through the same fields: ExitCode, Stdout, and Stderr.
 //
-// ExitCode is a member of DeclaredExitCodes.
+// ExitCode is a member of DeclaredExitCodes. It is never the zero value —
+// RunWiring always returns one of the declared codes.
+//
+// Stdout and Stderr carry the complete output streams captured during the run.
+// Constraint clause 3: when parsing flags with a caller-supplied FlagSet,
+// flag errors (exit 2) are returned and not written to stderr; flag parsing
+// runs with ContinueOnError. RunWiring calls parseInvocationFlags with
+// ContinueOnError and a nil SetOutput, so flag errors do not write anywhere.
 type Artifacts struct {
-	ExitCode  int
+	ExitCode  ExitCode
 	Stdout    []byte
 	Stderr    []byte
 	RunState  FileArtifact
@@ -351,6 +395,11 @@ type Artifacts struct {
 // package directory and is a live git repository — resolveRepo would then shell
 // out to git against the repo under review. Rows pass t.TempDir() and -no-git
 // unless git state is the subject.
+//
+// CRITICAL: Dir MUST NOT cause os.Chdir. The process is shared and may be
+// running in a shared CI environment. Paths must be resolved directory-scoped,
+// using filepath.Join or filepath.Abs relative to Dir, never by changing the
+// process's working directory.
 //
 // There is deliberately no Env field. $RISK_PATHS_CONFIG was removed from
 // configCandidates because an agent that can set an environment variable could
@@ -373,25 +422,32 @@ type Invocation struct {
 //  2. IT NEVER EXITS THE PROCESS. Every os.Exit and every log.Fatalf on the
 //     classify path becomes a returned Artifacts.ExitCode. os.Exit survives in
 //     main() and nowhere else.
-//  3. IT WRITES NOTHING TO os.Stdout OR os.Stderr. Stdout and Stderr on the
-//     returned Artifacts are the complete streams. That is what forces emit,
+//  3. IT CAPTURES ALL OUTPUT to os.Stdout and os.Stderr. Stdout and Stderr on
+//     the returned Artifacts are the complete streams. That is what forces emit,
 //     printReport, printInvalidInput and reportConfigSearch to take an
-//     io.Writer instead of calling fmt.Println.
+//     io.Writer instead of calling fmt.Println directly. No output escapes to
+//     the process's streams.
 //  4. IT REPORTS ARTIFACT STATE, NOT EXISTENCE. It snapshots -out and
-//     V2SidecarPath(-out) BEFORE running and compares after, so
-//     ArtifactWritten, ArtifactStale and ArtifactRemoved are distinguishable.
+//     V2SidecarPath(-out) BEFORE running and compares after, so files that do
+//     not exist before and after are ArtifactAbsent, files that differ are
+//     ArtifactWritten or ArtifactRemoved, and files that are byte-identical are
+//     ArtifactStale (unchanged by this run, even if identical bytes were written).
 //     With no -out, both FileArtifacts are ArtifactAbsent with the Path field
 //     empty.
 //  5. THE ERROR RETURN IS NOT THE RUN'S FAILURE. A classify run that fails is
 //     a non-zero ExitCode with err == nil. A non-nil err means RunWiring
-//     ITSELF could not run the invocation — it could not snapshot the -out
-//     path, could not chdir, was handed an Invocation it cannot honour. Rows
+//     ITSELF could not run the invocation — it could not snapshot files,
+//     could not resolve paths, was handed an Invocation it cannot honour. Rows
 //     must not conflate them: `if err != nil { t.Fatal }` then assert on
 //     ExitCode.
 //  6. SUBCOMMANDS ARE IN SCOPE. Args[0] of "init", "capabilities", "help",
 //     "-h" or "--help" takes main()'s pre-flag-parse branch, and its exit code
 //     is this function's answer too. The capabilities probe dispatches AHEAD
 //     of flag parsing on purpose and that ordering is part of the mapping.
+//  7. IT NEVER CALLS os.Chdir. Paths are resolved directory-scoped using
+//     filepath.Join and filepath.Abs relative to inv.Dir. The process's working
+//     directory is never changed, because the process is shared and may be
+//     running in a shared CI environment.
 //
 // STUB. Returns ErrWiringNotImplemented. GO-1-3 owns the body.
 func RunWiring(inv Invocation) (Artifacts, error) {
