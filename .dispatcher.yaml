@@ -1,0 +1,27 @@
+# Per-repo dispatcher config. `test:` is the mechanical gate: exit 0 = green.
+#
+# Seven INDEPENDENT Go modules under cmd/, each with its own go.mod, so there
+# is no single `go test ./...` covering the repo — a gate that ran only the
+# root would pass while any module was broken.
+#
+# `go test` and NOT `go build`: the compiled binaries are TRACKED here (that is
+# GO-2's defect), so `go build ./...` rewrites them and leaves the worktree
+# dirty. The dispatcher refuses test evidence from a dirty tree, so a building
+# gate would block every task it ran. `go test` compiles every package in the
+# pattern anyway — verified 2026-08-30: a type error in a non-test file exits 1.
+#
+# `go vet` is NOT run either. cmd/deepseek's tests use a go1.24 API while its
+# go.mod declares go1.21, so vet is red on a clean baseline. A gate that starts
+# red judges nothing. Fixing that module is a change of its own, not a
+# side effect of configuring the gate.
+test: |
+  set -e
+  for m in cmd/*/; do
+    if [ -f "${m}go.mod" ]; then
+      ( cd "$m" && go test ./... )
+    fi
+  done
+
+# Outside the repo: a runs dir inside it is gitignored AND lives in a
+# disposable worktree, so the audit trail dies with the worktree.
+runs_dir: ../dispatcher-runs
