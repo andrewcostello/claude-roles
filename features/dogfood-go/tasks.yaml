@@ -172,13 +172,42 @@ tasks:
 
       DO NOT propose rebuilding the tracked binary to make a row pass. That is
       the differential baseline and its rebuild is a separate operator call.
+
+      ## Unblock note (human)
+      (cleared from Blocked: )
+      OPERATOR RULING on the base you asked for (2026-08-30): option (a) — base GO-1 on 0cfdb57 (fix/live-config-seal). GO-1 integrates into the B1 lineage; main and B1 stay diverged and that is accepted. Do NOT attempt to merge B1 into main, and do not resolve cmd/classify/main.go or choose a deployed binary — neither is yours.
+
+      This run is dispatched with --base-branch 0cfdb57, so your worktree already forks from it and ContractVersion/registerContractVersionFlag/EmitV2 are present. The patch should apply as-is.
+
+      Your second point stands and is noted for the plan author, not for you: the GO-1-1 row has no declares.holes, and scaffold_shape.py hole-checks Python only, so Go holes are not mechanically gated. Propose your holes in the summary.
     type: Task
     estimate: 2h
     labels: [size:M, area:go-tools]
     agent: claude
     role: scaffold
-    status: To Do
+    status: In Progress
 
+    started_at: '2026-08-30T07:39:51-07:00'
+    dispatcher_run_id: 2026-08-30T14-39-51Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T14-39-51Z-tasks/GO-1-1/summary.md
+    branch: feat/GO-1-1-scaffold-the-wiring-that-decides
+    gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
+    cost_usd: 8.404204499999999
+    completed_at: '2026-08-29T22:45:13-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 4359
+    output_tokens: 46855
+    cache_read_input_tokens: 2298138
+    cache_creation_input_tokens: 113263
+    duration_ms: 652362
+    num_turns: 33
+    model: claude-fable-5
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.251 (Claude Code)
+    unblocked_at: '2026-08-30T14:23:33+00:00'
   - key: GO-1-2
     summary: seals — the wiring answers the contract that was asked for
     description: |
@@ -339,13 +368,65 @@ tasks:
       should exist at all. Deleting a duplicate is not the same decision as
       untracking a fixture, and `cmd/classify/classify` is explicitly the
       second one.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=2 (codex,grok) | blocking=4 (0C/4H))
+      Operator: the panel blocked you with real findings — read them in your inherited-findings context and answer them. GO-3-1's block is a UNANIMOUS one (claude, codex and grok all returned CHANGES_REQUESTED), so there is no dissent to argue with. Fix or rule on each blocking finding, and say which you did in the summary.
+
+      Two things about this run that were NOT your fault and are now fixed, so do not spend effort on them: the first dispatch of this feature ran against the wrong repository (claude-dispatcher), and worktree paths collided between the two repos. You are in claude-workflow, on its main, with a working `go test` gate over all seven cmd/ modules.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=6 (0C/6H))
+      Operator, round 3, on a fresh account. Two things I verified for you so you do not spend turns on them:
+
+      GO-3-1: codex's blocking finding that `gateKeyRE` cannot initialize because Go's regexp rejects `(?:...)` is WRONG. Go's regexp supports non-capturing groups — measured: regexp.MustCompile(`\A(?:foo|bar)\z`) compiles and matches. Say so and move on; do not restructure the pattern to avoid (?:).
+
+      GO-3-1: grok's finding IS real and is the one to fix. The grammars are unanchored fragments and only the full-key renderer adds \A…\z, so MatchString does a SUBSTRING search and accepts '..', '../w'. That is a path-traversal accept in a gate key. Anchor the boundary grammars.
+
+      GO-2-1: claude and codex independently found that StateWrongRecipe is unreachable under the precedence your own contract specifies — Validate step 5 rejects a differing recipe as StateDeclarationDisagrees first. A state the contract can never reach is a contract defect, not a review opinion. Either make it reachable or delete it, and say which.
+
+      A blocking finding may be WRONG. Check it, and if it is wrong say why with a measurement rather than silently complying.
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
     agent: claude
     role: scaffold
-    status: To Do
+    status: Blocked
 
+    started_at: '2026-08-30T07:24:05-07:00'
+    dispatcher_run_id: 2026-08-30T14-24-04Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T14-24-04Z-tasks/GO-2-1/summary.md
+    branch: feat/GO-2-1-scaffold-a-tracked-build-artifact
+    gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
+    cost_usd: 21.165663500000004
+    effort: high
+    effort_escalated: true
+    completed_at: '2026-08-30T07:38:07-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=2 (codex,grok) | blocking=5 (0C/5H)
+    panel_blocking_findings: 5
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 872
+    output_tokens: 38428
+    cache_read_input_tokens: 987905
+    cache_creation_input_tokens: 99756
+    duration_ms: 420777
+    num_turns: 43
+    model: claude-haiku-4-5-20251001
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.251 (Claude Code)
+    unblocked_at: '2026-08-30T14:23:47+00:00'
+    blocked_reason: 'cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=2 (codex,grok) | blocking=5 (0C/5H)'
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
   - key: GO-2-2
     summary: seals — a tracked binary that disagrees with its source is red
     description: |
@@ -478,13 +559,61 @@ tasks:
       and — the question the two answers hide — whether a hand-maintained enum
       beside a `gateKey()` function is a second table that will drift again.
       This repository has already named that class twice.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=2 (0C/2H))
+      Operator: the panel blocked you with real findings — read them in your inherited-findings context and answer them. GO-3-1's block is a UNANIMOUS one (claude, codex and grok all returned CHANGES_REQUESTED), so there is no dissent to argue with. Fix or rule on each blocking finding, and say which you did in the summary.
+
+      Two things about this run that were NOT your fault and are now fixed, so do not spend effort on them: the first dispatch of this feature ran against the wrong repository (claude-dispatcher), and worktree paths collided between the two repos. You are in claude-workflow, on its main, with a working `go test` gate over all seven cmd/ modules.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=2 (codex,grok) | blocking=2 (0C/2H))
+      Operator, round 3, on a fresh account. Two things I verified for you so you do not spend turns on them:
+
+      GO-3-1: codex's blocking finding that `gateKeyRE` cannot initialize because Go's regexp rejects `(?:...)` is WRONG. Go's regexp supports non-capturing groups — measured: regexp.MustCompile(`\A(?:foo|bar)\z`) compiles and matches. Say so and move on; do not restructure the pattern to avoid (?:).
+
+      GO-3-1: grok's finding IS real and is the one to fix. The grammars are unanchored fragments and only the full-key renderer adds \A…\z, so MatchString does a SUBSTRING search and accepts '..', '../w'. That is a path-traversal accept in a gate key. Anchor the boundary grammars.
+
+      GO-2-1: claude and codex independently found that StateWrongRecipe is unreachable under the precedence your own contract specifies — Validate step 5 rejects a differing recipe as StateDeclarationDisagrees first. A state the contract can never reach is a contract defect, not a review opinion. Either make it reachable or delete it, and say which.
+
+      A blocking finding may be WRONG. Check it, and if it is wrong say why with a measurement rather than silently complying.
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
     agent: claude
     role: scaffold
-    status: To Do
+    status: Done
 
+    started_at: '2026-08-30T07:24:05-07:00'
+    dispatcher_run_id: 2026-08-30T14-24-04Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T14-24-04Z-tasks/GO-3-1/summary.md
+    branch: feat/GO-3-1-scaffold-the-run-state-schema
+    cost_usd: 17.811276499999998
+    completed_at: '2026-08-30T07:37:30-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=APPROVE, grok=CHANGES_REQUESTED | dissenting=1 (grok) | blocking=1 (0C/1H)
+    panel_blocking_findings: 1
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 648
+    output_tokens: 24053
+    cache_read_input_tokens: 491027
+    cache_creation_input_tokens: 65905
+    duration_ms: 283057
+    num_turns: 22
+    model: claude-haiku-4-5-20251001
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.251 (Claude Code)
+    unblocked_at: '2026-08-30T14:23:47+00:00'
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
   - key: GO-3-2
     summary: seals — a key the tool writes and the schema rejects is red
     description: |
@@ -618,6 +747,26 @@ tasks:
       mutation-verified and green-sealed; the finding is that nothing CALLS it,
       and the two honest answers are a production caller or a recorded
       declaration — not deletion of the sealed subject.
+
+      ## Unblock note (human)
+      (cleared from Blocked: )
+      Operator: your escalation was correct and the fix has landed. The dispatcher had reused a worktree belonging to claude-dispatcher; `worktree.create` now refuses a path owned by another repository and names the owner (claude-dispatcher commit 3441451). The stale directory is gone and this run will create its own worktree in claude-workflow.
+
+      Nothing about the task itself is in question. Proceed with the scaffold.
+
+      ## Unblock note (human)
+      (cleared from Blocked: spawn_failed)
+      Operator: your previous attempt died on provider quota (api_error_status=429, monthly spend limit on the ambient account) — not on anything you did. This run is on a different account. Proceed with the scaffold.
+
+      ## Unblock note (human)
+      (cleared from Blocked: )
+      OPERATOR RULING (2026-08-30). You were right and my earlier two notes missed it: the task file's own header rules GO-4 blocked on the same base-revision decision as GO-1, and neither of those notes named a base. That was my oversight, not a gap in your reasoning.
+
+      The operator ruled option (a) for GO-1 — base on the lineage branch, leave main diverged, do not merge. GO-4 is the identical shape, so the same ruling applies: base GO-4 on 83b0b97 (feat/G2-adj). This run is dispatched with --base-branch 83b0b97, so cmd/gates/preserve.go, cmd/iterate/preserve.go and VerifyPreservation are present in your worktree.
+
+      Do NOT merge the lineage into main and do not resolve cmd/classify/main.go. Your own measurement is why this is safe: main has zero commits in cmd/gates or cmd/iterate since the fork at 1db2d41, and the single merge-tree conflict is in cmd/classify, which your two new files do not touch.
+
+      Your holes proposal stands and is for the plan author, not for you to gate on.
     type: Task
     estimate: 2h
     labels: [size:M, area:go-tools]
@@ -625,6 +774,27 @@ tasks:
     role: scaffold
     status: To Do
 
+    started_at: '2026-08-30T07:24:05-07:00'
+    dispatcher_run_id: 2026-08-30T14-24-04Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T14-24-04Z-tasks/GO-4-1/summary.md
+    branch: feat/GO-4-1-scaffold-a-function-contracted-implemented
+    cost_usd: 19.647218000000002
+    completed_at: '2026-08-30T07:38:34-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 1182
+    output_tokens: 66706
+    cache_read_input_tokens: 2355203
+    cache_creation_input_tokens: 189057
+    duration_ms: 867994
+    num_turns: 71
+    model: claude-haiku-4-5-20251001
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.251 (Claude Code)
+    unblocked_at: '2026-08-30T14:39:51+00:00'
+    gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
   - key: GO-4-2
     summary: seals — the write path is checked by the checker that exists for it
     description: |
