@@ -1,0 +1,712 @@
+project: claude-workflow
+epic: Dogfood — the four Go defects, in claude-workflow
+# Machine-readable, and enforced by preflight. The capitalised header
+# below was a comment, and on 2026-08-30 this file was dispatched against
+# claude-dispatcher anyway. A run against the wrong repo now refuses at
+# exit 2 before spending anything.
+target_repo: claude-workflow
+
+# This file LIVES IN THE REPO IT TARGETS, and that is load-bearing: the
+# dispatcher derives the repo from the tasks file's own location
+# (`detect_repo_root(tasks_path.parent)`), not from the working directory.
+# It previously lived in claude-dispatcher with a capitalised comment
+# telling the operator to point the run elsewhere, which is not something
+# an operator CAN do — measured 2026-08-30, when it was dispatched against
+# claude-dispatcher and two scaffolds built a mirror of this tree there.
+#
+# Every path below is in `claude-workflow` (/home/andrew/Project/claude-workflow),
+# NOT in `claude-dispatcher`. The dispatcher runs against one repo at a time, so
+# this file cannot be run in the same invocation as
+# `features/dogfood-w2/tasks.yaml` and the operator must point the run at
+# claude-workflow explicitly.
+#
+# Every unit is a defect RE-MEASURED while writing this file. DECISIONS.md was
+# read as a map and every number was taken again; five figures in that log were
+# wrong when first quoted and corrected later. FOUR of the figures below did not
+# reproduce as recorded and the measured value is the one written here.
+#
+# ==========================================================================
+# THE RULING THAT WAS SUPPOSED TO BLOCK THIS FILE — AND DOES NOT
+# ==========================================================================
+#
+# The standing instruction was: the call-site reachability gate is ruled off on
+# Go trees until (1) the host toolchain satisfies them — "37 of 38 go.mod files
+# require >= 1.25, host is go1.24.4" — and (2) the second sweep stops costing a
+# first (445 s x 2). Both preconditions were RE-DERIVED, and NEITHER holds for
+# claude-workflow, because neither was ever measured against it:
+#
+#   (1) TOOLCHAIN. `find /home/andrew/Project/claude-workflow -name go.mod`
+#       returns SEVEN files — cmd/{classify,deepseek,gates,iterate,recheck,
+#       repro,reviewer} — and every one declares `go 1.21`. Host is go1.24.4.
+#       ZERO of seven exceed the host. The precondition is already satisfied.
+#
+#       The "37 of 38" is `evenplay-mono`'s, not this repo's, and it does not
+#       reproduce there either: measured 2026-08-12, evenplay-mono has 122
+#       go.mod files, of which 119 require >= 1.25 (82 spell it `go 1.25.0`,
+#       37 spell it `go 1.25`) and 3 declare `go 1.19`. The recorded "37" is
+#       exactly the count of the second spelling, which is the likeliest source
+#       of the error. The exposure is real and LARGER than recorded — it is
+#       just not this repository's.
+#
+#   (2) COST. The 445 s is evenplay-mono's whole-tree sweep. Measured on THIS
+#       tree at `feat/G2-adj @ 83b0b97`, extracted with `git archive` (45 MB),
+#       `call_site_reachability.check_tree` over the whole repository:
+#
+#           5.8 s / 5.7 s / 5.7 s over three runs, MEDIAN 5.7 s
+#           258 seals examined · 273 roots · 317 findings
+#           13 unresolved calls · 68 unanalyzed paths · 3 subject gaps
+#           OK 257 · BREACH 37 · REPORT 4 · ACCEPTED 0 · ABSTAIN 19
+#
+#       A delta run is two sweeps: ~11.4 s, not ~15 minutes. Two orders below
+#       the figure the ruling turns on.
+#
+# SO: NO UNIT IN THIS FILE IS BLOCKED BY THE REACHABILITY RULING. It was a
+# ruling about the PRIMARY TARGET (evenplay-mono) and it stands there unchanged;
+# reading it as "off on Go trees" is a generalisation the measurements do not
+# support, and this file is the measurement that says so.
+#
+# ==========================================================================
+# WHAT IS ACTUALLY BLOCKED, PER UNIT
+# ==========================================================================
+#
+#   GO-1  BLOCKED on a base-revision decision. Its subject exists only on
+#         `fix/live-config-seal @ 0cfdb57`. Verified: `git merge-base
+#         --is-ancestor 0cfdb57 1db2d41` is FALSE — the whole B1 lineage is
+#         unmerged into `docs/explicit-state`. An operator must say which base
+#         this unit builds on. NOT blocked by the reachability ruling.
+#   GO-2  NOT BLOCKED. Applies to `docs/explicit-state @ 1db2d41` as it stands.
+#   GO-3  NOT BLOCKED. Applies to `docs/explicit-state @ 1db2d41` as it stands,
+#         and needs no gate of any kind: it is a schema and a key.
+#   GO-4  BLOCKED on the same base-revision decision as GO-1, for the same
+#         reason at a different revision: `feat/G2-adj @ 83b0b97`, also not an
+#         ancestor of `1db2d41`. NOT blocked by the reachability ruling — the
+#         opposite: the sweep that was supposed to be unaffordable is the
+#         measurement this unit is built on.
+#
+# ORDER. The four units are independent and deliberately unchained: 4 waves,
+# one role per wave. Mixed-role batches are legal at plan time today (DF-3 in
+# wave 1), so a chain putting two roles at one depth would be the defect wave 1
+# is fixing.
+#
+# ROLE CHAIN. scaffold -> seals -> bodies -> adjudicate, each blockedBy the
+# previous. The protocol refuses a 'bodies' task that names no 'seals' task in
+# blockedBy: "an absent edge is a refusal, never an empty unit that passes".
+#
+# FLOOR. `FLOOR_GLOBS` has 19 entries at `feat/D1-role-protocol` (re-counted
+# after the known-red register merged; it was 17 at `6293f42`).
+# Fifteen are `**/src/claude_dispatcher/**` paths that cannot match anything in
+# a Go repository; the two that can are `**/.dispatcher.yaml` and
+# `**/scripts/check_body_branch.sh`. No unit below touches either, so unlike
+# `features/dogfood-w2/tasks.yaml` nothing here has a floored half.
+
+tasks:
+
+  # ---- GO-1  the integration layer is 0.0% covered ------------------------
+  - key: GO-1-1
+    summary: scaffold — the wiring that decides which contract is written is judged by nothing
+    description: |
+      BLOCKER, STATED FIRST: this unit's subject exists only on
+      `fix/live-config-seal @ 0cfdb57`, the newest tip of the B1 lineage.
+      Measured: `git merge-base --is-ancestor 0cfdb57 1db2d41` is FALSE —
+      neither B1 nor G1 nor G2 is merged into `docs/explicit-state`, and
+      `cmd/classify/main.go` there has no contract switch at all. AN OPERATOR
+      MUST NAME THE BASE. Do not start against `docs/explicit-state`; the
+      defect is not there. This unit is NOT blocked by the reachability
+      ruling — see this file's header.
+
+      MEASURED at `fix/live-config-seal @ 0cfdb57`, by copying `cmd/` to a
+      scratch directory (never `cp -a` of the linked worktree itself — that
+      inherits the `.git` POINTER FILE and a git command inside the copy
+      mutates the real repository; it bit three agents in the 2026-08 effort)
+      and running `go test -covermode=set -coverprofile` over the module:
+
+          main.go:182  main                         0.0%
+          main.go:215  parseFlags                   0.0%
+          main.go:255  registerContractVersionFlag  0.0%
+          main.go:263  run                          0.0%
+          main.go:319  resolveConfigPath            0.0%
+          main.go:382  persist                      0.0%
+          main.go:461  emit                         0.0%
+
+      SEVEN functions at 0.0%, not the four recorded. The whole entry spine
+      from `main` to the artifact is unexecuted. Module coverage overall is
+      58.3%, so this is not a project with no tests — it is a project whose
+      tests all enter below the wiring. `readset.go:1109 run` is a DIFFERENT
+      `run` at 93.3%, and the three `run(` call sites in the seal files are
+      that one; the grep that finds them is not evidence about `main.go`.
+
+      THE CONSEQUENCE, MUTATION-PROVED rather than argued. In the scratch copy
+      `emit()`'s v2 arm was rewritten to answer with v1 bytes:
+
+          case ContractV2:
+      -           return EmitV2(os.Stdout, cls)
+      +           return EmitV1(os.Stdout, cls)
+
+      The suite came back with EXACTLY the same two failures as the unmutated
+      baseline (both environment-dependent in the scratch copy:
+      `TestSeal_GenerateReadSet_CitationsResolveToRealLines` and
+      `TestSeal_Repair_NoFallbackToAnotherCheckoutsConfig`). NOT ONE SEAL
+      REDDENS. A v2 request answered with v1 bytes passes the whole suite.
+
+      THE SUITE SIZE, RE-COUNTED: 97 `func Test` in `cmd/classify` — 70 across
+      the six `*_seal_test.go` files (baseline 7, capability 10, contract 21,
+      envgap 4, readset 19, repair 9) and 27 in `main_test.go`. The recorded
+      "43 seals" was the count at the revision the panel read
+      (`feat/B1-body @ 94d522a`, which measures 50 seal functions / 77 total);
+      it does not reproduce at any revision measured. Use 97 and say when.
+
+      THE SHAPE, which the panel stated better than a summary can: "the
+      behaviour under review is the mapping (contract x -out x -json) ->
+      artifact set + exit code, and that mapping is the part with no test."
+      Every seal calls `EmitV1`/`EmitV2`/`WriteV2Sidecar`/`ParseContractVersion`
+      as a LIBRARY, and nothing runs a binary built from this source —
+      `pinnedBinary` is `./classify`, explicitly "a FIXTURE, not a build
+      artifact: it must not be rebuilt".
+
+      Contract must answer: what an end-to-end row is allowed to execute, given
+      that the tracked `classify` binary is a pinned fixture that must NOT be
+      rebuilt to satisfy a test; whether `registerContractVersionFlag` being
+      unexecuted means nothing proves the real binary accepts
+      `-contract-version` at all; and what the exit-code contract is for
+      `run()`'s `ParseContractVersion -> printInvalidInput -> exit 3` path.
+
+      DO NOT propose rebuilding the tracked binary to make a row pass. That is
+      the differential baseline and its rebuild is a separate operator call.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:go-tools]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: GO-1-2
+    summary: seals — the wiring answers the contract that was asked for
+    description: |
+      Seal GO-1-1's contract. The row that matters FAILS today and its exact
+      mutation is already measured: `emit()`'s `ContractV2` arm rewritten to
+      `EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.
+
+      Cover the mapping, not the library: (contract x -out x -json) -> artifact
+      set + exit code. Include `-contract-version 3` -> exit 3 with a message
+      naming the accepted set, and `-contract-version 2` producing the wrapper
+      on stdout.
+
+      A LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.
+      `TestSeal_InstalledDigestSource_YieldsHexOrErrors`
+      (`capability_seal_test.go:409`) returns early on error having asserted
+      nothing about the values. Proved rather than argued: running that test
+      ALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —
+      the hex/length/lowercase assertions below the early return never execute,
+      because `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`
+      are set, and no test in the package calls `readDiff`. Say whether it is
+      amended or struck.
+
+      TWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both
+      measured at `0cfdb57` and both to be re-derived rather than trusted:
+
+        1. "Swapping the digests passes the suite" NO LONGER REPRODUCES.
+           Rewriting `ConsumedDigests`' return from
+           `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens
+           EXACTLY ONE row —
+           `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,
+           added by a later repair wave. The swap is caught. Do not write a
+           row for a defect that is already sealed.
+        2. "The production DigestSource success path never executes in any
+           test" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`
+           100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`
+           100.0%. What remains is that ONE seal's own assertions are
+           unreachable — a narrower defect than the one recorded, and it is the
+           one to seal.
+
+      NON-VACUITY: this module has already produced four measured vacuous
+      seals. Do not seal that a function was CALLED; seal what it ANSWERED.
+      Prove each row red by the specific defect it names and carry an in-test
+      control judged in the same call.
+    type: Task
+    estimate: 3h
+    labels: [size:L, area:go-tools]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [GO-1-1]
+
+  - key: GO-1-3
+    summary: bodies — make the wiring executable by a test without rebuilding the fixture
+    description: |
+      Turn GO-1-2's rows green. Every row must close for a stated mechanical
+      reason; a row that goes green for a reason you cannot name is a finding.
+
+      The constraint that decides the design: `pinnedBinary` (`./classify`) is
+      a tracked FIXTURE and must not be rebuilt. Reaching `run`/`emit`/
+      `persist`/`resolveConfigPath` therefore means making them callable
+      in-process, not exec'ing a build. Say what that costs and whether it
+      changes any exported surface.
+
+      Report which rows would still pass under an implementation you consider
+      wrong.
+    type: Task
+    estimate: 3h
+    labels: [size:L, area:go-tools]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [GO-1-2]
+
+  - key: GO-1-4
+    summary: adjudicate — rule the vacuous digest seal and GO-1-3's disputes
+    description: |
+      Rule whether `TestSeal_InstalledDigestSource_YieldsHexOrErrors` is
+      amended or struck, and any dispute the body raises. Amend only what a
+      ruling forces; name each row and its before/after.
+
+      Rule also on the honest counter the body is likely to raise: a seal that
+      passes vacuously today but whose PROPERTY is now covered elsewhere
+      (`hexSHA256` at 100.0% whole-suite) may be redundant rather than wrong,
+      and striking is then cheaper than amending. Decide which, and say why.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - cmd/classify/capability_seal_test.go
+    status: To Do
+    blockedBy: [GO-1-3]
+
+  # ---- GO-2  nine tracked binaries, warned about nowhere ------------------
+  - key: GO-2-1
+    summary: scaffold — a tracked build artifact must say what it is and when it went stale
+    description: |
+      NOT BLOCKED. Applies to `docs/explicit-state @ 1db2d41` as it stands, and
+      needs no gate of any kind.
+
+      MEASURED at `docs/explicit-state @ 1db2d41` by `git ls-files` piped
+      through `file --mime-type`. NINE tracked ELF files, 45,054,764 bytes —
+      45.05 MB decimal, 42.97 MiB:
+
+          8,962,883  cmd/deepseek/deepseek     blob 75381e5c3d
+          8,962,883  cmd/reviewer/deepseek     blob 75381e5c3d
+          4,375,597  cmd/reviewer/reviewer     blob 047eb42651
+          4,073,497  cmd/reviewer/main         blob 5fa37f590d
+          4,032,253  cmd/gates/gates           blob 2446e110e4
+          3,916,741  cmd/classify/classify     blob 9542fe1ba7
+          3,863,975  cmd/repro/repro           blob e36c46910e
+          3,465,388  cmd/recheck/recheck       blob 2d87c2cae3
+          3,401,547  cmd/iterate/iterate       blob 08c7b29bdb
+
+      `.gitignore` — there is exactly one, at the repo root — has a single
+      non-comment pattern, `scratch/`. It matches none of the nine. Nothing
+      anywhere warns about them.
+
+      TWO CORRECTIONS TO THE RECORD, both making the defect SHARPER, both from
+      `go version -m` rather than from file sizes:
+
+        1. "Two are byte-identical in SIZE — likely duplicates." They are
+           byte-identical in CONTENT, which is certain rather than likely:
+           `cmd/reviewer/deepseek` and `cmd/deepseek/deepseek` share the git
+           blob `75381e5c3d`, and both stamp
+           `mod github.com/yourorg/claude-workflow/deepseek
+           v0.0.0-20260719152154-fd4ce0766a50`. 8.96 MB of duplication.
+        2. THERE IS A SECOND, WORSE PAIR NOBODY RECORDED. `cmd/reviewer/main`
+           and `cmd/reviewer/reviewer` are BOTH builds of
+           `github.com/yourorg/claude-workflow/reviewer`:
+
+               cmd/reviewer/main      v0.0.0-20260719042512-52d464386ccb+dirty
+               cmd/reviewer/reviewer  v0.0.0-20260804055219-0864e52ce2e9+dirty
+
+           `cmd/reviewer/main` is the SAME PROGRAM, sixteen days stale, under a
+           name that hides it. Its last touching commit is 2026-07-19
+           (`fd4ce07`); its sibling's is 2026-08-08 (`1db2d41`).
+
+      ALSO MEASURED, and it is why "nowhere" is the whole problem: BOTH
+      reviewer binaries carry the `+dirty` VCS stamp — built from an
+      uncommitted tree. And only SEVEN of the nine sit where `go build ./...`
+      would put them; `cmd/reviewer/main` is a `go build main.go` artifact and
+      `cmd/reviewer/deepseek` is another module's output parked in the
+      reviewer's directory.
+
+      THIS HAS ALREADY BITTEN. Commit `14560c5` is titled "fix(reviewer):
+      refresh stale cmd/reviewer/deepseek binary (had no -temperature flag)".
+
+      Contract must answer: which of the nine are DELIVERABLES (a pinned
+      differential fixture the seals exec and must not rebuild) and which are
+      ACCIDENTS; what a tracked binary must carry so a reader can tell stale
+      from current WITHOUT running `go version -m`; and what happens when a
+      tracked binary's stamp disagrees with the source at HEAD — a named
+      state, never a silent stale artifact.
+
+      Say plainly whether `cmd/reviewer/main` and `cmd/reviewer/deepseek`
+      should exist at all. Deleting a duplicate is not the same decision as
+      untracking a fixture, and `cmd/classify/classify` is explicitly the
+      second one.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: GO-2-2
+    summary: seals — a tracked binary that disagrees with its source is red
+    description: |
+      Seal GO-2-1's contract. The rows that matter fail today:
+      `cmd/reviewer/main` is a 16-day-stale build of the same program as
+      `cmd/reviewer/reviewer`, and `cmd/reviewer/deepseek` is a byte-identical
+      copy of `cmd/deepseek/deepseek`.
+
+      NON-VACUITY, and this unit's trap is specific: do NOT seal a LIST of
+      binary paths, or a count, or a `.gitignore` line. That is the hand-list
+      bug this repository has already named twice — "a generator that degrades
+      when it cannot see a consumer is the hand-list bug with an AST in front
+      of it" — and a list goes green the moment someone pastes a new literal.
+      Derive the set from the tree (`git ls-files` + an ELF magic check) and
+      seal the RELATIONSHIP between an artifact and its module.
+
+      Beware the measurement trap this effort recorded: a check that reports
+      success because it did not look. A row that passes when `go version -m`
+      is unavailable has certified nothing. Make the unavailable case loud.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [GO-2-1]
+
+  - key: GO-2-3
+    summary: bodies — close the drift the way GO-2-1 ruled
+    description: |
+      Turn GO-2-2's rows green. If the ruling was "untrack", untrack; if it was
+      "declare", declare; if it was "detect", make the detector fail loudly and
+      name which artifact drifted from which source.
+
+      DO NOT REBUILD ANY TRACKED BINARY to make a row pass. Rebuilding
+      `cmd/classify/classify` is a standing operator decision and is out of
+      scope here; and a build performed in a LINKED WORKTREE stamps the wrong
+      repository into the VCS metadata, which is how `+dirty` got there.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [GO-2-2]
+
+  - key: GO-2-4
+    summary: adjudicate — rule which of the nine are deliverables and which are accidents
+    description: |
+      Rule any dispute the body raises, and in particular the one the contract
+      cannot dodge: `cmd/classify/classify` is a pinned differential fixture
+      that the seals exec and must NOT be rebuilt, while `cmd/reviewer/main`
+      appears to be an accident. A rule that untracks both is wrong and a rule
+      that keeps both is wrong. Name each of the nine and its disposition.
+    type: Task
+    estimate: 30m
+    labels: [size:XS, area:go-tools]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - .gitignore
+    status: To Do
+    blockedBy: [GO-2-3]
+
+  # ---- GO-3  the schema does not describe the tool that writes it ---------
+  - key: GO-3-1
+    summary: scaffold — the run-state schema is falsified by the tool it documents
+    description: |
+      NOT BLOCKED. Applies to `docs/explicit-state @ 1db2d41` as it stands, and
+      needs no gate of any kind: it is a schema and a key.
+
+      MEASURED at `docs/explicit-state @ 1db2d41`.
+
+      `config/run-state.schema.json:154` describes the `gates` object as
+      "Written by cmd/gates". Its `propertyNames.enum` (lines 175-182) admits
+      exactly THIRTEEN bare names:
+
+          build, test, lint, complexity, coverage, gosec, staticcheck,
+          semgrep, mutation, bench_relative, bench_absolute, differential,
+          domain_suite
+
+      `cmd/gates` writes gate keys through `mergeGates`
+      (`cmd/gates/main.go:1325`, `state.Gates[r.Key] = r.Outcome`), and `r.Key`
+      comes from `gateKey` (`cmd/gates/main.go:655-660`):
+
+          func gateKey(p plan) gateID {
+              if p.Module == nil { return gateID{Key: p.Gate} }
+              return gateID{Key: p.Gate + ":" + p.Module.Rel, ModRel: p.Module.Rel}
+          }
+
+      Every module-scoped gate writes `<gate>:<module-rel-path>`. The enum
+      contains no colon-bearing entry, so EVERY module-scoped key the tool
+      writes is rejected by the schema that says the tool writes it. The
+      module's own tests assert those literals — `cmd/gates/main_test.go` pins
+      `test:apps/finance-domain/wallet` (659, 680), `test:m` (791),
+      `test:apps/w` (834), `build:apps/w` (938), `coverage:apps/w` (939),
+      `coverage:apps/finance-domain/wallet` (960). Six run-state keys the
+      schema rejects, asserted as correct by the tool's own suite.
+
+      THE RECORDED COUNT DID NOT REPRODUCE. `"additionalProperties": false`
+      appears ELEVEN times in that file, not five — lines 9, 25, 44, 87, 99,
+      135, 159, 191, 208, 247, 265 — and identically at `1db2d41`, `0cfdb57`,
+      `83b0b97` and `12d845a`, so it is not a revision artifact. (Lines 156 and
+      171 spell `additionalProperties` with a schema object rather than
+      `false`, and do not count. Repo-wide the pattern matches 15 lines; the
+      other four are model structured-output schemas in `cmd/recheck/main.go`
+      and `cmd/reviewer/main.go` and are a different subject.)
+
+      THE FINDING THAT MAKES THIS WORTH A UNIT, and it is not in the record:
+      NOTHING VALIDATES AGAINST THE SCHEMA FILE. `validateRunState`
+      (`cmd/gates/main.go:1269`) says in its own doc comment that it "enforces
+      the invariants config/run-state.schema.json documents ... rather than
+      reimplementing JSON Schema" — and it checks `schema_version`,
+      `repo.worktree`, `classification.risk`, `classification.components`,
+      gate `status` and the skipped/skip_reason pair. It NEVER checks a gate
+      KEY against the enum. So the enum is unenforced prose that the tool
+      contradicts, and the contradiction is invisible because the only reader
+      is a human.
+
+      One more measured fact the contract needs: gate NAMES come from a
+      user-supplied `gates.json`, and no `gates.json` exists in this
+      repository — `.agent/` holds only `risk-paths.json`, and the only
+      instance is `cmd/gates/testdata/example-gates.json`, whose thirteen names
+      are exactly the thirteen in the enum. So the bare-name half of the key
+      space is only as conformant as whatever config a user supplies.
+
+      Contract must answer: whether the enum is widened to admit the
+      module-scoped form, replaced by a pattern, or struck as unenforceable;
+      whether `validateRunState` becomes the enforcer or the schema does;
+      and — the question the two answers hide — whether a hand-maintained enum
+      beside a `gateKey()` function is a second table that will drift again.
+      This repository has already named that class twice.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: GO-3-2
+    summary: seals — a key the tool writes and the schema rejects is red
+    description: |
+      Seal GO-3-1's contract. The row that matters fails today: a run state
+      carrying `coverage:apps/finance-domain/wallet` — a key `cmd/gates`
+      demonstrably writes, and asserts in its own suite at `main_test.go:960` —
+      must be judged legal by whatever the ruling makes the enforcer, and today
+      the schema says it is not.
+
+      NON-VACUITY: do NOT seal that the enum has thirteen entries, or that a
+      literal string is in it. Both are transcriptions and both go green the
+      moment someone pastes a new literal. Seal the RELATIONSHIP between what
+      `gateKey()` can produce and what the schema admits — a row that derives
+      one from the other is the only shape that survives the next gate name.
+
+      Include the negative: a key `gateKey()` CANNOT produce must still be
+      refused, or the fix is "allow anything" wearing a schema's clothes.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [GO-3-1]
+
+  - key: GO-3-3
+    summary: bodies — make the schema and the writer agree, once
+    description: |
+      Turn GO-3-2's rows green.
+
+      Whichever direction GO-3-1 ruled, the outcome must not be a second
+      hand-maintained list of gate names. If the enum stays, something must
+      derive or check it against `gateKey()`; if it goes, `validateRunState`
+      must gain the check it currently does not have.
+
+      Report which rows would still pass under an implementation you consider
+      wrong — in particular one that widens the schema to accept every string,
+      which turns every row green and checks nothing.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [GO-3-2]
+
+  - key: GO-3-4
+    summary: adjudicate — rule where the gate-key contract lives
+    description: |
+      Rule any dispute, and in particular whether the schema file or
+      `validateRunState` is the authority. Today both claim to be and neither
+      checks the key; a ruling that leaves both is the drift this unit exists
+      to close.
+    type: Task
+    estimate: 30m
+    labels: [size:XS, area:go-tools]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - config/run-state.schema.json
+    status: To Do
+    blockedBy: [GO-3-3]
+
+  # ---- GO-4  VerifyPreservation is dark in both modules -------------------
+  - key: GO-4-1
+    summary: scaffold — a function contracted, implemented and sealed, and called by nothing
+    description: |
+      BLOCKER, STATED FIRST: this unit's subject exists only at
+      `feat/G2-adj @ 83b0b97`. Measured: `git merge-base --is-ancestor 83b0b97
+      1db2d41` is FALSE. At `feat/G2-iterate-preserve @ 1fe753b` — the branch
+      whose NAME matches — `VerifyPreservation` is an unimplemented stub and
+      the module tracks no seal file, so the correct answer there is NO FINDING
+      AT ALL. THE REVISION IS LOAD-BEARING and an operator must name the base.
+      This unit is NOT blocked by the reachability ruling; see the header.
+
+      MEASURED at `feat/G2-adj @ 83b0b97`:
+
+          cmd/gates/preserve.go:997     func VerifyPreservation(...)
+          cmd/iterate/preserve.go:1553  func VerifyPreservation(...)
+
+      In each module, `grep -n "VerifyPreservation("` over the non-test `.go`
+      files returns EXACTLY ONE LINE — the definition itself. No production
+      caller in either. Contracted, implemented, mutation-verified,
+      green-sealed, and called from production in NEITHER.
+
+      Seals that CALL it, counted by the caller's own function body rather than
+      by name:
+
+          cmd/gates    3   TestSeal_G1_VerifyPreservation_{RefusesWhatItCannotCheck,
+                           ReportsEditsOutsideTheLicensedPaths,
+                           TreatsADeletionUnderGatesAsAViolation}
+          cmd/iterate  4   the three TestSeal_G2_VerifyPreservation_* rows plus
+                           TestSeal_G2_Licence_GatesIsLicensedForGatesAndForbiddenForIterate
+
+      SEVEN (seal, subject) pairs, not the recorded eight. The record predicted
+      "cmd/gates 3 x its own, cmd/iterate 5 x its own"; gates reproduces at 3
+      and iterate measures 4. State the counting method, because "names it"
+      and "calls it" give different numbers in this file and the difference is
+      the whole disagreement.
+
+      THE MECHANISM ANSWERS FOUR OF THE SEVEN — MEASURED, NOT PREDICTED.
+      `call_site_reachability.check_tree` was run over this tree extracted with
+      `git archive`, at `claude-dispatcher feat/D1-role-protocol @ 6293f42`
+      with the Go analyzer enrolled (`ANALYZERS` is non-empty):
+
+          median 5.7 s over three runs
+          258 seals examined · 273 roots · 317 findings
+          OK 257 · BREACH 37 · REPORT 4 · ACCEPTED 0 · ABSTAIN 19
+          13 unresolved calls · 68 unanalyzed paths · 3 subject gaps
+
+          cmd/iterate.VerifyPreservation  x4 -> Reach.FROM_TESTS_ONLY  (BREACH)
+          cmd/gates.VerifyPreservation    x3 -> Reach.UNDECIDED        (ABSTAIN)
+
+      SO THE ACCEPTANCE CASE IS HALF-ANSWERED, AND THE HALF THAT FAILS WAS
+      FORESEEN. D6's scaffold marked `Predicted (unmeasured)`: "`check_subject`
+      reaches step 4 only past step 3, which abstains on ANY unresolved call in
+      the production closure — over seven Go modules that is the likeliest way
+      this unit fails to earn its keep." That prediction is now MEASURED and it
+      came true, for `cmd/gates` and not for `cmd/iterate`. Thirteen unresolved
+      calls across the tree are enough to silence three of seven findings.
+
+      Contract must answer: what a correct analyzer must report for each of the
+      seven pairs; WHY `cmd/gates` abstains where `cmd/iterate` does not, named
+      down to the unresolved call that causes it; and whether the honest fix is
+      to the analyzer, to the module, or to the abstention rule — noting that
+      narrowing the abstention means claiming an unresolved call is harmless,
+      which is the fail-open shape this effort refuses, and that "better to
+      resolve the calls than to excuse them" is already the standing ruling.
+
+      DO NOT delete the function to close the finding. It is
+      mutation-verified and green-sealed; the finding is that nothing CALLS it,
+      and the two honest answers are a production caller or a recorded
+      declaration — not deletion of the sealed subject.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:go-tools]
+    agent: claude
+    role: scaffold
+    status: To Do
+
+  - key: GO-4-2
+    summary: seals — the write path is checked by the checker that exists for it
+    description: |
+      Seal GO-4-1's contract. The row that matters fails today: `Apply` writes
+      via `os.WriteFile` and `VerifyPreservation` — the function whose entire
+      purpose is to check that write — never runs.
+
+      The measured acceptance case, from `cmd/iterate/preserve.go`'s own
+      recorded example: a round record landing at `rounds[1]` where
+      `VerifyPreservation` WOULD report three violations. Build the row on
+      that, so a passing implementation is one where the checker actually
+      answered, not one where it was merely called. `preserve_seal_test.go:1727`
+      already says in the tree, in words: "VerifyPreservation has NO non-test
+      caller in this package."
+
+      NON-VACUITY, and this is the exact trap the D8 round measured: an
+      implementation that KEEPS the call and then decides the verdict inline
+      was 22-of-22 green. *Calling the shared callable is not the same as being
+      answered by it.* A row that asserts the function was invoked is
+      satisfied by an invocation whose result is discarded.
+
+      Beware the second measured trap: `cmd/gates` ABSTAINS today
+      (Reach.UNDECIDED). A row driven only through the reachability report
+      would be green there for the wrong reason — the mechanism said "I cannot
+      tell", not "it is reached". Distinguish abstention from a pass in the row
+      itself.
+    type: Task
+    estimate: 2h
+    labels: [size:M, area:go-tools]
+    agent: claude
+    role: seals
+    status: To Do
+    blockedBy: [GO-4-1]
+
+  - key: GO-4-3
+    summary: bodies — give the checker a production caller, or declare why it has none
+    description: |
+      Turn GO-4-2's rows green.
+
+      Note the measured cost placement before choosing where the call goes: a
+      verifier on the write path CHANGES what the tool does on failure, and the
+      G1/G2 rulings already record that "calling the verifier on the write path
+      changes what gates and iterate do". A caller added carelessly turns a
+      checker into a gate nobody agreed to.
+
+      If the honest answer for one of the two modules is a declaration rather
+      than a caller, say so and write it as a declaration — but a declaration
+      with no `wiring` is not a declaration, by this protocol's own ruling.
+
+      Report which rows would still pass under an implementation you consider
+      wrong, and re-run the reachability sweep afterwards: the pass condition
+      is that `cmd/iterate.VerifyPreservation` stops being FROM_TESTS_ONLY,
+      not that a test went green.
+    type: Task
+    estimate: 3h
+    labels: [size:L, area:go-tools]
+    agent: claude
+    role: bodies
+    status: To Do
+    blockedBy: [GO-4-2]
+
+  - key: GO-4-4
+    summary: adjudicate — rule the three abstentions and GO-4-3's disputes
+    description: |
+      Rule any dispute the body raises, and in particular the one this unit
+      exists to surface: `cmd/gates.VerifyPreservation` comes back UNDECIDED,
+      so the mechanism cannot say whether the defect is there. Rule whether an
+      abstention on the acceptance case is an acceptable answer, a finding
+      against the analyzer, or a finding against `cmd/gates` — and whether the
+      thirteen unresolved calls are worth resolving.
+
+      Do not fold ABSTAIN into OK. That is the fail-open this whole mechanism
+      exists to refuse, and the module's own grid names ABSTAIN and REPORT
+      twice so that no edit can widen one into the other without visibly
+      editing the table.
+    type: Task
+    estimate: 1h
+    labels: [size:S, area:go-tools]
+    agent: claude
+    role: adjudicate
+    disputed_paths:
+      - cmd/iterate/preserve_seal_test.go
+      - cmd/gates/preserve_seal_test.go
+    status: To Do
+    blockedBy: [GO-4-3]
