@@ -263,8 +263,8 @@ const (
 // ─── the artifact set ────────────────────────────────────────────────────────
 
 // ExitCode is a named type for the process exit code returned by a classify run.
-// Unlike a plain int, its zero value is invalid — RunWiring always returns an
-// ExitCode that is one of the DeclaredExitCodes, never the zero value.
+// Its zero value is exitOK (0), which means success. RunWiring always returns an
+// ExitCode that is one of the DeclaredExitCodes.
 type ExitCode int
 
 // ArtifactState is what a single run did to a single file on disk.
@@ -294,23 +294,25 @@ const (
 	// ArtifactAbsent: not present before the run, not present after. The run
 	// neither wrote nor removed it.
 	ArtifactAbsent
-	// ArtifactWritten: present after, and EITHER did not exist before OR its
-	// bytes differ from before. Covers creation and any modification. If the
-	// bytes are identical to the before state, the outcome is ArtifactStale,
-	// not ArtifactWritten — a deterministic replay that writes identical bytes
-	// is not a write, it is a preservation of the previous state.
+	// ArtifactWritten: present after and (did not exist before OR bytes differ
+	// from before). Snapshot-observable by construction — only files that
+	// differ can be told apart from Stale. A deterministic replay that writes
+	// identical bytes is indistinguishable from leaving the file alone; the
+	// outcome is Stale in that case, not Written. This is a policy choice on
+	// how to interpret "unchanged by this run" when bytes are byte-identical.
 	ArtifactWritten
 	// ArtifactRemoved: present before, absent after, because this run removed
 	// it. The correct outcome for a v2 sidecar under ContractV1 with -out.
 	ArtifactRemoved
-	// ArtifactStale: present before AND after, byte-identical. The run did not
-	// modify it (or modified it and wrote identical bytes). Correct on the
-	// exit-3 paths, which make no verdict and so may disturb nothing. A DEFECT
-	// on the persist() paths, where it means a superseded verdict is still
-	// readable beside a fresh run state. The state is the same; only the path
-	// decides the verdict, which is exactly why it must be reported rather than
-	// folded into ArtifactWritten. On deterministic replays, ArtifactStale is
-	// the expected outcome for files whose content is identical before and after.
+	// ArtifactStale: present before AND after, byte-identical. Snapshot-observable
+	// definition: bytes did not change. This includes cases where the run wrote
+	// identical bytes back. Correct on the exit-3 paths, which make no verdict
+	// and must disturb nothing. A DEFECT on the persist() paths, where it means
+	// a superseded verdict is still readable beside a fresh run state — the
+	// state is the same, so only examining which run produced it reveals the
+	// error, which is exactly why it must be reported rather than folded into
+	// ArtifactWritten. On deterministic replays, ArtifactStale is the expected
+	// outcome for files whose content is identical before and after.
 	ArtifactStale
 )
 
@@ -359,21 +361,20 @@ type FileArtifact struct {
 	Bytes []byte
 }
 
-// Artifacts is the COMPLETE, CLOSED set of things one classify invocation may
-// leave behind. Closed is the operative word: if the wiring grows a third
-// output file, it goes here, and a row that asserts on this struct starts
-// failing to mention it rather than silently ignoring it. Subcommands (init,
-// capabilities, help) are in scope and their output (exit codes, stdout, stderr)
-// is reported through the same fields: ExitCode, Stdout, and Stderr.
+// Artifacts is the COMPLETE set of things one classify invocation may produce.
+// Every possible output, from any subcommand or the main classify path, is
+// captured in these five fields. RunState and V2Sidecar are populated only on
+// the classify path; subcommands (init, capabilities, help) produce exit code,
+// stdout, and stderr only.
 //
 // ExitCode is a member of DeclaredExitCodes. It is never the zero value —
 // RunWiring always returns one of the declared codes.
 //
 // Stdout and Stderr carry the complete output streams captured during the run.
-// Constraint clause 3: when parsing flags with a caller-supplied FlagSet,
-// flag errors (exit 2) are returned and not written to stderr; flag parsing
-// runs with ContinueOnError. RunWiring calls parseInvocationFlags with
-// ContinueOnError and a nil SetOutput, so flag errors do not write anywhere.
+// When parsing flags with a caller-supplied FlagSet, flag errors (exit 2) are
+// returned rather than fatal; flag parsing runs with ContinueOnError. SetOutput
+// is called with nil, which causes the flag package to default to os.Stderr,
+// so flag error messages appear in Stderr.
 type Artifacts struct {
 	ExitCode  ExitCode
 	Stdout    []byte
@@ -480,7 +481,9 @@ func RunWiring(inv Invocation) (Artifacts, error) {
 //  3. A flag error is RETURNED, not fatal. fs.Parse's error comes back so
 //     RunWiring can map it to an exit code; the caller sets
 //     fs.SetOutput/ContinueOnError. Today flag.CommandLine is ExitOnError and
-//     an unknown flag exits 2 — a code in NO declared set. See hole H3.
+//     an unknown flag exits 2 — a code in NO declared set. See hole H3. When
+//     SetOutput is called with nil, the flag package defaults to os.Stderr, so
+//     flag error output reaches Stderr on the Artifacts.
 //  4. It does NOT call log.SetFlags/log.SetPrefix. parseFlags does that today
 //     as a side effect of parsing, which is why the log prefix depends on
 //     whether flags were parsed. Process-wide logger configuration belongs to
