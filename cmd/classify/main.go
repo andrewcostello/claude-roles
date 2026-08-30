@@ -179,6 +179,21 @@ type options struct {
 	args            []string
 }
 
+// main is the process entry point and OWNS THE ONLY os.Exit on the classify
+// path. Everything below it returns a code.
+//
+// CONTRACT (GO-1-1 scaffold; see wiring.go for the whole of it). main is at
+// 0.0% coverage and stays there: it reads os.Args and exits the process, so no
+// in-process test can drive it. It is therefore not sealed BEHAVIOURALLY but
+// STRUCTURALLY — GO-1-3 makes the classify arm below a one-line delegation to
+// RunWiring, and GO-1-2's row scans this package's source to assert it. If the
+// delegation is ever replaced by a second, parallel spine, every row that calls
+// RunWiring is vacuous by construction and the source scan is the only thing
+// that would notice.
+//
+// The three pre-flag-parse arms are part of the mapping, not around it: the
+// capabilities probe dispatches ahead of flag.Parse on purpose, and its exit
+// code is RunWiring's answer too.
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -212,6 +227,20 @@ Exit codes: 0 classified, 3 INVALID_INPUT, 4 CAPABILITY_INCOMPLETE (probe only)
 `)
 }
 
+// parseFlags reads the process's argv into options.
+//
+// CONTRACT (GO-1-1 scaffold). This function is untestable AS WRITTEN and that
+// is the whole of why -contract-version has no seal: it registers on the global
+// flag.CommandLine, parses the global os.Args, and configures the process-wide
+// logger as a side effect. A test can drive it neither twice nor with its own
+// argv. GO-1-3 reduces it to a caller of parseInvocationFlags (wiring.go) over
+// flag.CommandLine and os.Args[1:], keeping the log.SetFlags/log.SetPrefix pair
+// HERE — process-wide logger configuration is main's, not a function a row
+// calls a hundred times.
+//
+// Nothing today proves any binary accepts -contract-version. What becomes
+// provable is narrower than that sentence sounds; wiring.go's Q2 states which
+// half is owed and which half is not.
 func parseFlags() options {
 	configFlag := flag.String("config", "", "Path to risk-paths.json (default: <this binary's repo>/config/risk-paths.json)")
 	worktreeFlag := flag.String("worktree", ".", "Worktree holding the change")
@@ -260,6 +289,27 @@ func registerContractVersionFlag(fs *flag.FlagSet) *string {
 	return contractFlagRegistrar.RegisterContractVersionFlag(fs)
 }
 
+// run is the classify path: argv already parsed, in, exit code out.
+//
+// CONTRACT (GO-1-1 scaffold; wiring.go states it in full and GO-1-2 seals it).
+// The mapping under review is (contract x -out x -json) -> artifact set + exit
+// code, and at this revision NOTHING tests it: emit()'s v2 arm rewritten to
+// answer a v2 request with EmitV1 bytes reddens none of this package's 97
+// tests. Every seal calls EmitV1/EmitV2/WriteV2Sidecar/ParseContractVersion as
+// a LIBRARY; no test decides whether this function calls the right one.
+//
+// Two obligations this function's shape already carries, stated so GO-1-3 does
+// not quietly drop either while making it callable in process:
+//
+//   - THE CONTRACT IS VALIDATED FIRST, before resolveConfigPath and before any
+//     input is read. So -contract-version 3 against a worktree with no config
+//     table exits 3 reporting the CONTRACT problem, not the config one, and
+//     writes and removes NOTHING — a v2 sidecar beside -out survives
+//     byte-identical. That ordering is the contract, not an accident of layout.
+//   - THE EXIT CODE IS RETURNED, NEVER TAKEN. exitInvalid (3) is returned here;
+//     the seven log.Fatalf calls reachable from this function and persist() exit
+//     1, a code usage() does not advertise (wiring.go hole H2). GO-1-3 turns
+//     those into returned codes; it does not silently renumber them.
 func run(opts options) int {
 	// The contract is a genesis decision recorded by the caller, resolved once
 	// here and never inferred per-parse. It is validated before any work so a
