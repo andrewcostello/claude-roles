@@ -100,7 +100,10 @@ GO-1-2 owes it a row.
 
 ### D3 — The exit-code contract for `ParseContractVersion → printInvalidInput → exit 3`
 
-Closed set: `DeclaredExitCodes` in `wiring.go` = {0, 1, 3, 4}. For this path:
+Closed set: `DeclaredExitCodes` in `wiring.go`. It is enumerated THERE and
+deliberately not repeated here — a second copy is a second edit, and the
+edit that only happened once is this project's whole failure class. For
+this path:
 
 1. **Trigger.** Exit 3 iff `ParseContractVersion` rejects the raw flag value.
    Accepted: exactly `"1"` and `"2"`. Rejected, each exit 3: `"0"`, `"3"`,
@@ -146,11 +149,12 @@ inherits them explicitly rather than by silence.
   427, 433, 435`. An operator scripting against the documented set receives a
   code that set does not contain. Listed in `DeclaredExitCodes` because it is
   real, not because it is intended.
-- **H3 — an unknown flag exits 2, a code in no set at all.** `flag.CommandLine`
-  is `ExitOnError`, which is `os.Exit(2)`. Neither `usage()` nor
-  `DeclaredExitCodes` mentions 2. `parseInvocationFlags` returns the parse
-  error instead, which is what lets GO-1-3 decide the mapping; deciding it is
-  **not** in this scaffold's scope.
+- **H3 — an unknown flag exits 2, which `usage()` does not advertise.**
+  `flag.CommandLine` is `ExitOnError`, which is `os.Exit(2)`.
+  `DeclaredExitCodes` DOES list it, as `exitFlagError`, because it is
+  observable; `usage()` does not, which is the gap. `parseInvocationFlags`
+  returns the parse error instead, which is what lets GO-1-3 decide the
+  mapping; deciding it is **not** in this scaffold's scope.
 - **H4 — `INVALID_INPUT` goes to stdout, including under `-json`.** A consumer
   that runs `classify -json` and parses stdout gets a human-readable block on
   exit 3. Exit code and stream disagree about who the audience is. Changing it
