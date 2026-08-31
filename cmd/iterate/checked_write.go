@@ -48,12 +48,5 @@ var errUnverifiedWrite = errors.New("run-state write refused: preservation not v
 //
 // HOLE — GO-4-3 fills it and routes appendRound through it.
 func admitForWrite(original, produced []byte, edits []Edit) (admitted []byte, violations []Divergence, err error) { //nolint:unused // GO-4 scaffold: wired by GO-4-3
-	violations, verifyErr := VerifyPreservation(original, produced, edits, FidelityPathwise)
-	if verifyErr != nil {
-		return nil, nil, fmt.Errorf("%w: %w", errUnverifiedWrite, verifyErr)
-	}
-	if len(violations) > 0 {
-		return nil, violations, fmt.Errorf("%w: %d violations found", errUnverifiedWrite, len(violations))
-	}
-	return produced, nil, nil
+	return nil, nil, fmt.Errorf("%w: admitForWrite must decide by VerifyPreservation(original, produced, edits, FidelityPathwise) and admit only an empty violation list with a nil error: %w", errUnverifiedWrite, errNotImplemented)
 }
