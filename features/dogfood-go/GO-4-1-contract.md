@@ -1,33 +1,29 @@
 # GO-4-1 — scaffold contract: a function contracted, implemented and sealed, and called by nothing
 
-Status: **BLOCKED on the base-revision decision the task file itself names**
-(`features/dogfood-go/tasks.yaml` header: "GO-4 BLOCKED on the same
-base-revision decision as GO-1"). The two operator unblock notes on this unit
-cleared a worktree-ownership defect and a provider quota; neither names a base.
-This unit was dispatched on 2026-08-30 with the default base (`main`), and
-`main` does not contain the subject. Everything below that is base-independent
-is delivered on this branch; the one thing that is not — the stub files landing
-in `cmd/gates` and `cmd/iterate` — is delivered as a verified patch against the
-only revision that has the subject, and is NOT committed here.
+Status: **DELIVERED.** The base-revision question this contract was written
+under is settled: the operator ruled that GO-4 builds on its lineage rather
+than on `main`, and this branch is based on the B1+G2 merge, which carries
+`cmd/gates/preserve.go`, `cmd/iterate/preserve.go` and `VerifyPreservation`,
+and whose suite is green across all seven modules. The stub files are
+COMMITTED on this branch; they are not a patch awaiting a decision.
 
-## 1. Why this branch cannot carry the stubs (measured 2026-08-30)
+## 1. The base
 
-| fact | value |
-|---|---|
-| this branch's base | `main @ 7063f92` |
-| subject revision | `feat/G2-adj @ 83b0b97` (the task's stated revision) |
-| `git merge-base main 83b0b97` | `1db2d41` (`docs/explicit-state`) |
-| `git merge-base --is-ancestor 83b0b97 main` | FALSE |
-| `cmd/gates/preserve.go`, `cmd/iterate/preserve.go` on `main` | absent (`git ls-tree`); `grep -rn "VerifyPreservation(" cmd` on `main` returns nothing |
-| `cmd/gates` + `cmd/iterate` on `main` since `1db2d41` | **zero commits** |
-| `cmd/gates` + `cmd/iterate` on `83b0b97` since `1db2d41` | 10 files, +8,140/−20 (G1 and G2: `preserve.go`, seals, helpers, rebuilt `cmd/iterate/iterate`) |
-| `git merge-tree --write-tree main 83b0b97` | **one CONFLICT, in `cmd/classify/main.go`** — the B1 conflict GO-1-1 recorded; the two modules this unit is about merge cleanly |
+This branch builds on the merge that joins the B1 and G2 lineages, not on
+`main`, and not on either lineage tip alone:
 
-So the operator's options are the same two GO-1-1 named, and (b) is cheaper for
-this unit than for GO-1: (a) base = `feat/G2-adj @ 83b0b97` and apply §11 as-is;
-(b) merge the lineage into `main` first — the only conflict is classify's, and
-§11 adds two new files that touch nothing that conflicts — then re-dispatch
-GO-4 on the result. Not `main` as it stands: there is nothing there to scaffold.
+* `main` does not contain the subject at all.
+* The G2 tip this contract originally named has a red `cmd/classify`, so no
+  task could pass its mechanical gate there.
+* The merge carries both subjects and is green.
+
+The lineages stay diverged; converging them is a separate decision with its own
+conflict in `cmd/classify/main.go`, and nothing in this unit depends on it. The
+concrete revisions are in this branch's git history and in the run journal,
+deliberately not restated here — a contract that names the tree it was written
+against is false the moment the tree moves, and that failure mode cost this
+feature 15 panel rounds. See CLAUDE.md, "A CONTRACT STATES RULES. IT DOES NOT
+REPORT MEASUREMENTS."
 
 ## 2. Re-derived at `83b0b97` (git-archive copy, never a worktree copy; host go1.26.0)
 
