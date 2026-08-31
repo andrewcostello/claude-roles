@@ -269,6 +269,12 @@ import (
 // satisfied by a function that never looked at its input.
 var errNotImplemented = errors.New("G2 scaffold: not implemented")
 
+// errCouldNotCheck marks a VerifyPreservation error that means the check itself
+// could not be performed (documents did not parse, fidelity was invalid, etc),
+// distinct from a check that ran and found violations. Wrapping this sentinel
+// lets admitForRound distinguish the two return channels with errors.Is.
+var errCouldNotCheck = errors.New("run-state check: could not verify preservation")
+
 // ═════════════════════════════════════════════════════════════════════════════
 // BEGIN SHARED FIDELITY REGION
 //
@@ -1578,10 +1584,10 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 		// edited spans needs an order-preserving document model this package does
 		// not have. Returning an empty violation list here would report "checked
 		// and clean" for a check that never ran.
-		return nil, fmt.Errorf("cannot check at %s: this build has no order-preserving JSON document model, and encoding/json cannot express byte-identity — %s is the normative level for cmd/iterate", level, FidelityPathwise)
+		return nil, fmt.Errorf("%w: cannot check at %s: this build has no order-preserving JSON document model, and encoding/json cannot express byte-identity — %s is the normative level for cmd/iterate", errCouldNotCheck, level, FidelityPathwise)
 	default:
 		// Unreachable while Fidelity.Validate stays exhaustive.
-		return nil, fmt.Errorf("cannot check at %s: the level dispatch and Fidelity.Validate have drifted apart", level)
+		return nil, fmt.Errorf("%w: cannot check at %s: the level dispatch and Fidelity.Validate have drifted apart", errCouldNotCheck, level)
 	}
 
 	// THE LICENSED SET COMES FROM THE EDIT LIST THE CALLER INTENDED, never from the
@@ -1591,14 +1597,14 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 	// one thing the append most needs checked.
 	lic, lperr := LicensedPaths(edits)
 	if lperr != nil {
-		return nil, fmt.Errorf("cannot check: the licensed path set does not build from the edit list: %w", lperr)
+		return nil, fmt.Errorf("%w: cannot check: the licensed path set does not build from the edit list: %w", errCouldNotCheck, lperr)
 	}
 
 	ds, derr := Diverge(original, produced)
 	if derr != nil {
 		// "Could not check", not "nothing to report". A document that does not
 		// parse is the most complete failure of preservation available.
-		return nil, fmt.Errorf("cannot check: %w", derr)
+		return nil, fmt.Errorf("%w: cannot check: %w", errCouldNotCheck, derr)
 	}
 
 	// An empty slice, not nil, so the only passing result is one a caller can read

@@ -183,6 +183,12 @@ import (
 // not just the word "unimplemented".
 var errNotImplemented = errors.New("G1 scaffold: not implemented")
 
+// errCouldNotCheck marks a VerifyPreservation error that means the check itself
+// could not be performed (documents did not parse, fidelity was invalid, etc),
+// distinct from a check that ran and found violations. Wrapping this sentinel
+// lets admitForWrite distinguish the two return channels with errors.Is.
+var errCouldNotCheck = errors.New("run-state check: could not verify preservation")
+
 // ─── round-trip fidelity, as a named property ────────────────────────────────
 
 // Fidelity names what "preserved" means. There are three defensible answers and
@@ -1019,10 +1025,10 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 		// to the edited spans needs an order-preserving document model this
 		// package does not have. Returning an empty violation list here would
 		// report "checked and clean" for a check that never ran.
-		return nil, fmt.Errorf("cannot check at %s: this build has no order-preserving JSON document model, and encoding/json cannot express byte-identity — %s is the normative level for cmd/gates", level, FidelityPathwise)
+		return nil, fmt.Errorf("%w: cannot check at %s: this build has no order-preserving JSON document model, and encoding/json cannot express byte-identity — %s is the normative level for cmd/gates", errCouldNotCheck, level, FidelityPathwise)
 	default:
 		// Unreachable while Fidelity.Validate stays exhaustive.
-		return nil, fmt.Errorf("cannot check at %s: the level dispatch and Fidelity.Validate have drifted apart", level)
+		return nil, fmt.Errorf("%w: cannot check at %s: the level dispatch and Fidelity.Validate have drifted apart", errCouldNotCheck, level)
 	}
 
 	// THE LICENSED SET COMES FROM THE EDIT LIST THE CALLER INTENDED, never from
@@ -1030,18 +1036,18 @@ func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity)
 	// from what happened would certify whatever happened.
 	prefixes, perr := AllowedPrefixes(edits)
 	if perr != nil {
-		return nil, fmt.Errorf("cannot check: the licensed path set does not build from the edit list: %w", perr)
+		return nil, fmt.Errorf("%w: cannot check: the licensed path set does not build from the edit list: %w", errCouldNotCheck, perr)
 	}
 	container, subtrees, serr := splitLicence(prefixes)
 	if serr != nil {
-		return nil, serr
+		return nil, fmt.Errorf("%w: %w", errCouldNotCheck, serr)
 	}
 
 	ds, derr := Diverge(original, produced)
 	if derr != nil {
 		// "Could not check", not "nothing to report". A document that does not
 		// parse is the most complete failure of preservation available.
-		return nil, fmt.Errorf("cannot check: %w", derr)
+		return nil, fmt.Errorf("%w: cannot check: %w", errCouldNotCheck, derr)
 	}
 
 	for _, d := range ds {
