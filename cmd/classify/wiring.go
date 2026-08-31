@@ -86,8 +86,13 @@ type ExitCode int
 // distinct from "this mode ran but the artifact was not present before or after".
 //
 // This is `skills/explicit-state.md` applied to a file: absence is a state and
-// it must be nameable, and here absence is TWO states (checked and absent vs.
-// not checked because not produced by this invocation).
+// it must be nameable. The five states resolve the contradiction where
+// ArtifactStateUnset was marked 'ILLEGAL at every boundary' yet the struct
+// had no valid state for "this path does not produce this artifact".
+// ArtifactNotApplicable fills that gap: it represents 'never checked because
+// not produced by this invocation', distinct from ArtifactAbsent (checked and
+// not there). With this addition, ArtifactStateUnset remains illegal at all
+// boundaries, keeping the explicit-state discipline intact.
 type ArtifactState int
 
 const (
@@ -237,6 +242,10 @@ type Invocation struct {
 //  1. IT IS THE CODE main() RUNS. Not a parallel spine, not a
 //     reimplementation. main() delegates to it. If this is a separate
 //     implementation, every row that calls it is vacuous by construction.
+//     main() owns only the outer dispatcher logic, process-wide logger
+//     configuration (log.SetFlags/log.SetPrefix), and the final os.Exit call.
+//     Everything else — subcommand handling, flag parsing via
+//     parseInvocationFlags, the classify path logic — runs through RunWiring.
 //  2. IT NEVER EXITS THE PROCESS. Every os.Exit and every log.Fatalf on the
 //     classify path becomes a returned Artifacts.ExitCode. os.Exit survives in
 //     main() and nowhere else.
@@ -261,9 +270,10 @@ type Invocation struct {
 //     must not conflate them: `if err != nil { t.Fatal }` then assert on
 //     ExitCode.
 //  6. SUBCOMMANDS ARE IN SCOPE. Args[0] of "init", "capabilities", "help",
-//     "-h" or "--help" takes main()'s pre-flag-parse branch, and its exit code
-//     is this function's answer too. The capabilities probe dispatches AHEAD
-//     of flag parsing on purpose and that ordering is part of the mapping.
+//     "-h" or "--help" takes the pre-flag-parse branch inside RunWiring, and
+//     its exit code is this function's answer too. The capabilities probe
+//     dispatches AHEAD of flag parsing on purpose and that ordering is part of
+//     the mapping.
 //  7. IT NEVER CALLS os.Chdir. Paths are resolved directory-scoped: relative
 //     paths joined with inv.Dir using filepath.Join. The process's working
 //     directory is never changed, because the process is shared and may be
