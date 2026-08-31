@@ -295,11 +295,13 @@ const (
 	// neither wrote nor removed it.
 	ArtifactAbsent
 	// ArtifactWritten: present after and (did not exist before OR bytes differ
-	// from before). Snapshot-observable by construction — only files that
-	// differ can be told apart from Stale. A deterministic replay that writes
-	// identical bytes is indistinguishable from leaving the file alone; the
-	// outcome is Stale in that case, not Written. This is a policy choice on
-	// how to interpret "unchanged by this run" when bytes are byte-identical.
+	// from before). Distinguishable from Stale ONLY through snapshots: files
+	// that differ before and after are Written, identical ones are Stale. The
+	// oracle is the snapshot, not byte-equality alone. A deterministic replay
+	// that writes identical bytes is indistinguishable from leaving the file
+	// alone; the outcome is Stale in that case, not Written. This is a policy
+	// choice on how to interpret "unchanged by this run" when bytes are
+	// byte-identical.
 	ArtifactWritten
 	// ArtifactRemoved: present before, absent after, because this run removed
 	// it. The correct outcome for a v2 sidecar under ContractV1 with -out.
@@ -361,11 +363,10 @@ type FileArtifact struct {
 	Bytes []byte
 }
 
-// Artifacts is the COMPLETE set of things one classify invocation may produce.
-// Every possible output, from any subcommand or the main classify path, is
-// captured in these five fields. RunState and V2Sidecar are populated only on
-// the classify path; subcommands (init, capabilities, help) produce exit code,
-// stdout, and stderr only.
+// Artifacts holds the results of one classify invocation: the exit code and
+// captured output streams. RunState and V2Sidecar are populated only on the
+// classify path; subcommands (init, capabilities, help) produce exit code,
+// stdout, and stderr only, leaving RunState and V2Sidecar empty.
 //
 // ExitCode is a member of DeclaredExitCodes. Its zero value IS exitOK, so
 // "nobody set it" and "the run succeeded" are the same value and a caller that
