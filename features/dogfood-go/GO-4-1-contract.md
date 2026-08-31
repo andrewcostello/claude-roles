@@ -25,6 +25,12 @@ against is false the moment the tree moves, and that failure mode cost this
 feature 15 panel rounds. See CLAUDE.md, "A CONTRACT STATES RULES. IT DOES NOT
 REPORT MEASUREMENTS."
 
+> **Sections 2, 3 and 11 are DATED EVIDENCE, not contract terms.** They record
+> what was measured, at the revision named in each heading, because this unit's
+> task is a defect re-measurement. Nothing downstream may treat them as rules:
+> they describe a tree at a moment, and any correct fix moves that tree. The
+> enforceable contract is sections 4 through 10.
+
 ## 2. Re-derived at `83b0b97` (git-archive copy, never a worktree copy; host go1.26.0)
 
 **Counting method, stated because it is the whole disagreement.** Two counts
@@ -304,13 +310,18 @@ stubs did); nothing calls them; the suite is unchanged; the sweep is unchanged
    `mergeGates` and `appendRound`; `ApplyGateResults`/`ApplyRoundRecord`
    return bytes and never touch the disk.
 
-## 11. The scaffold, verified against `83b0b97`
+## 11. The scaffold, as delivered
 
-Delivered as
-`dispatcher-runs/2026-08-30T14-24-04Z-tasks/GO-4-1/scaffold-checked-write-83b0b97.patch`
-(sha256 `5dd8982381a08fcecbe36cca447739774974484aa0255744c30326a11dcff503`,
-116 lines, adds `cmd/gates/checked_write.go` and `cmd/iterate/checked_write.go`
-and touches nothing else). Verification, in a `git archive 83b0b97` copy:
+COMMITTED on this branch — it is no longer a patch awaiting a base decision,
+and the runs-directory patch file it was once delivered as is gone with the
+run that produced it.
+
+The branch adds `cmd/gates/checked_write.go` and `cmd/iterate/checked_write.go`
+and amends `preserve.go` in both modules. An earlier draft of this section said
+the change "touches nothing else", which was true of the patch and false of the
+branch; git is the authority on what it touches, and this sentence is not.
+
+Verification recorded when it was written:
 
 - `gofmt -l` empty; `go vet ./...` clean; `go test ./...` **ok** in both
   modules (5.2 s / 2.6 s) — green = green.
