@@ -182,9 +182,9 @@ type options struct {
 // main is the process entry point and OWNS THE ONLY os.Exit on the classify
 // path. Everything below it returns a code.
 //
-// CONTRACT (GO-1-1 scaffold; see wiring.go for the whole of it). main is at
-// 0.0% coverage and stays there: it reads os.Args and exits the process, so no
-// in-process test can drive it. It is therefore not sealed BEHAVIOURALLY but
+// CONTRACT (GO-1-1 scaffold; see wiring.go for the whole of it). main cannot
+// be driven by an in-process test: it reads os.Args and exits the process. It
+// is therefore not sealed BEHAVIOURALLY but
 // STRUCTURALLY — GO-1-3 makes the classify arm below a one-line delegation to
 // RunWiring, and GO-1-2's row scans this package's source to assert it. If the
 // delegation is ever replaced by a second, parallel spine, every row that calls
@@ -293,10 +293,11 @@ func registerContractVersionFlag(fs *flag.FlagSet) *string {
 //
 // CONTRACT (GO-1-1 scaffold; wiring.go states it in full and GO-1-2 seals it).
 // The mapping under review is (contract x -out x -json) -> artifact set + exit
-// code, and at this revision NOTHING tests it: emit()'s v2 arm rewritten to
-// answer a v2 request with EmitV1 bytes reddens none of this package's 97
-// tests. Every seal calls EmitV1/EmitV2/WriteV2Sidecar/ParseContractVersion as
-// a LIBRARY; no test decides whether this function calls the right one.
+// code, and no test decides it: every seal calls
+// EmitV1/EmitV2/WriteV2Sidecar/ParseContractVersion as a LIBRARY, so none of
+// them notices which one THIS function chooses. That is a property of how the
+// seals are written, not a count of them — the count is in DECISIONS.md, where
+// a measurement belongs.
 //
 // Two obligations this function's shape already carries, stated so GO-1-3 does
 // not quietly drop either while making it callable in process:
