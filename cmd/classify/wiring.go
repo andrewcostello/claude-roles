@@ -74,15 +74,18 @@ type ExitCode int
 
 // ArtifactState is what a single run did to a single file on disk.
 //
-// FOUR states, not a bool, and this is the design decision the unit turns on.
+// FIVE states, not a bool, and this is the design decision the unit turns on.
 // "The sidecar is not there" is two different facts — it was never there, or
 // this run tore down a previous run's — and "the sidecar is there" is two more:
 // this run wrote it, or a previous run did and this run left it alone.
 // A bool cannot express the difference between a correct write and a defect.
-// RunWiring snapshots before and after to distinguish them.
+// RunWiring snapshots before and after to distinguish them. Additionally,
+// "this mode never produces this artifact" (subcommands, or no -out flag) is
+// distinct from "this mode ran but the artifact was not present before or after".
 //
 // This is `skills/explicit-state.md` applied to a file: absence is a state and
-// it must be nameable, and here absence is TWO states.
+// it must be nameable, and here absence is TWO states (checked and absent vs.
+// not checked because not produced by this invocation).
 type ArtifactState int
 
 const (
@@ -92,7 +95,8 @@ const (
 	// contract.
 	ArtifactStateUnset ArtifactState = iota
 	// ArtifactAbsent: not present before the run, not present after. The run
-	// neither wrote nor removed it.
+	// neither wrote nor removed it. Returned only when the artifact path is
+	// checked (because the mode produces the artifact and snapshots it).
 	ArtifactAbsent
 	// ArtifactWritten: present after and (did not exist before OR bytes differ
 	// from before). Distinguishable from Stale ONLY through snapshots: files
@@ -111,6 +115,13 @@ const (
 	// cases where a deterministic run writes identical bytes back. Stale is the
 	// correct outcome when a run makes no changes to a file.
 	ArtifactStale
+	// ArtifactNotApplicable: this run mode does not produce this artifact type.
+	// Returned when the artifact path is never checked because the invocation
+	// does not produce it: subcommands (init, capabilities, help) do not produce
+	// RunState or V2Sidecar, and invocations without -out do not produce either.
+	// Distinct from ArtifactAbsent: the path was not checked, not checked and
+	// found absent. The FileArtifact's Path field is empty for NotApplicable.
+	ArtifactNotApplicable
 )
 
 // String renders the state for failure messages. Total: it must render
@@ -129,16 +140,18 @@ func (s ArtifactState) String() string {
 		return "removed"
 	case ArtifactStale:
 		return "stale"
+	case ArtifactNotApplicable:
+		return "not-applicable"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(s))
 	}
 }
 
-// Valid reports membership in the closed set {Absent, Written, Removed, Stale}.
+// Valid reports membership in the closed set {Absent, Written, Removed, Stale, NotApplicable}.
 // ArtifactStateUnset is NOT valid.
 func (s ArtifactState) Valid() bool {
 	switch s {
-	case ArtifactAbsent, ArtifactWritten, ArtifactRemoved, ArtifactStale:
+	case ArtifactAbsent, ArtifactWritten, ArtifactRemoved, ArtifactStale, ArtifactNotApplicable:
 		return true
 	default:
 		return false
@@ -148,10 +161,13 @@ func (s ArtifactState) Valid() bool {
 // FileArtifact is one on-disk output of a run, with the state that produced it.
 //
 // Bytes carries the file's content AFTER the run, or nil when State is
-// ArtifactAbsent or ArtifactRemoved. Path is the resolved file path on disk.
-// When there is no -out flag, RunState and V2Sidecar are both ArtifactAbsent
-// with empty Path fields; they were not checked. When -out is supplied, Path
-// is populated whether the file exists or not.
+// ArtifactAbsent, ArtifactRemoved, or ArtifactNotApplicable. Path is the
+// resolved file path on disk when the artifact is produced (and checked).
+// When there is no -out flag or the invocation is a subcommand, RunState and
+// V2Sidecar are ArtifactNotApplicable with empty Path fields; the artifacts
+// were never checked because the invocation does not produce them. When -out
+// is supplied on the classify path, Path is populated whether the file exists
+// or not.
 type FileArtifact struct {
 	Path  string
 	State ArtifactState
@@ -159,9 +175,12 @@ type FileArtifact struct {
 }
 
 // Artifacts holds the results of one classify invocation: the exit code and
-// captured output streams. RunState and V2Sidecar are populated only on the
-// classify path; subcommands (init, capabilities, help) produce exit code,
-// stdout, and stderr only, leaving RunState and V2Sidecar empty.
+// captured output streams. RunState and V2Sidecar are ArtifactNotApplicable
+// on the subcommand paths (init, capabilities, help), which produce exit code,
+// stdout, and stderr only. They are ArtifactNotApplicable also when the
+// classify path runs without -out (the artifacts are never checked). On the
+// classify path with -out, they carry valid artifact state (one of Absent,
+// Written, Removed, or Stale).
 //
 // ExitCode is a member of DeclaredExitCodes. Its zero value IS exitOK (0), so
 // "nobody set it" and "the run succeeded" are the same value. RunWiring always
@@ -230,8 +249,9 @@ type Invocation struct {
 //     not exist before and after are ArtifactAbsent, files that differ are
 //     ArtifactWritten or ArtifactRemoved, and files that are byte-identical are
 //     ArtifactStale (unchanged by this run, even if identical bytes were written).
-//     With no -out, both FileArtifacts are ArtifactAbsent with the Path field
-//     empty.
+//     With no -out, both FileArtifacts are ArtifactNotApplicable with the Path
+//     field empty. Subcommands return ArtifactNotApplicable for both RunState
+//     and V2Sidecar.
 //  5. THE ERROR RETURN IS NOT THE RUN'S FAILURE. A classify run that fails is
 //     a non-zero ExitCode with err == nil. A non-nil err means RunWiring
 //     ITSELF could not run the invocation — it could not snapshot files,
