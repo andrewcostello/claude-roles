@@ -1002,7 +1002,7 @@ func ApplyGateResults(original []byte, edits []Edit) ([]byte, error) {
 // IMPLEMENTED.
 func VerifyPreservation(original, produced []byte, edits []Edit, level Fidelity) (violations []Divergence, err error) {
 	if lerr := level.Validate(); lerr != nil {
-		return nil, lerr
+		return nil, fmt.Errorf("%w: %w", errCouldNotCheck, lerr)
 	}
 
 	// THE LEVEL DISPATCH, exhaustive, before any work. Validate above has already
