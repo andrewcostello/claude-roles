@@ -367,8 +367,11 @@ type FileArtifact struct {
 // the classify path; subcommands (init, capabilities, help) produce exit code,
 // stdout, and stderr only.
 //
-// ExitCode is a member of DeclaredExitCodes. It is never the zero value —
-// RunWiring always returns one of the declared codes.
+// ExitCode is a member of DeclaredExitCodes. Its zero value IS exitOK, so
+// "nobody set it" and "the run succeeded" are the same value and a caller that
+// must tell them apart carries that distinction itself. An earlier draft
+// claimed the zero value was invalid; it is not, and a doc comment cannot make
+// it so.
 //
 // Stdout and Stderr carry the complete output streams captured during the run.
 // When parsing flags with a caller-supplied FlagSet, flag errors (exit 2) are
