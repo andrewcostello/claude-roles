@@ -31,10 +31,11 @@ var ErrWiringNotImplemented = errors.New(
 // that only happened twice is this project's whole failure class. An exit code
 // outside this set is a finding, not a new feature — the header of main.go
 // advertises "0 classified, 3 INVALID_INPUT" and usage() adds
-// "4 CAPABILITY_INCOMPLETE (probe only)"; neither mentions 1, 2 and 1 is
-// nonetheless reachable from seven log.Fatalf call sites inside run() and
-// persist(). It is listed because it is REAL, not because it is intended; see
-// hole H2 in docs/DECISIONS.md. Exit 2 comes from the flag package when an
+// "4 CAPABILITY_INCOMPLETE (probe only)"; neither mentions 1, and 1 is
+// nonetheless reachable from log.Fatalf inside run() and persist(). It is
+// listed because it is REAL, not because it is intended; see hole H2 in
+// docs/DECISIONS.md. How MANY such call sites there are is a fact about the
+// tree and GO-1-3 removes them, so it is not stated here. Exit 2 comes from the flag package when an
 // unknown flag is passed; it is an observable exit code but is NOT advertised
 // in usage() — see hole H3 in docs/DECISIONS.md.
 var DeclaredExitCodes = []int{
@@ -52,11 +53,12 @@ const (
 	// is defined in main.go, exitInternal (1) is defined below, and
 	// exitCapabilityIncomplete (4) is defined in capability.go.
 	exitOK = 0
-	// exitInternal is what log.Fatalf produces. It is UNDOCUMENTED in usage()
-	// and it is the code an operator actually receives when the config is
-	// unreadable, the diff cannot be read, emit fails, the run state cannot be
-	// written, or persist's sidecar write or teardown fails. Naming it does not
-	// bless it.
+	// exitInternal is what log.Fatalf produces, and it is the code an operator
+	// actually receives when an internal step fails — an unreadable config, an
+	// unreadable diff, a failed emit or run-state write, a failed sidecar write
+	// or teardown. usage() does not advertise it. WHICH failures reach it is a
+	// property of the current implementation, not of this contract, and GO-1-3
+	// changes it. Naming the code does not bless it.
 	exitInternal = 1
 	// exitFlagError is what the flag package produces when an unknown flag is
 	// passed or a flag has an invalid argument. It is UNDOCUMENTED in usage() and

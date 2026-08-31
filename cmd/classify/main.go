@@ -308,9 +308,10 @@ func registerContractVersionFlag(fs *flag.FlagSet) *string {
 //     writes and removes NOTHING — a v2 sidecar beside -out survives
 //     byte-identical. That ordering is the contract, not an accident of layout.
 //   - THE EXIT CODE IS RETURNED, NEVER TAKEN. exitInvalid (3) is returned here;
-//     the seven log.Fatalf calls reachable from this function and persist() exit
-//     1, a code usage() does not advertise (wiring.go hole H2). GO-1-3 turns
-//     those into returned codes; it does not silently renumber them.
+//     log.Fatalf, reachable from this function and persist(), exits 1 — a code
+//     usage() does not advertise (wiring.go hole H2). GO-1-3 turns those into
+//     returned codes; it does not silently renumber them, and how many there
+//     are today is not this contract's business.
 func run(opts options) int {
 	// The contract is a genesis decision recorded by the caller, resolved once
 	// here and never inferred per-parse. It is validated before any work so a
