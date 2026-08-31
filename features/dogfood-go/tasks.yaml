@@ -180,34 +180,97 @@ tasks:
       This run is dispatched with --base-branch 0cfdb57, so your worktree already forks from it and ContractVersion/registerContractVersionFlag/EmitV2 are present. The patch should apply as-is.
 
       Your second point stands and is noted for the plan author, not for you: the GO-1-1 row has no declares.holes, and scaffold_shape.py hole-checks Python only, so Go holes are not mechanically gated. Propose your holes in the summary.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=10 (0C/10H))
+      OPERATOR ADJUDICATION (2026-08-30). All ten blocking findings are UPHELD. None is a style objection; every one is a self-contradiction in the contract, which is this task's actual deliverable.
+
+      Ruled real, fix them:
+      - Artifacts.ExitCode is a plain int whose zero value is exitOK — the exact ambiguity this file forbids in prose a few lines up. Give it a type whose zero value is invalid, or state that zero means unset and that RunWiring never returns it.
+      - Artifacts is declared the COMPLETE, CLOSED set, with closedness 'the operative word', and clause 6 names things it does not list. Either widen the set or withdraw the closedness claim.
+      - Clause 3 ('writes NOTHING to os.Stdout/os.Stderr') is unsatisfiable as enumerated: it covers only the fmt writers.
+      - ArtifactWritten vs ArtifactStale cannot be told apart by before/after snapshots when a deterministic replay rewrites identical bytes. The contract asserts they can.
+      - DeclaredExitCodes is the closed set {0,1,3,4} while an unknown flag exits 2.
+      - os.Chdir(inv.Dir) is wrong in a shared process and wrong in CI — grok is right. The seam needs a directory-scoped read, not a process-global chdir.
+
+      HOW TO CONVERGE, because this matters more than any single fix. The panel re-reads the WHOLE contract every round and has raised a DIFFERENT set each time — GO-2-1 fixed its findings and earned five new ones. Do not patch these ten in isolation. Read the contract end to end and make it self-consistent: every set that claims to be closed, every enumeration that claims to be exhaustive, every 'always' and 'never'. A claim you cannot implement is the defect, and withdrawing an over-strong claim is a legitimate fix — say so explicitly when you do it.
+
+      You are on go1-base: 0cfdb57 (the B1 lineage the operator ruled) plus the mechanical gate, which 0cfdb57 predates. Do not merge B1 into main.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=11 (0C/11H))
+      OPERATOR RULING (2026-08-30), round 4. My last note was too broad and sent you rewriting the contract. Seven of the eleven findings are REPEATS of round 3, so the problem is narrow and you have been documenting it rather than fixing it.
+
+      THE ONE DEFECT. All three families name it independently:
+
+          exitOK == 0, and exitOK is a member of DeclaredExitCodes,
+          while ExitCode's doc claims 'unlike a plain int, its zero value is invalid'.
+
+      You added that sentence. The sentence is now false, which is worse than the original int, because a reader can rely on it. A doc comment cannot give a type a property.
+
+      RULED — pick ONE and implement it, do not describe it:
+        (a) Make exitOK NON-ZERO. Define the zero value as a distinct invalid
+            sentinel (e.g. exitUnset = 0) that is NOT in DeclaredExitCodes, and have
+            RunWiring never return it. Then the doc sentence becomes true.
+        (b) Keep exitOK == 0 and DELETE the invalid-zero claim outright. Say plainly
+            that the zero value means success and that 'unset' is not representable,
+            and let a later body carry an explicit ok bool if it needs one.
+
+      Either is acceptable. (a) is what your prose already promises; (b) is honest
+      and smaller. What is NOT acceptable is a third round asserting the property in
+      a comment.
+
+      Two more repeats, same shape — assertions your code does not honour:
+      - ArtifactWritten/ArtifactStale: byte-equality provably cannot distinguish
+        them. Withdraw the claim that it can, or change the oracle.
+      - Artifacts CLOSED: this round widened it to include subcommands and
+        contradicted itself again. Either enumerate everything in scope or drop the
+        closedness claim.
+
+      And one NEW finding worth heeding: SetOutput(nil) on a flag.FlagSet falls back
+      to os.Stderr, so the no-output promise is false as written. Measure it before
+      you write the fix.
     type: Task
     estimate: 2h
     labels: [size:M, area:go-tools]
     agent: claude
     role: scaffold
-    status: In Progress
+    status: Blocked
 
-    started_at: '2026-08-30T07:39:51-07:00'
-    dispatcher_run_id: 2026-08-30T14-39-51Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T14-39-51Z-tasks/GO-1-1/summary.md
+    started_at: '2026-08-30T09:05:38-07:00'
+    dispatcher_run_id: 2026-08-30T16-05-37Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T16-05-37Z-tasks/GO-1-1/summary.md
     branch: feat/GO-1-1-scaffold-the-wiring-that-decides
-    gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
-    cost_usd: 8.404204499999999
-    completed_at: '2026-08-29T22:45:13-07:00'
+    gate_base_sha: 9418fc152373e5f5d06cad11c6c65aeb9efe2628
+    cost_usd: 10.108060799999999
+    effort: high
+    effort_escalated: true
+    completed_at: '2026-08-30T09:17:06-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 4359
-    output_tokens: 46855
-    cache_read_input_tokens: 2298138
-    cache_creation_input_tokens: 113263
-    duration_ms: 652362
-    num_turns: 33
-    model: claude-fable-5
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=9 (0C/9H)
+    panel_blocking_findings: 9
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 257
+    output_tokens: 14885
+    cache_read_input_tokens: 2070353
+    cache_creation_input_tokens: 69501
+    duration_ms: 208614
+    num_turns: 32
+    model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.251 (Claude Code)
-    unblocked_at: '2026-08-30T14:23:33+00:00'
+    unblocked_at: '2026-08-30T16:05:37+00:00'
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=9 (0C/9H)'
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
   - key: GO-1-2
     summary: seals — the wiring answers the contract that was asked for
     description: |
@@ -386,6 +449,49 @@ tasks:
       GO-2-1: claude and codex independently found that StateWrongRecipe is unreachable under the precedence your own contract specifies — Validate step 5 rejects a differing recipe as StateDeclarationDisagrees first. A state the contract can never reach is a contract defect, not a review opinion. Either make it reachable or delete it, and say which.
 
       A blocking finding may be WRONG. Check it, and if it is wrong say why with a measurement rather than silently complying.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=2 (codex,grok) | blocking=5 (0C/5H))
+      OPERATOR ADJUDICATION (2026-08-30), round 4. All five blocking findings are UPHELD — each is a contract claim the artifact cannot honour, which is this scaffold's deliverable:
+
+      - The cleanliness check is FAIL-OPEN when an artifact's work-tree bytes stop being ELF. Fail-open in a check whose whole job is detecting drift is the defect, not an edge case.
+      - Recipe claims equal source + recipe + Go version identifies the program, and does not contain every build setting that changes output. Either enumerate them or withdraw the claim.
+      - CanonicalRecipe claims every compared setting is set explicitly so no host default reaches the stamp; CanonicalBuild does not pin them all.
+      - main.go promises exit 2 when -timeout elapses with nothing certified, and only ReadStamp is required to honour ctx.
+      - Report.Stamp's nil contract and Examine's Unverifiable outcome contradict each other.
+
+      WHY YOU KEEP GETTING BLOCKED, and this is the important part. Your earlier findings — StateWrongRecipe unreachable, the untracked-declaration gap — were fixed, and the panel then raised five ENTIRELY DIFFERENT ones. It re-reads the whole contract each round, so fixing findings one at a time earns a fresh set indefinitely. Three rounds have gone that way.
+
+      Stop patching individually. Read the contract end to end and make every claim implementable: every 'always', 'never', 'complete', 'closed', 'exactly one'. Where a claim cannot be honoured, WITHDRAW IT and say so — an over-strong promise is a contract defect and weakening it is a real fix, not a concession. State in your summary which claims you narrowed and why.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H))
+      OPERATOR RULING (2026-08-30), round 5. My last note told you to rewrite the contract for self-consistency. That was wrong and it made things worse — 2 dissenting families became 3. ALL EIGHT of this round's findings are repeats. Stop rewriting; fix these.
+
+      THE ONE ALL THREE FAMILIES AGREE ON — claude, codex and grok each name it independently, which almost never happens:
+
+          CanonicalBuild passes -trimpath.
+          CanonicalRecipe (line 333) declares Trimpath: false.
+
+      A stamp produced by the prescribed rebuild therefore has Trimpath: true and can
+      never equal the recipe the contract says identifies it. Fix the value, not the
+      prose: either CanonicalBuild drops -trimpath, or CanonicalRecipe declares
+      Trimpath: true. One line. Say which you chose and why.
+
+      The others, all repeats, all the same shape — a claim the code does not honour:
+      - 'Every environment variable and build flag that CanonicalRecipe records is
+        set explicitly' is false; CanonicalBuild does not pin them all. Pin them or
+        narrow the claim.
+      - CGOEnabled=true / CGO_ENABLED=1 is pinned against CanonicalRecipe's own
+        stated motivation. Reconcile them.
+      - ExamineTree checks work-tree cleanliness only for paths already in Ruling, so
+        a tracked ELF outside it is unchecked. That is the fail-open finding, third
+        time. Close it.
+      - ReadStamp's ctx.Done() check does not enforce the timeout during a hung read.
+      - Examine's normative state precedence contradicts itself on read-order.
+
+      Do not touch anything else. A narrower diff that fixes these eight is what gets
+      you through; a wider one has now failed twice.
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
@@ -393,36 +499,36 @@ tasks:
     role: scaffold
     status: Blocked
 
-    started_at: '2026-08-30T07:24:05-07:00'
-    dispatcher_run_id: 2026-08-30T14-24-04Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T14-24-04Z-tasks/GO-2-1/summary.md
+    started_at: '2026-08-30T09:07:41-07:00'
+    dispatcher_run_id: 2026-08-30T16-07-41Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T16-07-41Z-tasks/GO-2-1/summary.md
     branch: feat/GO-2-1-scaffold-a-tracked-build-artifact
     gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
-    cost_usd: 21.165663500000004
+    cost_usd: 22.258175100000006
     effort: high
     effort_escalated: true
-    completed_at: '2026-08-30T07:38:07-07:00'
+    completed_at: '2026-08-30T09:19:16-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=2 (codex,grok) | blocking=5 (0C/5H)
-    panel_blocking_findings: 5
-    panel_verdict_claude: APPROVE
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H)
+    panel_blocking_findings: 8
+    panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 872
-    output_tokens: 38428
-    cache_read_input_tokens: 987905
-    cache_creation_input_tokens: 99756
-    duration_ms: 420777
+    input_tokens: 345
+    output_tokens: 22422
+    cache_read_input_tokens: 2451485
+    cache_creation_input_tokens: 59323
+    duration_ms: 290138
     num_turns: 43
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.251 (Claude Code)
-    unblocked_at: '2026-08-30T14:23:47+00:00'
-    blocked_reason: 'cross_family_panel: consensus=block | claude=APPROVE, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=2 (codex,grok) | blocking=5 (0C/5H)'
+    unblocked_at: '2026-08-30T16:07:41+00:00'
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H)'
     mechanical_verification: passed
     role_diff_loop: not_enabled
     verified: true
@@ -772,29 +878,42 @@ tasks:
     labels: [size:M, area:go-tools]
     agent: claude
     role: scaffold
-    status: To Do
+    status: Blocked
 
-    started_at: '2026-08-30T07:24:05-07:00'
-    dispatcher_run_id: 2026-08-30T14-24-04Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T14-24-04Z-tasks/GO-4-1/summary.md
+    started_at: '2026-08-30T08:54:26-07:00'
+    dispatcher_run_id: 2026-08-30T15-54-26Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T15-54-26Z-tasks/GO-4-1/summary.md
     branch: feat/GO-4-1-scaffold-a-function-contracted-implemented
-    cost_usd: 19.647218000000002
-    completed_at: '2026-08-30T07:38:34-07:00'
+    cost_usd: 22.8316571
+    completed_at: '2026-08-30T09:27:32-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 1182
-    output_tokens: 66706
-    cache_read_input_tokens: 2355203
-    cache_creation_input_tokens: 189057
-    duration_ms: 867994
-    num_turns: 71
+    input_tokens: 281
+    output_tokens: 10299
+    cache_read_input_tokens: 1395345
+    cache_creation_input_tokens: 38789
+    duration_ms: 147652
+    num_turns: 35
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
     agent_version: 2.1.251 (Claude Code)
     unblocked_at: '2026-08-30T14:39:51+00:00'
     gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
+    effort: high
+    effort_escalated: true
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=REJECT, grok=REJECT | dissenting=3 (claude,codex,grok) | blocking=16 (0C/16H)'
+    mechanical_verification: passed
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=REJECT, grok=REJECT | dissenting=3 (claude,codex,grok) | blocking=16 (0C/16H)
+    panel_blocking_findings: 16
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: REJECT
+    panel_verdict_grok: REJECT
   - key: GO-4-2
     summary: seals — the write path is checked by the checker that exists for it
     description: |
