@@ -122,7 +122,8 @@ this path:
    `ParseContractVersion`'s own format string, wrapped in
    `printInvalidInput`'s `INVALID_INPUT` block.
 4. **Stream.** That block goes to **stdout**, not stderr — `printInvalidInput`
-   is `fmt.Println`/`fmt.Printf` (`main.go:1241-1255`). Recorded as current
+   is `fmt.Println`/`fmt.Printf` (cited by symbol, not line — see H2).
+   Recorded as current
    behaviour and deliberately **not** blessed; see hole H4. GO-1-3 must not
    change it while turning rows green.
 5. **Ordering.** The contract is validated first, before `resolveConfigPath`
@@ -155,8 +156,12 @@ inherits them explicitly rather than by silence.
   "undeclared" would assert the negation of the set wiring.go defines. The gap
   is advertisement, not declaration.) `usage()`
   advertises "0 classified, 3 INVALID_INPUT, 4 CAPABILITY_INCOMPLETE". `run()`
-  and `persist()` reach `log.Fatalf` — exit 1 — at `main.go:282, 293, 391, 415,
-  427, 433, 435`. An operator scripting against the documented set receives a
+  and `persist()` reach `log.Fatalf` — exit 1 — at seven call sites: two in
+  `run()`, five in `persist()`. Cited by function rather than by line, because
+  line numbers here were read off the base tree and the scaffold's own contract
+  comments moved every one of them by 59; a coordinate that a comment edit
+  falsifies is not a durable record. `grep -n 'log\.Fatalf' cmd/classify/main.go`
+  is the reproduction. An operator scripting against the documented set receives a
   code that set does not contain. Listed in `DeclaredExitCodes` because it is
   real, not because it is intended.
 - **H3 — an unknown flag exits 2, which `usage()` does not advertise.**
