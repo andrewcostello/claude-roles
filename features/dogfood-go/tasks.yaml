@@ -295,7 +295,7 @@ tasks:
     labels: [size:M, area:go-tools]
     agent: claude
     role: scaffold
-    status: Blocked
+    status: Done
 
     started_at: '2026-08-31T16:54:47-07:00'
     dispatcher_run_id: 2026-08-31T23-54-47Z-tasks
@@ -331,6 +331,7 @@ tasks:
     role_diff_loop: not_enabled
     verified: true
     verification_iterations: 0
+    notes: 'Panel: unanimous APPROVE (claude/codex/grok, 0 findings) at round 17, APPROVE with codex+grok clean at round 18. Contract rewritten by hand over 5 rounds; 8 -> 7 -> 4 -> 2 -> 0 findings.'
   - key: GO-1-2
     summary: seals — the wiring answers the contract that was asked for
     description: |
@@ -643,6 +644,7 @@ tasks:
     role_diff_loop: not_enabled
     verified: true
     verification_iterations: 0
+    notes: "Panel APPROVED at rounds 10, 12 and 17 and blocked between them; not settled. 11 rounds by hand after 7 dispatched. Every finding real, most created by the previous round's repair. Root cause measured: 974 lines and 111 absolute claims, so each round samples a few. Recommendation unchanged: split into units the size of GO-1-1's ~300-line contract, which reached unanimous approve and held."
   - key: GO-2-2
     summary: seals — a tracked binary that disagrees with its source is red
     description: |

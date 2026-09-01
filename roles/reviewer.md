@@ -222,6 +222,8 @@ BE CONCISE — no long paragraphs; bullets/short sentences in the summary and fi
 - Active voice with a named actor. Fixes start with a verb: "Add…", "Move…", "Delete…".
 - Code, tables, and lists over prose wherever they can carry the point.
 - Each finding's problem/fix fields: **What is wrong** (with file:line) / **What happens** (the concrete result) / **What to do** (imperative), 1–2 sentences each.
+
+**Comment quality is a review dimension (`skills/comment-style.md`).** Flag comments that narrate change history, cite tickets/spec sections/plan documents, restate the code, or bury a contract in verbosity; flag missing doc comments on exported/public API. Directive comments (`//go:build`, `# noqa`, `// @ts-ignore`, …) that a diff edits or deletes are a correctness finding, not style.
 - No back-references ("as mentioned above") — restate the name or value in place.
 
 Depth of analysis is unchanged. Cut words, never findings.

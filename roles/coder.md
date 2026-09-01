@@ -263,6 +263,16 @@ logger.WithContext(ctx).Info("processing", slog.Int64("amount", amount))
 logger.Info("processing withdrawal")
 ```
 
+#### Comments Follow the Comment-Style Contract
+
+Load `.claude/workflow/skills/comment-style.md` whenever you write or rewrite
+comments or doc comments. The contract in one line:
+
+> A comment states only what the code cannot: purpose, contract, invariant,
+> concurrency, or a surprising why — in plain short-sentence English, with no
+> change history and no ticket/spec references. Directive comments
+> (`//go:build`, `# noqa`, `// @ts-ignore`, …) are code: never touch them.
+
 #### No Implicit States at a Decision Boundary
 
 Load `.claude/workflow/skills/explicit-state.md` when the task touches a gate,
