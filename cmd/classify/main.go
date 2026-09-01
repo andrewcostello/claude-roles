@@ -233,14 +233,18 @@ Exit codes: 0 classified, 3 INVALID_INPUT, 4 CAPABILITY_INCOMPLETE (probe only)
 // is the whole of why -contract-version has no seal: it registers on the global
 // flag.CommandLine, parses the global os.Args, and configures the process-wide
 // logger as a side effect. A test can drive it neither twice nor with its own
-// argv. GO-1-3 reduces it to a caller of parseInvocationFlags (wiring.go) over
-// flag.CommandLine and os.Args[1:], keeping the log.SetFlags/log.SetPrefix pair
-// HERE — process-wide logger configuration is main's, not a function a row
-// calls a hundred times.
+// argv.
+//
+// GO-1-3 DELETES IT. Its flag half becomes parseInvocationFlags (wiring.go),
+// called by RunWiring against a FlagSet the caller supplies; its logger half
+// moves to main(), which is the only place a process-wide setting belongs.
+// Keeping it as a thin wrapper over flag.CommandLine would leave the shipped
+// binary parsing outside the seam every row drives, and would keep the
+// process-exiting FlagSet that RunWiring clause 2 forbids.
 //
 // Nothing today proves any binary accepts -contract-version. What becomes
-// provable is narrower than that sentence sounds; wiring.go's Q2 states which
-// half is owed and which half is not.
+// provable is narrower than that sentence sounds; docs/DECISIONS.md D2 states
+// which half is owed and which half is not.
 func parseFlags() options {
 	configFlag := flag.String("config", "", "Path to risk-paths.json (default: <this binary's repo>/config/risk-paths.json)")
 	worktreeFlag := flag.String("worktree", ".", "Worktree holding the change")
@@ -307,11 +311,11 @@ func registerContractVersionFlag(fs *flag.FlagSet) *string {
 //     table exits 3 reporting the CONTRACT problem, not the config one, and
 //     writes and removes NOTHING — a v2 sidecar beside -out survives
 //     byte-identical. That ordering is the contract, not an accident of layout.
-//   - THE EXIT CODE IS RETURNED, NEVER TAKEN. exitInvalid (3) is returned here;
-//     log.Fatalf, reachable from this function and persist(), exits 1 — a code
-//     usage() does not advertise (wiring.go hole H2). GO-1-3 turns those into
-//     returned codes; it does not silently renumber them, and how many there
-//     are today is not this contract's business.
+//   - THE EXIT CODE IS RETURNED, NEVER TAKEN. exitInvalid (3) is returned here.
+//     Any path that exits the process instead — log.Fatalf and its exit 1 —
+//     becomes a returned code under GO-1-3, at the same number it already
+//     produces. Where such paths are, and how many, is a fact about the tree
+//     and belongs in docs/DECISIONS.md (H2), not here.
 func run(opts options) int {
 	// The contract is a genesis decision recorded by the caller, resolved once
 	// here and never inferred per-parse. It is validated before any work so a

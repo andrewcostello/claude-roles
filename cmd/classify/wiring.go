@@ -1,11 +1,10 @@
 // Wiring contract — GO-1-1 (scaffold). STUBS AND TYPE DEFINITIONS ONLY.
 //
-// This file defines the data types and function signatures for the classify
-// wiring. Two functions, ArtifactState.String() and ArtifactState.Valid(), have
-// full implementations required for type correctness. RunWiring and
-// parseInvocationFlags are stubs that return ErrWiringNotImplemented; their
-// bodies are GO-1-3's deliverable. A scaffold that implemented the mapping its
-// own seals will judge would destroy the point of sealing first.
+// Types and signatures for the classify wiring. ArtifactState.String and
+// ArtifactState.Valid are implemented because type correctness needs them;
+// RunWiring and parseInvocationFlags return ErrWiringNotImplemented and their
+// bodies are GO-1-3's. A scaffold that implemented the mapping its own seals
+// will judge would destroy the point of sealing first.
 package main
 
 import (
@@ -17,27 +16,38 @@ import (
 
 // ErrWiringNotImplemented is what every stub in this file returns.
 //
-// It is a distinct sentinel and not a generic error so that GO-1-2's seals can
-// tell "the body is not written yet" (expected RED) from "the body is written
-// and wrong" (a finding). A seal that cannot tell those apart goes green the
-// day the stub is replaced by a broken body.
+// A distinct sentinel, not a generic error, so GO-1-2's seals can tell "the
+// body is not written yet" (expected RED) from "the body is written and wrong"
+// (a finding). A seal that cannot tell those apart goes green the day the stub
+// is replaced by a broken body.
 var ErrWiringNotImplemented = errors.New(
 	"classify wiring: stub from GO-1-1 (scaffold); the body is GO-1-3's and is not written yet")
 
+const (
+	// exitOK: the run classified successfully.
+	exitOK = 0
+	// exitInternal: the run could not complete for a reason that is not the
+	// operator's input — an unreadable file, a failed write. It is also what
+	// main returns when RunWiring itself fails (see RunWiring clause 8).
+	exitInternal = 1
+	// exitFlagError: argv did not parse. The flag package's code for this, and
+	// therefore not ours to choose.
+	exitFlagError = 2
+)
+
 // DeclaredExitCodes is the closed set of exit codes cmd/classify may produce.
 //
-// Enumerated once, here, for the same reason contractVersionSet is enumerated
-// once: three hand-written lists need three edits to stay honest and the edit
-// that only happened twice is this project's whole failure class. An exit code
-// outside this set is a finding, not a new feature — the header of main.go
-// advertises "0 classified, 3 INVALID_INPUT" and usage() adds
-// "4 CAPABILITY_INCOMPLETE (probe only)"; neither mentions 1, and 1 is
-// nonetheless reachable from log.Fatalf inside run() and persist(). It is
-// listed because it is REAL, not because it is intended; see hole H2 in
-// docs/DECISIONS.md. How MANY such call sites there are is a fact about the
-// tree and GO-1-3 removes them, so it is not stated here. Exit 2 comes from the flag package when an
-// unknown flag is passed; it is an observable exit code but is NOT advertised
-// in usage() — see hole H3 in docs/DECISIONS.md.
+// Closed is the operative word and the only claim here: an exit code outside
+// this set is a defect, not a new feature. Enumerated once because three
+// hand-written lists need three edits to stay honest, and the edit that only
+// happened twice is this project's whole failure class.
+//
+// Membership is not endorsement — exitInternal is listed because it is
+// reachable, and where it is reachable FROM is a fact about the tree that
+// GO-1-3 changes. Nor is it a claim about usage(): the gap between what this
+// binary can exit with and what it advertises is recorded in docs/DECISIONS.md
+// (H2, H3), where a reviewer reads it once instead of every agent re-reading it
+// forever.
 var DeclaredExitCodes = []int{
 	exitOK,
 	exitInvalid,
@@ -46,92 +56,69 @@ var DeclaredExitCodes = []int{
 	exitCapabilityIncomplete,
 }
 
-const (
-	// exitOK is a completed classification. Named rather than written as a
-	// bare 0 so that "the run succeeded" and "the zero value of an int nobody
-	// set" stop being the same token in this package's signatures. exitInvalid (3)
-	// is defined in main.go, exitInternal (1) is defined below, and
-	// exitCapabilityIncomplete (4) is defined in capability.go.
-	exitOK = 0
-	// exitInternal is what log.Fatalf produces, and it is the code an operator
-	// actually receives when an internal step fails — an unreadable config, an
-	// unreadable diff, a failed emit or run-state write, a failed sidecar write
-	// or teardown. usage() does not advertise it. WHICH failures reach it is a
-	// property of the current implementation, not of this contract, and GO-1-3
-	// changes it. Naming the code does not bless it.
-	exitInternal = 1
-	// exitFlagError is what the flag package produces when an unknown flag is
-	// passed or a flag has an invalid argument. It is UNDOCUMENTED in usage() and
-	// not advertised as a possible exit code, but it is observable when passing
-	// unknown flags like --unknown or -contract-version without a value.
-	exitFlagError = 2
-)
-
 // ─── the artifact set ────────────────────────────────────────────────────────
 
-// ExitCode is a named type for the process exit code returned by a classify run.
-// Its zero value is exitOK (0), which means success. RunWiring always returns an
-// ExitCode that is one of the DeclaredExitCodes.
+// ExitCode is the process exit code a classify run produced. Whenever RunWiring
+// returns a nil error it is a member of DeclaredExitCodes.
+//
+// ITS ZERO VALUE IS exitOK, and this contract does not pretend otherwise. An
+// exit code is an OS-defined integer in which 0 means success; a named type
+// cannot give it a spare invalid state, and asserting one in prose would be a
+// claim the type does not honour.
+//
+// "Nobody set it" is carried by the ERROR RETURN instead, which CAN express it:
+// see RunWiring clause 5. When RunWiring returns a non-nil error the Artifacts
+// value carries no claims at all, so a zero ExitCode beside an error is never
+// success — it is nothing.
 type ExitCode int
 
-// ArtifactState is what a single run did to a single file on disk.
+// ArtifactState is what one run did to one file on disk.
 //
-// FIVE states, not a bool, and this is the design decision the unit turns on.
-// "The sidecar is not there" is two different facts — it was never there, or
-// this run tore down a previous run's — and "the sidecar is there" is two more:
-// this run wrote it, or a previous run did and this run left it alone.
 // A bool cannot express the difference between a correct write and a defect.
-// RunWiring snapshots before and after to distinguish them. Additionally,
-// "this mode never produces this artifact" (subcommands, or no -out flag) is
-// distinct from "this mode ran but the artifact was not present before or after".
+// "The file is not there" is two facts — never was, or this run removed it —
+// and "the file is there" is two more: this run wrote it, or a previous run did
+// and this one left it alone. Whether a run PRODUCES the artifact at all is a
+// fifth fact, distinct from having looked and found nothing.
 //
-// This is `skills/explicit-state.md` applied to a file: absence is a state and
-// it must be nameable. The five states resolve the contradiction where
-// ArtifactStateUnset was marked 'ILLEGAL at every boundary' yet the struct
-// had no valid state for "this path does not produce this artifact".
-// ArtifactNotApplicable fills that gap: it represents 'never checked because
-// not produced by this invocation', distinct from ArtifactAbsent (checked and
-// not there). With this addition, ArtifactStateUnset remains illegal at all
-// boundaries, keeping the explicit-state discipline intact.
+// This is skills/explicit-state.md applied to a file: absence is a state and it
+// must be nameable.
 type ArtifactState int
 
 const (
-	// ArtifactStateUnset is the zero value and is ILLEGAL at every boundary.
-	// It exists so that "nobody looked" raises instead of silently reading as
-	// "absent" — the same discipline ContractVersionUnset enforces for the
-	// contract.
+	// ArtifactStateUnset is the zero value. It is ILLEGAL in an Artifacts
+	// returned with a nil error — that is the boundary, and it is the whole
+	// boundary. It exists so "nobody looked" raises instead of reading
+	// silently as "absent", the discipline ContractVersionUnset enforces for
+	// the contract version.
+	//
+	// It IS legal beside a non-nil error, because such an Artifacts asserts
+	// nothing (clause 5). That is how "applicable, but the state could not be
+	// determined" is expressed: RunWiring returns an error rather than
+	// inventing an observation it never made.
 	ArtifactStateUnset ArtifactState = iota
-	// ArtifactAbsent: not present before the run, not present after. The run
-	// neither wrote nor removed it. Returned only when the artifact path is
-	// checked (because the mode produces the artifact and snapshots it).
+	// ArtifactAbsent: checked, and not present before or after. The run neither
+	// wrote nor removed it.
 	ArtifactAbsent
-	// ArtifactWritten: present after and (did not exist before OR bytes differ
-	// from before). Distinguishable from Stale ONLY through snapshots: files
-	// that differ before and after are Written, identical ones are Stale. The
-	// oracle is the snapshot, not byte-equality alone. A deterministic replay
-	// that writes identical bytes is indistinguishable from leaving the file
-	// alone; the outcome is Stale in that case, not Written. This is a policy
-	// choice on how to interpret "unchanged by this run" when bytes are
-	// byte-identical.
+	// ArtifactWritten: checked, and the after-bytes differ from the
+	// before-bytes (which includes not existing before).
 	ArtifactWritten
-	// ArtifactRemoved: present before, absent after, because this run removed
-	// it. The correct outcome for a v2 sidecar under ContractV1 with -out.
+	// ArtifactRemoved: checked, present before, absent after.
 	ArtifactRemoved
-	// ArtifactStale: present before AND after, byte-identical. Files that do not
-	// change from before the run to after are reported as Stale. This includes
-	// cases where a deterministic run writes identical bytes back. Stale is the
-	// correct outcome when a run makes no changes to a file.
+	// ArtifactStale: checked, present before and after, byte-identical.
+	//
+	// The oracle is byte-equality across the snapshot, which cannot see a
+	// deterministic rewrite of identical bytes — that reports Stale. The
+	// contract states the oracle rather than claiming a distinction the oracle
+	// cannot draw; "unchanged by this run" means "no bytes differ", nothing
+	// more.
 	ArtifactStale
-	// ArtifactNotApplicable: this run mode does not produce this artifact type.
-	// Returned when the artifact path is never checked because the invocation
-	// does not produce it: subcommands (init, capabilities, help) do not produce
-	// RunState or V2Sidecar, and invocations without -out do not produce either.
-	// Distinct from ArtifactAbsent: the path was not checked, not checked and
-	// found absent. The FileArtifact's Path field is empty for NotApplicable.
+	// ArtifactNotApplicable: this invocation does not produce this artifact, so
+	// no snapshot was taken. Distinct from Absent, which is an observation.
+	// FileArtifact.Path is empty in this state.
 	ArtifactNotApplicable
 )
 
-// String renders the state for failure messages. Total: it must render
+// String renders the state for failure messages. Total: it renders
 // ArtifactStateUnset as a visibly-wrong token rather than as "absent", and any
 // out-of-set value in a form that keeps the raw integer visible, for the reason
 // ContractVersion.String gives.
@@ -154,8 +141,8 @@ func (s ArtifactState) String() string {
 	}
 }
 
-// Valid reports membership in the closed set {Absent, Written, Removed, Stale, NotApplicable}.
-// ArtifactStateUnset is NOT valid.
+// Valid reports membership in the closed set {Absent, Written, Removed, Stale,
+// NotApplicable}. ArtifactStateUnset is NOT valid.
 func (s ArtifactState) Valid() bool {
 	switch s {
 	case ArtifactAbsent, ArtifactWritten, ArtifactRemoved, ArtifactStale, ArtifactNotApplicable:
@@ -167,36 +154,23 @@ func (s ArtifactState) Valid() bool {
 
 // FileArtifact is one on-disk output of a run, with the state that produced it.
 //
-// Bytes carries the file's content AFTER the run, or nil when State is
-// ArtifactAbsent, ArtifactRemoved, or ArtifactNotApplicable. Path is the
-// resolved file path on disk when the artifact is produced (and checked).
-// When there is no -out flag or the invocation is a subcommand, RunState and
-// V2Sidecar are ArtifactNotApplicable with empty Path fields; the artifacts
-// were never checked because the invocation does not produce them. When -out
-// is supplied on the classify path, Path is populated whether the file exists
-// or not.
+// Path is the resolved path when the invocation produces this artifact, and
+// empty when State is ArtifactNotApplicable — a produced artifact has a path
+// whether or not a file is there. Bytes carries the content after the run, and
+// is nil in every state but ArtifactWritten and ArtifactStale.
 type FileArtifact struct {
 	Path  string
 	State ArtifactState
 	Bytes []byte
 }
 
-// Artifacts holds the results of one classify invocation: the exit code and
-// captured output streams. RunState and V2Sidecar are ArtifactNotApplicable
-// on the subcommand paths (init, capabilities, help), which produce exit code,
-// stdout, and stderr only. They are ArtifactNotApplicable also when the
-// classify path runs without -out (the artifacts are never checked). On the
-// classify path with -out, they carry valid artifact state (one of Absent,
-// Written, Removed, or Stale).
+// Artifacts is everything one classify invocation produced.
 //
-// ExitCode is a member of DeclaredExitCodes. Its zero value IS exitOK (0), so
-// "nobody set it" and "the run succeeded" are the same value. RunWiring always
-// populates ExitCode; a zero ExitCode paired with a non-nil err means
-// RunWiring itself failed to run the invocation (see clause 5 of RunWiring).
+// IT IS MEANINGFUL ONLY WHEN RunWiring RETURNED A NIL ERROR. Beside a non-nil
+// error every field is unset and asserts nothing (clause 5).
 //
-// Stdout and Stderr carry output from functions given an io.Writer argument.
-// The log package writes to process-global streams and cannot be captured
-// without log.SetOutput, which is forbidden (see RunWiring clause 3).
+// Stdout and Stderr are the bytes the run emitted, captured because RunWiring
+// supplied the writers they were emitted through (clause 3).
 type Artifacts struct {
 	ExitCode  ExitCode
 	Stdout    []byte
@@ -213,16 +187,16 @@ type Artifacts struct {
 // and is a different fact from an empty reader: nil is the operator who passed
 // a file argument, an empty reader is the operator who piped nothing.
 //
-// Dir anchors -worktree, -out and -config resolution. A row that leaves it
-// empty is running against the test process's working directory, which is the
-// package directory and is a live git repository — resolveRepo would then shell
-// out to git against the repo under review. Rows pass t.TempDir() and -no-git
-// unless git state is the subject.
+// DIR IS THE RESOLUTION ROOT, NOT A WORKING DIRECTORY. Every path this
+// invocation names — flag values and positional file arguments alike — resolves
+// as: absolute paths are used unchanged, relative paths are taken relative to
+// Dir. filepath.Join(Dir, p) is correct for the second case ONLY; applied to an
+// absolute p it silently relocates the operator's target underneath Dir.
 //
-// CRITICAL: Dir MUST NOT cause os.Chdir. The process is shared and may be
-// running in a shared CI environment. Paths must be resolved directory-scoped.
-// For absolute paths or relative paths that should be relative to Dir, use
-// filepath.Join(Dir, path). The process's working directory must never change.
+// Dir MUST NOT be applied with os.Chdir (clause 7). A row that leaves it empty
+// runs against the test process's working directory, which is a live git
+// repository — resolveRepo would then shell out to git against the repo under
+// review. Rows pass t.TempDir() and -no-git unless git state is the subject.
 //
 // There is deliberately no Env field. $RISK_PATHS_CONFIG was removed from
 // configCandidates because an agent that can set an environment variable could
@@ -240,44 +214,48 @@ type Invocation struct {
 // THIS IS THE UNIT'S SUBJECT. Contract:
 //
 //  1. IT IS THE CODE main() RUNS. Not a parallel spine, not a
-//     reimplementation. main() delegates to it. If this is a separate
-//     implementation, every row that calls it is vacuous by construction.
-//     main() owns only the outer dispatcher logic, process-wide logger
-//     configuration (log.SetFlags/log.SetPrefix), and the final os.Exit call.
-//     Everything else — subcommand handling, flag parsing via
-//     parseInvocationFlags, the classify path logic — runs through RunWiring.
-//  2. IT NEVER EXITS THE PROCESS. Every os.Exit and every log.Fatalf on the
-//     classify path becomes a returned Artifacts.ExitCode. os.Exit survives in
-//     main() and nowhere else.
-//  3. IT CAPTURES OUTPUT written through io.Writer arguments. Stdout and Stderr
-//     on the returned Artifacts capture output from emit, printReport,
-//     printInvalidInput, and reportConfigSearch, which are given an io.Writer.
-//     Output from the log package is process-global and is not captured without
-//     log.SetOutput, which is forbidden because it is a process-wide mutation
-//     (same rationale as clause 7, os.Chdir).
-//  4. IT REPORTS ARTIFACT STATE, NOT EXISTENCE. It snapshots -out and
-//     V2SidecarPath(-out) BEFORE running and compares after, so files that do
-//     not exist before and after are ArtifactAbsent, files that differ are
-//     ArtifactWritten or ArtifactRemoved, and files that are byte-identical are
-//     ArtifactStale (unchanged by this run, even if identical bytes were written).
-//     With no -out, both FileArtifacts are ArtifactNotApplicable with the Path
-//     field empty. Subcommands return ArtifactNotApplicable for both RunState
-//     and V2Sidecar.
-//  5. THE ERROR RETURN IS NOT THE RUN'S FAILURE. A classify run that fails is
-//     a non-zero ExitCode with err == nil. A non-nil err means RunWiring
-//     ITSELF could not run the invocation — it could not snapshot files,
-//     could not resolve paths, was handed an Invocation it cannot honour. Rows
-//     must not conflate them: `if err != nil { t.Fatal }` then assert on
-//     ExitCode.
-//  6. SUBCOMMANDS ARE IN SCOPE. Args[0] of "init", "capabilities", "help",
-//     "-h" or "--help" takes the pre-flag-parse branch inside RunWiring, and
-//     its exit code is this function's answer too. The capabilities probe
-//     dispatches AHEAD of flag parsing on purpose and that ordering is part of
-//     the mapping.
-//  7. IT NEVER CALLS os.Chdir. Paths are resolved directory-scoped: relative
-//     paths joined with inv.Dir using filepath.Join. The process's working
-//     directory is never changed, because the process is shared and may be
-//     running in a shared CI environment.
+//     reimplementation. If this is a separate implementation, every row that
+//     calls it is vacuous by construction. main() retains exactly three
+//     duties — process-wide logger configuration, forwarding the result
+//     (clause 8), and the single os.Exit call. Subcommand dispatch, flag
+//     parsing and the classify path all run inside RunWiring, so the global
+//     parseFlags() entry point ceases to exist rather than becoming a second
+//     caller of parseInvocationFlags.
+//  2. IT NEVER EXITS THE PROCESS. Every os.Exit and every log.Fatalf on this
+//     path becomes a returned ExitCode. os.Exit survives in main() and nowhere
+//     else.
+//  3. EVERY BYTE THE RUN EMITS PASSES THROUGH A WRITER RunWiring SUPPLIED, and
+//     is therefore captured on Stdout/Stderr. This is a requirement on the
+//     code, not a description of it: a path that writes to a process-global
+//     stream — the log package, or a fmt call naming no writer — is a defect
+//     for GO-1-3 to remove, not an exception to this clause. That includes the
+//     FlagSet, whose output parseInvocationFlags's caller must retarget.
+//     log.SetOutput and any other process-wide redirection are forbidden for
+//     the reason clause 7 gives.
+//  4. IT REPORTS ARTIFACT STATE, NOT EXISTENCE. It snapshots each artifact it
+//     produces before running and compares after, per ArtifactState. An
+//     artifact this invocation does not produce is ArtifactNotApplicable and is
+//     not snapshotted.
+//  5. THE ERROR RETURN IS NOT THE RUN'S FAILURE. A classify run that fails is a
+//     non-zero ExitCode with a nil error. A non-nil error means RunWiring
+//     ITSELF could not run the invocation — could not snapshot, could not
+//     resolve a path, was handed an Invocation it cannot honour — and then the
+//     Artifacts is empty and asserts nothing. Rows must not conflate them:
+//     `if err != nil { t.Fatal }`, then assert on ExitCode.
+//  6. SUBCOMMANDS ARE IN SCOPE. "init", "capabilities", "help", "-h" and
+//     "--help" as Args[0] take the pre-flag-parse branch inside RunWiring, and
+//     their exit codes are this function's answer too. The capabilities probe
+//     dispatches ahead of flag parsing on purpose, and that ordering is part of
+//     the mapping under test.
+//  7. IT NEVER CALLS os.Chdir. Paths resolve against inv.Dir as Invocation
+//     documents. The process is shared — by the test binary's own parallel
+//     rows, and by whatever else runs in CI — so a process-global mutation is a
+//     race, not a shortcut.
+//  8. main() FORWARDS THE RESULT AND ADDS NOTHING. It writes Stdout to
+//     os.Stdout and Stderr to os.Stderr, and exits with ExitCode. On a non-nil
+//     error it reports that error on os.Stderr and exits exitInternal. Without
+//     this clause every in-process seal could pass while the shipped binary is
+//     silent, or exits 0 after failing to run at all.
 //
 // STUB. Returns ErrWiringNotImplemented. GO-1-3 owns the body.
 func RunWiring(inv Invocation) (Artifacts, error) {
@@ -291,31 +269,25 @@ func RunWiring(inv Invocation) (Artifacts, error) {
 //
 // Unexported, matching registerContractVersionFlag, which it must call: the
 // point is not a new public surface but a seam a package-main test can drive.
-// parseFlags() becomes a thin caller of this over flag.CommandLine and
-// os.Args[1:], which is what keeps the two from drifting — the ONE thing a row
-// through this function proves that a row through registerContractVersionFlag
-// alone does not.
 //
 // Contract:
 //
-//  1. It registers exactly the flags parseFlags registers — config, worktree,
-//     base, task, out, json, no-git — and -contract-version THROUGH
-//     registerContractVersionFlag, never by calling flag.String here. The
-//     indirection is the capability registry's, and duplicating it would let
-//     the probe's answer and the flag's existence disagree.
+//  1. It registers exactly the flags the classify path accepts, and
+//     -contract-version THROUGH registerContractVersionFlag, never by calling
+//     flag.String here. The indirection is the capability registry's, and
+//     duplicating it would let the probe's answer and the flag's existence
+//     disagree.
 //  2. It does not parse -contract-version. The raw string is threaded to
-//     options.contractVersion and validated in run(), for the reason the field
-//     already documents: parsing here would have to log.Fatalf, which exits 1,
-//     and a mistyped contract owes the caller exit 3.
-//  3. A flag error is RETURNED, not fatal. fs.Parse's error comes back so
-//     RunWiring can map it to an exit code. The caller sets
-//     fs.SetErrorHandling(flag.ContinueOnError). Flag errors are returned to
-//     RunWiring, not passed through os.Exit. RunWiring maps flag errors to
-//     exit code 2 (exitFlagError, a member of DeclaredExitCodes).
-//  4. It does NOT call log.SetFlags/log.SetPrefix. parseFlags does that today
-//     as a side effect of parsing, which is why the log prefix depends on
-//     whether flags were parsed. Process-wide logger configuration belongs to
-//     main(), not to a function a test calls a hundred times.
+//     options.contractVersion and validated in run(), because validating it
+//     here could only report failure by exiting — exitInternal — and a mistyped
+//     contract owes the caller exitInvalid.
+//  3. A FLAG ERROR IS RETURNED, NOT FATAL. The caller supplies a FlagSet with
+//     flag.ContinueOnError and its own output writer, and fs.Parse's error
+//     comes back. RunWiring maps that error to exitFlagError — the mapping is
+//     decided here, by the skeleton, and GO-1-2 seals it.
+//  4. It does NOT configure the logger. Process-wide logger state belongs to
+//     main() (RunWiring clause 1), not to a function a test calls a hundred
+//     times.
 //
 // STUB. Returns ErrWiringNotImplemented. GO-1-3 owns the body.
 func parseInvocationFlags(fs *flag.FlagSet, args []string) (options, error) {

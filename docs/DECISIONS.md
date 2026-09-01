@@ -82,8 +82,10 @@ The claim splits into two facts with different owners:
    and `os.Args` and calls `flag.Parse()`, which a test can drive neither twice
    nor with its own argv. `parseInvocationFlags` exists for exactly that.
    A row through `registerContractVersionFlag` **alone** is not enough: it
-   proves the helper registers a flag, not that the FlagSet `parseFlags` parses
-   is the one it registered on.
+   proves the helper registers a flag, not that the FlagSet the classify path
+   actually parses is the one it registered on. (`parseFlags()` itself does not
+   survive GO-1-3 — `RunWiring` clause 1 — so it is named here as the state of
+   the tree the scaffold was written against, not as a seam that persists.)
 2. **The pinned baseline accepts `-contract-version`.** Not provable, not owed,
    and asserting it would assert that the baseline is not the baseline. The
    correct row is the negative: nothing probes `./classify` or the pinned
@@ -152,13 +154,18 @@ inherits them explicitly rather than by silence.
 - **H3 — an unknown flag exits 2, which `usage()` does not advertise.**
   `flag.CommandLine` is `ExitOnError`, which is `os.Exit(2)`.
   `DeclaredExitCodes` DOES list it, as `exitFlagError`, because it is
-  observable; `usage()` does not, which is the gap. `parseInvocationFlags`
-  returns the parse error instead, which is what lets GO-1-3 decide the
-  mapping; deciding it is **not** in this scaffold's scope.
+  observable; `usage()` does not, which is the gap. The MAPPING is not a hole
+  and is not GO-1-3's to choose: `parseInvocationFlags` returns the parse error
+  and `RunWiring` maps it to `exitFlagError`, decided in the scaffold
+  (`parseInvocationFlags` clause 3) and sealed by GO-1-2. What remains open is
+  only whether `usage()` should advertise the code.
 - **H4 — `INVALID_INPUT` goes to stdout, including under `-json`.** A consumer
   that runs `classify -json` and parses stdout gets a human-readable block on
-  exit 3. Exit code and stream disagree about who the audience is. Changing it
-  is consumer-visible and is its own decision.
+  exit 3. Exit code and stream disagree about who the audience is. WHICH stream
+  it should use is consumer-visible and is its own decision; that it must reach
+  that stream through a writer `RunWiring` supplied is not open — `RunWiring`
+  clause 3 requires it, and a `fmt` call naming no writer is a defect GO-1-3
+  removes either way.
 - **H5 — `persist()`'s exhaustive contract switch is skipped entirely when
   `-out` is empty.** `persist` returns 0 before the `switch contract` when
   `opts.out == ""`, so `ContractVersionUnset` and any out-of-set value reach a
