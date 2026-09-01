@@ -52,6 +52,45 @@ So, when you write a contract, an interface docstring, or a scaffold:
 The test: *if someone fixed the defect this contract describes, would any
 sentence here become false?* If yes, that sentence is a measurement. Move it.
 
+### Fixing a review finding: CUT, don't rewrite
+
+Measured over twenty-one panel rounds on one contract. When a reviewer finds an
+over-strong or false claim, the repair is to **delete the sentence**, and to add
+nothing unless a rule would otherwise be lost.
+
+The reason is a rate, not a preference. Across these rounds, **roughly half of
+each round's findings were manufactured by the previous round's fix** — the
+replacement sentence reached one clause further than the code could honour, or
+contradicted a neighbour. Splitting the 974-line file into six did not change
+that rate; it only made the findings local enough to see.
+
+The pass that tested deletion is the evidence:
+
+| repair style | edits | new findings caused |
+|---|---|---|
+| pure cut | 7 | **0** |
+| wrote a replacement clause | 2 | 2 |
+
+Every new defect traced to a sentence that was added. Not one traced to a
+deletion. A cut cannot introduce a claim.
+
+So: when a claim is too strong, remove it. Do not qualify it — a qualified
+over-claim is a new claim, and it will be back next round wearing different
+words. "No host default reaches the stamp" was narrowed to "reaches a COMPARED
+field" and was still false; the fix was to stop saying it. If a rule genuinely
+dies with the sentence, write the smallest replacement you can and expect it to
+be the next finding.
+
+Two corollaries:
+
+* **Cut cleanly.** A careless deletion that leaves "It does NOT close the
+  ENVIRONMENT: not closed. A variable nobody enumerated —" is worse than the
+  claim it removed. Re-read the whole paragraph after cutting.
+* **Grep the dependents.** Withdrawing a claim in one place leaves every
+  sentence that relied on it false. Four separate rounds were spent on exactly
+  this: the field left behind its doc, the enumeration left behind the rule it
+  enumerated. Fixing a definition is half the work.
+
 ## Comments: purpose and constraints, not rationale
 
 Same rule as `claude-dispatcher`'s, and it exists for the same reason — every
