@@ -73,9 +73,12 @@ deliberate omissions, both measured:
 * **Not `go build`** — the compiled binaries are tracked in this repo, so
   building rewrites them and leaves the worktree dirty. The dispatcher refuses
   test evidence from a dirty tree, so a building gate blocks every task.
-* **Not `go vet`** — `cmd/deepseek`'s tests use a go1.24 API while its
-  `go.mod` declares go1.21, so vet is red on a clean baseline, and a gate that
-  starts red judges nothing. That module needs a fix of its own.
+* **Not `go vet`** — a gate must be GREEN ON A CLEAN BASELINE, or it cannot
+  tell the change under test from the dirt it inherited. Some module here does
+  not vet clean; which, and why, is in `docs/DECISIONS.md`, and repairing it is
+  a change of its own rather than a side effect of configuring a gate. Adding
+  vet is correct the moment the baseline is green — and this bullet does not
+  have to be rewritten for that to happen, which is the point.
 
 `go test` compiles every package in the pattern regardless: a type error in a
 non-test file exits 1.
