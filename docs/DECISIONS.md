@@ -78,9 +78,14 @@ The claim splits into two facts with different owners:
 
 1. **This source registers `-contract-version` and threads it to
    `options.contractVersion`.** Provable in process, and GO-1-2's to seal. It
-   is not provable today only because `parseFlags()` reads `flag.CommandLine`
-   and `os.Args` and calls `flag.Parse()`, which a test can drive neither twice
-   nor with its own argv. `parseInvocationFlags` exists for exactly that.
+   is not provable through `parseFlags()`, which reads `flag.CommandLine` and
+   `os.Args` and calls `flag.Parse()`. Both are assignable package variables,
+   so a row COULD save, replace and restore them — the reason there is no such
+   row is a REFUSAL, not a capability limit: a row that mutates process globals
+   cannot run beside a parallel one, and the restore is one defect away from
+   leaking into every later row. That refusal is a rule GO-1-2 must obey, which
+   an "impossible" framing would erase. `parseInvocationFlags` exists so the
+   seam can be driven without the mutation.
    A row through `registerContractVersionFlag` **alone** is not enough: it
    proves the helper registers a flag, not that the FlagSet the classify path
    actually parses is the one it registered on. (`parseFlags()` itself does not

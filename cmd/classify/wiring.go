@@ -45,9 +45,10 @@ const (
 // spelled in several places drifts, and the copy nobody updated is this
 // project's whole failure class.
 //
-// Membership is not endorsement. A code appears here when the binary can
-// produce it, not when it is intended; where it is produced FROM is a fact
-// about the tree and belongs in docs/DECISIONS.md. Nor is this a claim about
+// Membership is not endorsement: the criterion is REACHABILITY, not intent, so
+// a code belongs here as soon as some path can return it. That is a rule for
+// deciding the set, not a report of which paths currently do — where a code is
+// produced from is a fact about the tree and belongs in docs/DECISIONS.md. Nor is this a claim about
 // usage() — the gap between what the binary can exit with and what it
 // advertises is H2 and H3 there, read once by a reviewer instead of forever by
 // every agent.
@@ -169,10 +170,11 @@ type FileArtifact struct {
 
 // Artifacts is what one classify invocation produced THAT THIS CHECK OBSERVES:
 // the exit code, the two output streams, and the two artifacts of the classify
-// path. It is not a record of every byte the process wrote — `init` writes a
+// path. It is not a record of every byte the process wrote: `init` writes a
 // config file at an operator-chosen path and no field here reports it, so a
-// row about init asserts on ExitCode and Stdout and nothing more. Widening the
-// observed set means adding a field, not reading a wider promise into this one.
+// row about init MUST confine its assertions to ExitCode and the streams.
+// Widening the observed set means adding a field, not reading a wider promise
+// into this one.
 //
 // IT IS MEANINGFUL ONLY WHEN RunWiring RETURNED A NIL ERROR. Beside a non-nil
 // error every field is unset and asserts nothing (clause 5).
@@ -202,10 +204,10 @@ type Artifacts struct {
 // absolute p it silently relocates the operator's target underneath Dir.
 //
 // Dir MUST NOT be applied with os.Chdir (clause 7). A row that leaves it empty
-// runs against the test process's working directory, which is a live git
-// repository — resolveRepo would then shell out to git against the repo under
-// review. Rows MUST therefore pass t.TempDir() and -no-git unless git state is
-// the subject.
+// runs against whatever directory the test process started in, and resolveRepo
+// would shell out to git there — against a tree the row does not control. Rows
+// MUST therefore pass t.TempDir() and -no-git unless git state is the
+// subject.
 //
 // There is deliberately no Env field. $RISK_PATHS_CONFIG was removed from
 // configCandidates because an agent that can set an environment variable could
@@ -217,8 +219,10 @@ type Invocation struct {
 	Dir   string
 }
 
-// RunWiring executes one classify invocation in process and reports the exit
-// code together with every artifact it produced.
+// RunWiring executes one classify invocation in process and reports its exit
+// code, its output streams, and the artifacts Artifacts declares — which is
+// not every file the invocation may write. Artifacts states the observed set
+// and why widening it means adding a field.
 //
 // THIS IS THE UNIT'S SUBJECT. Contract:
 //
@@ -257,9 +261,9 @@ type Invocation struct {
 //     dispatches ahead of flag parsing on purpose, and that ordering is part of
 //     the mapping under test.
 //  7. IT NEVER CALLS os.Chdir. Paths resolve against inv.Dir as Invocation
-//     documents. The process is shared — by the test binary's own parallel
-//     rows, and by whatever else runs in CI — so a process-global mutation is a
-//     race, not a shortcut.
+//     documents. A function a test suite may call concurrently must not mutate
+//     process-global state: the working directory is shared by every goroutine
+//     in the process, so changing it is a race whatever the caller intended.
 //  8. main() FORWARDS THE RESULT AND ADDS NOTHING. It writes Stdout to
 //     os.Stdout and Stderr to os.Stderr, and exits with ExitCode. On a non-nil
 //     error it reports that error on os.Stderr and exits exitInternal. Without
