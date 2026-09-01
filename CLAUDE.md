@@ -73,12 +73,10 @@ deliberate omissions, both measured:
 * **Not `go build`** — the compiled binaries are tracked in this repo, so
   building rewrites them and leaves the worktree dirty. The dispatcher refuses
   test evidence from a dirty tree, so a building gate blocks every task.
-* **Not `go vet`** — a gate must be GREEN ON A CLEAN BASELINE, or it cannot
-  tell the change under test from the dirt it inherited. Some module here does
-  not vet clean; which, and why, is in `docs/DECISIONS.md`, and repairing it is
-  a change of its own rather than a side effect of configuring a gate. Adding
-  vet is correct the moment the baseline is green — and this bullet does not
-  have to be rewritten for that to happen, which is the point.
+* **Not `go vet`** — a gate runs only checks that are GREEN ON A CLEAN
+  BASELINE, or it cannot tell the change under test from the dirt it inherited.
+  Whether vet meets that bar here, and what it would take, is in
+  `docs/DECISIONS.md`; adding it is correct as soon as it does.
 
 `go test` compiles every package in the pattern regardless: a type error in a
 non-test file exits 1.
