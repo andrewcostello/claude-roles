@@ -30,24 +30,27 @@ const (
 	// operator's input — an unreadable file, a failed write. It is also what
 	// main returns when RunWiring itself fails (see RunWiring clause 8).
 	exitInternal = 1
-	// exitFlagError: argv did not parse. The flag package's code for this, and
-	// therefore not ours to choose.
+	// exitFlagError: argv did not parse. The NUMBER is the flag package's, taken
+	// so a caller sees the same code whether the FlagSet exited on its own or
+	// RunWiring mapped a returned error. Under ContinueOnError the package
+	// assigns no code at all, so the mapping IS this scaffold's choice —
+	// parseInvocationFlags clause 3 makes it, and only the number is inherited.
 	exitFlagError = 2
 )
 
 // DeclaredExitCodes is the closed set of exit codes cmd/classify may produce.
 //
 // Closed is the operative word and the only claim here: an exit code outside
-// this set is a defect, not a new feature. Enumerated once because three
-// hand-written lists need three edits to stay honest, and the edit that only
-// happened twice is this project's whole failure class.
+// this set is a defect, not a new feature. It is enumerated ONCE because a set
+// spelled in several places drifts, and the copy nobody updated is this
+// project's whole failure class.
 //
-// Membership is not endorsement — exitInternal is listed because it is
-// reachable, and where it is reachable FROM is a fact about the tree that
-// GO-1-3 changes. Nor is it a claim about usage(): the gap between what this
-// binary can exit with and what it advertises is recorded in docs/DECISIONS.md
-// (H2, H3), where a reviewer reads it once instead of every agent re-reading it
-// forever.
+// Membership is not endorsement. A code appears here when the binary can
+// produce it, not when it is intended; where it is produced FROM is a fact
+// about the tree and belongs in docs/DECISIONS.md. Nor is this a claim about
+// usage() — the gap between what the binary can exit with and what it
+// advertises is H2 and H3 there, read once by a reviewer instead of forever by
+// every agent.
 var DeclaredExitCodes = []int{
 	exitOK,
 	exitInvalid,
@@ -164,7 +167,12 @@ type FileArtifact struct {
 	Bytes []byte
 }
 
-// Artifacts is everything one classify invocation produced.
+// Artifacts is what one classify invocation produced THAT THIS CHECK OBSERVES:
+// the exit code, the two output streams, and the two artifacts of the classify
+// path. It is not a record of every byte the process wrote — `init` writes a
+// config file at an operator-chosen path and no field here reports it, so a
+// row about init asserts on ExitCode and Stdout and nothing more. Widening the
+// observed set means adding a field, not reading a wider promise into this one.
 //
 // IT IS MEANINGFUL ONLY WHEN RunWiring RETURNED A NIL ERROR. Beside a non-nil
 // error every field is unset and asserts nothing (clause 5).
@@ -196,7 +204,8 @@ type Artifacts struct {
 // Dir MUST NOT be applied with os.Chdir (clause 7). A row that leaves it empty
 // runs against the test process's working directory, which is a live git
 // repository — resolveRepo would then shell out to git against the repo under
-// review. Rows pass t.TempDir() and -no-git unless git state is the subject.
+// review. Rows MUST therefore pass t.TempDir() and -no-git unless git state is
+// the subject.
 //
 // There is deliberately no Env field. $RISK_PATHS_CONFIG was removed from
 // configCandidates because an agent that can set an environment variable could
@@ -278,9 +287,12 @@ func RunWiring(inv Invocation) (Artifacts, error) {
 //     duplicating it would let the probe's answer and the flag's existence
 //     disagree.
 //  2. It does not parse -contract-version. The raw string is threaded to
-//     options.contractVersion and validated in run(), because validating it
-//     here could only report failure by exiting — exitInternal — and a mistyped
-//     contract owes the caller exitInvalid.
+//     options.contractVersion and validated in run(). Nothing stops this
+//     function returning a validation error — the signature has one — but then
+//     RunWiring would receive a mistyped contract and a mistyped FLAG on the
+//     same channel and owe them different codes (exitInvalid, exitFlagError).
+//     Keeping the two apart is what the split buys; the error return here
+//     carries flag-parse failures only.
 //  3. A FLAG ERROR IS RETURNED, NOT FATAL. The caller supplies a FlagSet with
 //     flag.ContinueOnError and its own output writer, and fs.Parse's error
 //     comes back. RunWiring maps that error to exitFlagError — the mapping is

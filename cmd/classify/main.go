@@ -184,16 +184,17 @@ type options struct {
 //
 // CONTRACT (GO-1-1 scaffold; see wiring.go for the whole of it). main cannot
 // be driven by an in-process test: it reads os.Args and exits the process. It
-// is therefore not sealed BEHAVIOURALLY but
-// STRUCTURALLY — GO-1-3 makes the classify arm below a one-line delegation to
-// RunWiring, and GO-1-2's row scans this package's source to assert it. If the
-// delegation is ever replaced by a second, parallel spine, every row that calls
-// RunWiring is vacuous by construction and the source scan is the only thing
-// that would notice.
+// is therefore not sealed BEHAVIOURALLY but STRUCTURALLY, by a GO-1-2 row that
+// scans this package's source.
 //
-// The three pre-flag-parse arms are part of the mapping, not around it: the
-// capabilities probe dispatches ahead of flag.Parse on purpose, and its exit
-// code is RunWiring's answer too.
+// WHAT THE SCAN MUST FIND, and it is RunWiring clause 1 verbatim rather than a
+// second description of it: main's whole body is os.Args[1:] into RunWiring,
+// logger configuration, the forwarding of clause 8, and one os.Exit. THE
+// SWITCH BELOW DOES NOT SURVIVE — subcommand dispatch moves inside RunWiring
+// (clause 6), because the pre-flag-parse arms are part of the mapping under
+// test, not a wrapper around it. A switch left here would be the parallel
+// spine clause 1 forbids, and would make every row that calls RunWiring
+// vacuous by construction.
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -229,11 +230,13 @@ Exit codes: 0 classified, 3 INVALID_INPUT, 4 CAPABILITY_INCOMPLETE (probe only)
 
 // parseFlags reads the process's argv into options.
 //
-// CONTRACT (GO-1-1 scaffold). This function is untestable AS WRITTEN and that
-// is the whole of why -contract-version has no seal: it registers on the global
-// flag.CommandLine, parses the global os.Args, and configures the process-wide
-// logger as a side effect. A test can drive it neither twice nor with its own
-// argv.
+// CONTRACT (GO-1-1 scaffold). This function reaches only through process
+// globals — it registers on flag.CommandLine, parses os.Args, and configures
+// the process-wide logger as a side effect. flag.CommandLine and os.Args are
+// assignable, so a row COULD save, replace and restore them; this suite
+// refuses to, because a row that mutates process globals cannot run beside a
+// parallel one and the restore is a defect away from leaking. That refusal,
+// not impossibility, is why -contract-version has no seal through here.
 //
 // GO-1-3 DELETES IT. Its flag half becomes parseInvocationFlags (wiring.go),
 // called by RunWiring against a FlagSet the caller supplies; its logger half
@@ -242,9 +245,10 @@ Exit codes: 0 classified, 3 INVALID_INPUT, 4 CAPABILITY_INCOMPLETE (probe only)
 // binary parsing outside the seam every row drives, and would keep the
 // process-exiting FlagSet that RunWiring clause 2 forbids.
 //
-// Nothing today proves any binary accepts -contract-version. What becomes
-// provable is narrower than that sentence sounds; docs/DECISIONS.md D2 states
-// which half is owed and which half is not.
+// What a row through this seam can and cannot prove about -contract-version is
+// split in docs/DECISIONS.md D2: the registration is owed, the pinned
+// baseline's acceptance of the flag is not, and no row may rebuild the
+// baseline to acquire it.
 func parseFlags() options {
 	configFlag := flag.String("config", "", "Path to risk-paths.json (default: <this binary's repo>/config/risk-paths.json)")
 	worktreeFlag := flag.String("worktree", ".", "Worktree holding the change")
@@ -297,11 +301,10 @@ func registerContractVersionFlag(fs *flag.FlagSet) *string {
 //
 // CONTRACT (GO-1-1 scaffold; wiring.go states it in full and GO-1-2 seals it).
 // The mapping under review is (contract x -out x -json) -> artifact set + exit
-// code, and no test decides it: every seal calls
-// EmitV1/EmitV2/WriteV2Sidecar/ParseContractVersion as a LIBRARY, so none of
-// them notices which one THIS function chooses. That is a property of how the
-// seals are written, not a count of them — the count is in DECISIONS.md, where
-// a measurement belongs.
+// code. A test that calls EmitV1/EmitV2/WriteV2Sidecar/ParseContractVersion as
+// a LIBRARY cannot judge that mapping, because it never observes which of them
+// THIS function chose; only a row that drives the wiring can. Which rows exist
+// is a fact about the suite and lives in DECISIONS.md.
 //
 // Two obligations this function's shape already carries, stated so GO-1-3 does
 // not quietly drop either while making it callable in process:
