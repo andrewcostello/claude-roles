@@ -230,6 +230,66 @@ tasks:
       And one NEW finding worth heeding: SetOutput(nil) on a flag.FlagSet falls back
       to os.Stderr, so the no-output promise is false as written. Measure it before
       you write the fix.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=9 (0C/9H))
+      OPERATOR (2026-08-30). The contract defect that kept you blocked has been fixed BY THE OPERATOR, in a commit on your branch. Read it before you start.
+
+      GO-1-1 (71d5730): the invalid-zero claim on ExitCode is deleted. Three rounds asserted in prose that the zero value was invalid while exitOK stayed 0 and stayed in DeclaredExitCodes; the doc now says what is true. Do not re-add it in any wording.
+
+      GO-2-1 (16f762e): six measured facts are stripped from the artifact contract — 'every one of the nine stamps exactly this today', 'this file names all nine', and the MEASURED grouping block. The trimpath fix you made was correct; it falsified the neighbouring claim about all nine binaries, which is why you could not converge.
+
+      THE RULE, now in CLAUDE.md at the repo root and worth reading: a contract states RULES, not measurements. Do not write counts of the current tree, 'all nine X already do Y', or 'this is the only caller'. Those belong in a test, where they fail loudly, or in the commit message. Withdrawing an over-strong claim is a real fix.
+
+      Address the remaining findings from your last panel. Do not widen the diff beyond them — a wider diff has now failed twice on both units.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=9 (0C/9H))
+      OPERATOR (2026-08-31). Each of you has a fix ALREADY COMMITTED on your branch by the operator. Read it before starting; do not redo it, and do not re-introduce what it removed.
+
+      GO-1-1 (71d5730, b6bfa9a): the invalid-zero claim on ExitCode is deleted — the doc now says what is true, that zero IS exitOK. And DECISIONS.md no longer restates DeclaredExitCodes: it disagreed with wiring.go about whether exit 2 is in the set, so the duplicate was deleted rather than synced. Do not re-add either claim in any wording.
+
+      GO-2-1 (16f762e): six measured facts are stripped from the artifact contract — 'every one of the nine stamps exactly this today', 'this file names all nine', and the MEASURED grouping block. Your trimpath fix was correct; it falsified the neighbouring claim about all nine binaries, which is why you could not converge.
+
+      GO-4-1 (df06634): the contract's status header and §1 said BLOCKED and 'the stubs are NOT committed here'. Both were true when written and false once the base was ruled and your work committed. Rewritten to state the settled position. Your last review was also invalid — 13 of its 16 findings were about code you never wrote, from a stale merge-base — and your branch has been rebuilt on the correct base.
+
+      THE RULE, now at the repo root in CLAUDE.md: a contract states RULES, not measurements. No counts of the current tree, no 'all nine X already do Y', no 'this is the only caller'. Those go in a test, where they fail loudly, or in the commit message. Withdrawing an over-strong claim is a real fix — say so when you do it.
+
+      Address the findings from your last panel and nothing else. A wider diff has failed on every unit that tried it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=7 (0C/7H))
+      OPERATOR (2026-08-31), one careful pass. Every tree measurement the panel named has been removed BY THE OPERATOR, on your branch. Read the commit; do not re-add what it took out.
+
+      GO-1-1 (2431d83): 'main is at 0.0% coverage and stays there' and 'reddens none of this package's 97 tests' are gone — a coverage figure and a count that your own mandated work changes. What replaced them is the property that does not move.
+      GO-2-1 (d7eeef7, 6a286ef): 'Six deliverables, three accidents', 'five exec sites', 'five-consumer migration', 'sixteen days', and DirtyBuild's CONSEQUENCE block naming four binaries — all gone. So is the duplicate-grouping table that sat directly under a sentence saying it was not stated (my error, and the panel caught it).
+      GO-4-1 (5c1b57b): sections 2, 3 and 11 are now MARKED as dated evidence rather than contract terms, because your task IS a re-measurement and deleting the work would be wrong. Section 11's claim that the change 'touches nothing else' was false of this branch and is gone.
+
+      RULING for GO-1-1, on the contradiction all three families found — implement it, do not re-argue it:
+
+        ArtifactStateUnset is 'ILLEGAL at every boundary', yet Artifacts says
+        subcommands leave RunState and V2Sidecar 'empty', and an empty FileArtifact
+        IS Unset. Meanwhile the no--out case uses ArtifactAbsent for files nobody
+        checked, while ArtifactAbsent asserts verified absence.
+
+      Three situations are being squeezed into two states. Add the missing one — a
+      state meaning 'this path does not produce this artifact' — and use it for
+      subcommands and for the no--out case. Keep Unset illegal at boundaries: that
+      discipline is the point of the type. If you would rather withdraw the
+      'illegal at every boundary' claim instead, that is acceptable, but say which
+      you chose and why.
+
+      Address your remaining panel findings and nothing else.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=3 (0C/3H))
+      OPERATOR: THREE findings left, and the measurement family is now fixed on your branch (186a70d removed the 'seven log.Fatalf call sites' count restated in three places, and exitInternal's enumeration of the five current failure causes). Do not re-add counts.
+
+      The two that remain are yours:
+        - codex: the production boundary is under-specified — RunWiring must be the code main executes, and the contract does not close that.
+        - the ArtifactStateUnset ruling from the last note still stands: three situations are being squeezed into two states. Add the missing one, or withdraw 'illegal at every boundary' and say which you chose.
+
+      Address those. Do not widen the diff.
     type: Task
     estimate: 2h
     labels: [size:M, area:go-tools]
@@ -237,36 +297,36 @@ tasks:
     role: scaffold
     status: Blocked
 
-    started_at: '2026-08-30T09:05:38-07:00'
-    dispatcher_run_id: 2026-08-30T16-05-37Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T16-05-37Z-tasks/GO-1-1/summary.md
+    started_at: '2026-08-31T16:54:47-07:00'
+    dispatcher_run_id: 2026-08-31T23-54-47Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-31T23-54-47Z-tasks/GO-1-1/summary.md
     branch: feat/GO-1-1-scaffold-the-wiring-that-decides
     gate_base_sha: 9418fc152373e5f5d06cad11c6c65aeb9efe2628
-    cost_usd: 10.108060799999999
+    cost_usd: 11.912392299999999
     effort: high
     effort_escalated: true
-    completed_at: '2026-08-30T09:17:06-07:00'
+    completed_at: '2026-08-31T17:06:15-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=9 (0C/9H)
-    panel_blocking_findings: 9
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H)
+    panel_blocking_findings: 8
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 257
-    output_tokens: 14885
-    cache_read_input_tokens: 2070353
-    cache_creation_input_tokens: 69501
-    duration_ms: 208614
-    num_turns: 32
+    input_tokens: 321
+    output_tokens: 15890
+    cache_read_input_tokens: 2106786
+    cache_creation_input_tokens: 59497
+    duration_ms: 251178
+    num_turns: 42
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
-    agent_version: 2.1.251 (Claude Code)
-    unblocked_at: '2026-08-30T16:05:37+00:00'
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=9 (0C/9H)'
+    agent_version: 2.1.252 (Claude Code)
+    unblocked_at: '2026-08-31T23:54:47+00:00'
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H)'
     mechanical_verification: passed
     role_diff_loop: not_enabled
     verified: true
@@ -492,6 +552,56 @@ tasks:
 
       Do not touch anything else. A narrower diff that fixes these eight is what gets
       you through; a wider one has now failed twice.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H))
+      OPERATOR (2026-08-30). The contract defect that kept you blocked has been fixed BY THE OPERATOR, in a commit on your branch. Read it before you start.
+
+      GO-1-1 (71d5730): the invalid-zero claim on ExitCode is deleted. Three rounds asserted in prose that the zero value was invalid while exitOK stayed 0 and stayed in DeclaredExitCodes; the doc now says what is true. Do not re-add it in any wording.
+
+      GO-2-1 (16f762e): six measured facts are stripped from the artifact contract — 'every one of the nine stamps exactly this today', 'this file names all nine', and the MEASURED grouping block. The trimpath fix you made was correct; it falsified the neighbouring claim about all nine binaries, which is why you could not converge.
+
+      THE RULE, now in CLAUDE.md at the repo root and worth reading: a contract states RULES, not measurements. Do not write counts of the current tree, 'all nine X already do Y', or 'this is the only caller'. Those belong in a test, where they fail loudly, or in the commit message. Withdrawing an over-strong claim is a real fix.
+
+      Address the remaining findings from your last panel. Do not widen the diff beyond them — a wider diff has now failed twice on both units.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=10 (0C/10H))
+      OPERATOR (2026-08-31). Each of you has a fix ALREADY COMMITTED on your branch by the operator. Read it before starting; do not redo it, and do not re-introduce what it removed.
+
+      GO-1-1 (71d5730, b6bfa9a): the invalid-zero claim on ExitCode is deleted — the doc now says what is true, that zero IS exitOK. And DECISIONS.md no longer restates DeclaredExitCodes: it disagreed with wiring.go about whether exit 2 is in the set, so the duplicate was deleted rather than synced. Do not re-add either claim in any wording.
+
+      GO-2-1 (16f762e): six measured facts are stripped from the artifact contract — 'every one of the nine stamps exactly this today', 'this file names all nine', and the MEASURED grouping block. Your trimpath fix was correct; it falsified the neighbouring claim about all nine binaries, which is why you could not converge.
+
+      GO-4-1 (df06634): the contract's status header and §1 said BLOCKED and 'the stubs are NOT committed here'. Both were true when written and false once the base was ruled and your work committed. Rewritten to state the settled position. Your last review was also invalid — 13 of its 16 findings were about code you never wrote, from a stale merge-base — and your branch has been rebuilt on the correct base.
+
+      THE RULE, now at the repo root in CLAUDE.md: a contract states RULES, not measurements. No counts of the current tree, no 'all nine X already do Y', no 'this is the only caller'. Those go in a test, where they fail loudly, or in the commit message. Withdrawing an over-strong claim is a real fix — say so when you do it.
+
+      Address the findings from your last panel and nothing else. A wider diff has failed on every unit that tried it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=12 (0C/12H))
+      OPERATOR (2026-08-31), one careful pass. Every tree measurement the panel named has been removed BY THE OPERATOR, on your branch. Read the commit; do not re-add what it took out.
+
+      GO-1-1 (2431d83): 'main is at 0.0% coverage and stays there' and 'reddens none of this package's 97 tests' are gone — a coverage figure and a count that your own mandated work changes. What replaced them is the property that does not move.
+      GO-2-1 (d7eeef7, 6a286ef): 'Six deliverables, three accidents', 'five exec sites', 'five-consumer migration', 'sixteen days', and DirtyBuild's CONSEQUENCE block naming four binaries — all gone. So is the duplicate-grouping table that sat directly under a sentence saying it was not stated (my error, and the panel caught it).
+      GO-4-1 (5c1b57b): sections 2, 3 and 11 are now MARKED as dated evidence rather than contract terms, because your task IS a re-measurement and deleting the work would be wrong. Section 11's claim that the change 'touches nothing else' was false of this branch and is gone.
+
+      RULING for GO-1-1, on the contradiction all three families found — implement it, do not re-argue it:
+
+        ArtifactStateUnset is 'ILLEGAL at every boundary', yet Artifacts says
+        subcommands leave RunState and V2Sidecar 'empty', and an empty FileArtifact
+        IS Unset. Meanwhile the no--out case uses ArtifactAbsent for files nobody
+        checked, while ArtifactAbsent asserts verified absence.
+
+      Three situations are being squeezed into two states. Add the missing one — a
+      state meaning 'this path does not produce this artifact' — and use it for
+      subcommands and for the no--out case. Keep Unset illegal at boundaries: that
+      discipline is the point of the type. If you would rather withdraw the
+      'illegal at every boundary' claim instead, that is acceptable, but say which
+      you chose and why.
+
+      Address your remaining panel findings and nothing else.
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
@@ -499,36 +609,36 @@ tasks:
     role: scaffold
     status: Blocked
 
-    started_at: '2026-08-30T09:07:41-07:00'
-    dispatcher_run_id: 2026-08-30T16-07-41Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T16-07-41Z-tasks/GO-2-1/summary.md
+    started_at: '2026-08-31T16:41:00-07:00'
+    dispatcher_run_id: 2026-08-31T23-41-00Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-31T23-41-00Z-tasks/GO-2-1/summary.md
     branch: feat/GO-2-1-scaffold-a-tracked-build-artifact
     gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
-    cost_usd: 22.258175100000006
+    cost_usd: 23.76578640000001
     effort: high
     effort_escalated: true
-    completed_at: '2026-08-30T09:19:16-07:00'
+    completed_at: '2026-08-31T16:53:54-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
     panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H)
-    panel_blocking_findings: 8
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=11 (0C/11H)
+    panel_blocking_findings: 11
     panel_verdict_claude: CHANGES_REQUESTED
     panel_verdict_codex: CHANGES_REQUESTED
     panel_verdict_grok: CHANGES_REQUESTED
-    input_tokens: 345
-    output_tokens: 22422
-    cache_read_input_tokens: 2451485
-    cache_creation_input_tokens: 59323
-    duration_ms: 290138
-    num_turns: 43
+    input_tokens: 425
+    output_tokens: 19978
+    cache_read_input_tokens: 3409345
+    cache_creation_input_tokens: 74327
+    duration_ms: 306960
+    num_turns: 53
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
-    agent_version: 2.1.251 (Claude Code)
-    unblocked_at: '2026-08-30T16:07:41+00:00'
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H)'
+    agent_version: 2.1.252 (Claude Code)
+    unblocked_at: '2026-08-31T23:40:47+00:00'
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=11 (0C/11H)'
     mechanical_verification: passed
     role_diff_loop: not_enabled
     verified: true
@@ -873,47 +983,102 @@ tasks:
       Do NOT merge the lineage into main and do not resolve cmd/classify/main.go. Your own measurement is why this is safe: main has zero commits in cmd/gates or cmd/iterate since the fork at 1db2d41, and the single merge-tree conflict is in cmd/classify, which your two new files do not touch.
 
       Your holes proposal stands and is for the plan author, not for you to gate on.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=REJECT, grok=REJECT | dissenting=3 (claude,codex,grok) | blocking=16 (0C/16H))
+      OPERATOR (2026-08-30). Your last review was INVALID and none of it is your fault. Ignore those 16 findings.
+
+      Your branch had been reused across a base change, so its merge-base was the ancient 1db2d41 and the panel diffed 27 files / 6,527 insertions — main's whole history since that fork, INCLUDING the operator's own commits. That is why it reported you 'import 3,594 lines of finished G1/G2 body code' and 'modify .dispatcher.yaml, main_test.go, testdata'. You wrote none of it. Your actual work is 3 files / 503 insertions and it has been preserved.
+
+      Two operator fixes since:
+      - The base you named, 83b0b97, has NINE failing tests in cmd/classify, so no task could pass its gate there. You are now on 12d845a — 'merge(W): B1 and G2 join' — verified green across all seven modules and carrying the same subject: cmd/gates/preserve.go, cmd/iterate/preserve.go, VerifyPreservation. Still not an ancestor of main, so the ruling stands.
+      - Your two commits were cherry-picked onto that base, so your diff is now clean and the panel will review only your work.
+
+      Proceed with the scaffold. If a finding still cites files you did not touch, say so and name the diff bounds rather than trying to fix it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=3 (0C/3H))
+      OPERATOR (2026-08-31). Each of you has a fix ALREADY COMMITTED on your branch by the operator. Read it before starting; do not redo it, and do not re-introduce what it removed.
+
+      GO-1-1 (71d5730, b6bfa9a): the invalid-zero claim on ExitCode is deleted — the doc now says what is true, that zero IS exitOK. And DECISIONS.md no longer restates DeclaredExitCodes: it disagreed with wiring.go about whether exit 2 is in the set, so the duplicate was deleted rather than synced. Do not re-add either claim in any wording.
+
+      GO-2-1 (16f762e): six measured facts are stripped from the artifact contract — 'every one of the nine stamps exactly this today', 'this file names all nine', and the MEASURED grouping block. Your trimpath fix was correct; it falsified the neighbouring claim about all nine binaries, which is why you could not converge.
+
+      GO-4-1 (df06634): the contract's status header and §1 said BLOCKED and 'the stubs are NOT committed here'. Both were true when written and false once the base was ruled and your work committed. Rewritten to state the settled position. Your last review was also invalid — 13 of its 16 findings were about code you never wrote, from a stale merge-base — and your branch has been rebuilt on the correct base.
+
+      THE RULE, now at the repo root in CLAUDE.md: a contract states RULES, not measurements. No counts of the current tree, no 'all nine X already do Y', no 'this is the only caller'. Those go in a test, where they fail loudly, or in the commit message. Withdrawing an over-strong claim is a real fix — say so when you do it.
+
+      Address the findings from your last panel and nothing else. A wider diff has failed on every unit that tried it.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=2 (0C/2H))
+      OPERATOR (2026-08-31), one careful pass. Every tree measurement the panel named has been removed BY THE OPERATOR, on your branch. Read the commit; do not re-add what it took out.
+
+      GO-1-1 (2431d83): 'main is at 0.0% coverage and stays there' and 'reddens none of this package's 97 tests' are gone — a coverage figure and a count that your own mandated work changes. What replaced them is the property that does not move.
+      GO-2-1 (d7eeef7, 6a286ef): 'Six deliverables, three accidents', 'five exec sites', 'five-consumer migration', 'sixteen days', and DirtyBuild's CONSEQUENCE block naming four binaries — all gone. So is the duplicate-grouping table that sat directly under a sentence saying it was not stated (my error, and the panel caught it).
+      GO-4-1 (5c1b57b): sections 2, 3 and 11 are now MARKED as dated evidence rather than contract terms, because your task IS a re-measurement and deleting the work would be wrong. Section 11's claim that the change 'touches nothing else' was false of this branch and is gone.
+
+      RULING for GO-1-1, on the contradiction all three families found — implement it, do not re-argue it:
+
+        ArtifactStateUnset is 'ILLEGAL at every boundary', yet Artifacts says
+        subcommands leave RunState and V2Sidecar 'empty', and an empty FileArtifact
+        IS Unset. Meanwhile the no--out case uses ArtifactAbsent for files nobody
+        checked, while ArtifactAbsent asserts verified absence.
+
+      Three situations are being squeezed into two states. Add the missing one — a
+      state meaning 'this path does not produce this artifact' — and use it for
+      subcommands and for the no--out case. Keep Unset illegal at boundaries: that
+      discipline is the point of the type. If you would rather withdraw the
+      'illegal at every boundary' claim instead, that is acceptable, but say which
+      you chose and why.
+
+      Address your remaining panel findings and nothing else.
+
+      ## Unblock note (human)
+      (cleared from Blocked: cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=APPROVE | dissenting=2 (claude,codex) | blocking=1 (0C/1H))
+      OPERATOR: ONE finding left, and it is a code fix, not a contract one. Make it and stop.
+
+        cmd/gates/preserve.go:1005 and cmd/iterate/preserve.go:1561
+        if lerr := level.Validate(); lerr != nil { return nil, lerr }
+
+      returns without wrapping errCouldNotCheck, while the sentinel's own doc (line 186) claims it marks could-not-check errors including an invalid fidelity. Wrap it in both modules. Nothing else.
     type: Task
     estimate: 2h
     labels: [size:M, area:go-tools]
     agent: claude
     role: scaffold
-    status: Blocked
+    status: Done
 
-    started_at: '2026-08-30T08:54:26-07:00'
-    dispatcher_run_id: 2026-08-30T15-54-26Z-tasks
-    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-30T15-54-26Z-tasks/GO-4-1/summary.md
+    started_at: '2026-08-31T16:54:59-07:00'
+    dispatcher_run_id: 2026-08-31T23-54-59Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-08-31T23-54-59Z-tasks/GO-4-1/summary.md
     branch: feat/GO-4-1-scaffold-a-function-contracted-implemented
-    cost_usd: 22.8316571
-    completed_at: '2026-08-30T09:27:32-07:00'
+    cost_usd: 24.5496141
+    completed_at: '2026-08-31T17:01:13-07:00'
     iteration_count: 0
     linter_cycles: 0
     human_gate_fired: false
     deferred_findings_count: 0
-    input_tokens: 281
-    output_tokens: 10299
-    cache_read_input_tokens: 1395345
-    cache_creation_input_tokens: 38789
-    duration_ms: 147652
-    num_turns: 35
+    input_tokens: 129
+    output_tokens: 5061
+    cache_read_input_tokens: 513588
+    cache_creation_input_tokens: 19105
+    duration_ms: 61001
+    num_turns: 20
     model: claude-haiku-4-5-20251001
     dispatcher_version: 0.1.0
-    agent_version: 2.1.251 (Claude Code)
-    unblocked_at: '2026-08-30T14:39:51+00:00'
-    gate_base_sha: 7063f92fc9811d7dc7eab12ff14f05891dafa11a
-    effort: high
-    effort_escalated: true
-    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=REJECT, grok=REJECT | dissenting=3 (claude,codex,grok) | blocking=16 (0C/16H)'
+    agent_version: 2.1.252 (Claude Code)
+    unblocked_at: '2026-08-31T23:54:47+00:00'
+    panel_consensus: approve
+    panel_summary: consensus=approve | claude=APPROVE, codex=APPROVE, grok=APPROVE
+    panel_blocking_findings: 0
+    panel_verdict_claude: APPROVE
+    panel_verdict_codex: APPROVE
+    panel_verdict_grok: APPROVE
     mechanical_verification: passed
     role_diff_loop: not_enabled
     verified: true
     verification_iterations: 0
-    panel_consensus: block
-    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=REJECT, grok=REJECT | dissenting=3 (claude,codex,grok) | blocking=16 (0C/16H)
-    panel_blocking_findings: 16
-    panel_verdict_claude: CHANGES_REQUESTED
-    panel_verdict_codex: REJECT
-    panel_verdict_grok: REJECT
   - key: GO-4-2
     summary: seals — the write path is checked by the checker that exists for it
     description: |
