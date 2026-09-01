@@ -100,8 +100,11 @@ const (
 	// determined" is expressed: RunWiring returns an error rather than
 	// inventing an observation it never made.
 	ArtifactStateUnset ArtifactState = iota
-	// ArtifactAbsent: checked, and not present before or after. The run neither
-	// wrote nor removed it.
+	// ArtifactAbsent: checked, and not present in either snapshot. That is the
+	// whole claim. The oracle is two observations, not a log of operations, so
+	// a file this run created and then removed is also Absent — saying "the run
+	// neither wrote nor removed it" would assert a history the snapshots cannot
+	// witness. Same bound as ArtifactStale, for the same reason.
 	ArtifactAbsent
 	// ArtifactWritten: checked, and the after-bytes differ from the
 	// before-bytes (which includes not existing before).

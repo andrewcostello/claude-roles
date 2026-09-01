@@ -150,7 +150,10 @@ inherits them explicitly rather than by silence.
   delegation, `main` stays at 0.0%, and the delegation is checkable only by
   scanning source. Named so that nobody reads the post-GO-1-3 coverage table as
   "the spine is covered".
-- **H2 — exit 1 is undeclared and reachable from seven call sites.** `usage()`
+- **H2 — exit 1 is unadvertised by `usage()` and reachable from seven call
+  sites.** (Titled on H3's pattern: `DeclaredExitCodes` DOES list it, so
+  "undeclared" would assert the negation of the set wiring.go defines. The gap
+  is advertisement, not declaration.) `usage()`
   advertises "0 classified, 3 INVALID_INPUT, 4 CAPABILITY_INCOMPLETE". `run()`
   and `persist()` reach `log.Fatalf` — exit 1 — at `main.go:282, 293, 391, 415,
   427, 433, 435`. An operator scripting against the documented set receives a
