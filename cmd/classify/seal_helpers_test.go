@@ -334,12 +334,22 @@ var errNotB1 = errors.New("seal fixture: B2 owns the frame format")
 // writer.
 func stdoutOf(t *testing.T, fn func()) string {
 	t.Helper()
+	return captureStream(t, &os.Stdout, fn)
+}
+
+// captureStream swaps one of the process's stream variables (os.Stdout or
+// os.Stderr) for a pipe for the duration of fn and returns what was written
+// through it. It cannot see the standard logger, whose writer was bound to the
+// original os.Stderr at package init; processStreamsOf (wiring_seal_test.go)
+// observes that separately.
+func captureStream(t *testing.T, slot **os.File, fn func()) string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := os.Stdout
-	os.Stdout = w
+	old := *slot
+	*slot = w
 	done := make(chan string, 1)
 	go func() {
 		var b bytes.Buffer
@@ -348,7 +358,7 @@ func stdoutOf(t *testing.T, fn func()) string {
 	}()
 	func() {
 		defer func() {
-			os.Stdout = old
+			*slot = old
 			_ = w.Close()
 		}()
 		fn()
