@@ -26,9 +26,14 @@ tasks:
     model: gpt-5.6-sol
     effort: xhigh
     role: seals
-    status: To Do
+    status: In Progress
     blockedBy:
       - CX-SCAFFOLD
+    started_at: '2026-09-02T14:43:27-07:00'
+    dispatcher_run_id: 2026-09-02T21-43-26Z-codex-family
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T21-43-26Z-codex-family/CX-SOL-XHIGH-1/summary.md
+    branch: feat/CX-SOL-XHIGH-1-codex-sol-xhigh-1-2
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
   - key: CX-SOL-XHIGH-2
     summary: codex sol-xhigh 2/2 — gpt-5.6-sol@xhigh
     description: "CODEX FAMILY STUDY. Every codex model that answers a live probe,\nacross the effort tiers the CLI actually accepts, two runs each.\n\nWHY IT EXISTS. The dispatcher knew three effort levels; codex takes six\n(low|medium|high|xhigh|max|ultra) and rejects anything else, so it validates\nits own input. The narrow set protected nothing and silently downgraded every\ncodex row — including the operator's own xhigh configuration, validated down to\nhigh, losing two reasoning tiers. And the dispatcher had only ever been pointed\nat one of seven available models.\n\nSOL-XHIGH is the configuration actually in daily interactive use, and it has\nnever been measured here. SOL-HIGH is what the convergence arm ran, so the two\ntogether price the tiers the downgrade cost. LUNA and SPARK are the cheap end:\nif a fast, affordable model at high effort matches SOL at low, the routing rule\nis about buying reasoning where it is cheapest, not about picking a flagship.\n\nTwo replicates per cell, because the within-model noise floor applies here as\nmuch as anywhere — two arms of an earlier bakeoff, same model and same brief,\ndiffered 1.9x in seal count and inverted on the headline metric.\n\nScored by features/model-matrix/scorecard.py: mutation kill rate over nine\ndefects, gate state, token usage, wall-clock. No panel — first-pass output,\nthe same scope as the replicate and effort studies so all three compare.\n\n--- THE BRIEF ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -42,9 +47,26 @@ tasks:
     model: gpt-5.6-sol
     effort: xhigh
     role: seals
-    status: To Do
+    status: Blocked
     blockedBy:
       - CX-SCAFFOLD
+    started_at: '2026-09-02T14:43:27-07:00'
+    dispatcher_run_id: 2026-09-02T21-43-26Z-codex-family
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T21-43-26Z-codex-family/CX-SOL-XHIGH-2/summary.md
+    branch: feat/CX-SOL-XHIGH-2-codex-sol-xhigh-2-2
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    completed_at: '2026-09-02T14:44:50-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    input_tokens: 52266
+    output_tokens: 1887
+    cache_read_input_tokens: 43776
+    cache_creation_input_tokens: 0
+    num_turns: 1
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: CX-SOL-HIGH-1
     summary: codex sol-high 1/2 — gpt-5.6-sol@high
     description: "CODEX FAMILY STUDY. Every codex model that answers a live probe,\nacross the effort tiers the CLI actually accepts, two runs each.\n\nWHY IT EXISTS. The dispatcher knew three effort levels; codex takes six\n(low|medium|high|xhigh|max|ultra) and rejects anything else, so it validates\nits own input. The narrow set protected nothing and silently downgraded every\ncodex row — including the operator's own xhigh configuration, validated down to\nhigh, losing two reasoning tiers. And the dispatcher had only ever been pointed\nat one of seven available models.\n\nSOL-XHIGH is the configuration actually in daily interactive use, and it has\nnever been measured here. SOL-HIGH is what the convergence arm ran, so the two\ntogether price the tiers the downgrade cost. LUNA and SPARK are the cheap end:\nif a fast, affordable model at high effort matches SOL at low, the routing rule\nis about buying reasoning where it is cheapest, not about picking a flagship.\n\nTwo replicates per cell, because the within-model noise floor applies here as\nmuch as anywhere — two arms of an earlier bakeoff, same model and same brief,\ndiffered 1.9x in seal count and inverted on the headline metric.\n\nScored by features/model-matrix/scorecard.py: mutation kill rate over nine\ndefects, gate state, token usage, wall-clock. No panel — first-pass output,\nthe same scope as the replicate and effort studies so all three compare.\n\n--- THE BRIEF ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -58,9 +80,35 @@ tasks:
     model: gpt-5.6-sol
     effort: high
     role: seals
-    status: To Do
+    status: Blocked
     blockedBy:
       - CX-SCAFFOLD
+    started_at: '2026-09-02T14:43:27-07:00'
+    dispatcher_run_id: 2026-09-02T21-43-26Z-codex-family
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T21-43-26Z-codex-family/CX-SOL-HIGH-1/summary.md
+    branch: feat/CX-SOL-HIGH-1-codex-sol-high-1-2
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    completed_at: '2026-09-02T15:08:37-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=4 (0C/4H)'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=4 (0C/4H)
+    panel_blocking_findings: 4
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 3660049
+    output_tokens: 19715
+    cache_read_input_tokens: 3569664
+    cache_creation_input_tokens: 0
+    num_turns: 1
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: CX-SOL-HIGH-2
     summary: codex sol-high 2/2 — gpt-5.6-sol@high
     description: "CODEX FAMILY STUDY. Every codex model that answers a live probe,\nacross the effort tiers the CLI actually accepts, two runs each.\n\nWHY IT EXISTS. The dispatcher knew three effort levels; codex takes six\n(low|medium|high|xhigh|max|ultra) and rejects anything else, so it validates\nits own input. The narrow set protected nothing and silently downgraded every\ncodex row — including the operator's own xhigh configuration, validated down to\nhigh, losing two reasoning tiers. And the dispatcher had only ever been pointed\nat one of seven available models.\n\nSOL-XHIGH is the configuration actually in daily interactive use, and it has\nnever been measured here. SOL-HIGH is what the convergence arm ran, so the two\ntogether price the tiers the downgrade cost. LUNA and SPARK are the cheap end:\nif a fast, affordable model at high effort matches SOL at low, the routing rule\nis about buying reasoning where it is cheapest, not about picking a flagship.\n\nTwo replicates per cell, because the within-model noise floor applies here as\nmuch as anywhere — two arms of an earlier bakeoff, same model and same brief,\ndiffered 1.9x in seal count and inverted on the headline metric.\n\nScored by features/model-matrix/scorecard.py: mutation kill rate over nine\ndefects, gate state, token usage, wall-clock. No panel — first-pass output,\nthe same scope as the replicate and effort studies so all three compare.\n\n--- THE BRIEF ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -74,9 +122,35 @@ tasks:
     model: gpt-5.6-sol
     effort: high
     role: seals
-    status: To Do
+    status: Blocked
     blockedBy:
       - CX-SCAFFOLD
+    started_at: '2026-09-02T14:44:50-07:00'
+    dispatcher_run_id: 2026-09-02T21-43-26Z-codex-family
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T21-43-26Z-codex-family/CX-SOL-HIGH-2/summary.md
+    branch: feat/CX-SOL-HIGH-2-codex-sol-high-2-2
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    completed_at: '2026-09-02T15:11:00-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=5 (0C/5H)'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=5 (0C/5H)
+    panel_blocking_findings: 5
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 5063179
+    output_tokens: 25344
+    cache_read_input_tokens: 4925056
+    cache_creation_input_tokens: 0
+    num_turns: 1
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: CX-SOL-LOW-1
     summary: codex sol-low 1/2 — gpt-5.6-sol@low
     description: "CODEX FAMILY STUDY. Every codex model that answers a live probe,\nacross the effort tiers the CLI actually accepts, two runs each.\n\nWHY IT EXISTS. The dispatcher knew three effort levels; codex takes six\n(low|medium|high|xhigh|max|ultra) and rejects anything else, so it validates\nits own input. The narrow set protected nothing and silently downgraded every\ncodex row — including the operator's own xhigh configuration, validated down to\nhigh, losing two reasoning tiers. And the dispatcher had only ever been pointed\nat one of seven available models.\n\nSOL-XHIGH is the configuration actually in daily interactive use, and it has\nnever been measured here. SOL-HIGH is what the convergence arm ran, so the two\ntogether price the tiers the downgrade cost. LUNA and SPARK are the cheap end:\nif a fast, affordable model at high effort matches SOL at low, the routing rule\nis about buying reasoning where it is cheapest, not about picking a flagship.\n\nTwo replicates per cell, because the within-model noise floor applies here as\nmuch as anywhere — two arms of an earlier bakeoff, same model and same brief,\ndiffered 1.9x in seal count and inverted on the headline metric.\n\nScored by features/model-matrix/scorecard.py: mutation kill rate over nine\ndefects, gate state, token usage, wall-clock. No panel — first-pass output,\nthe same scope as the replicate and effort studies so all three compare.\n\n--- THE BRIEF ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -90,9 +164,14 @@ tasks:
     model: gpt-5.6-sol
     effort: low
     role: seals
-    status: To Do
+    status: In Progress
     blockedBy:
       - CX-SCAFFOLD
+    started_at: '2026-09-02T15:08:37-07:00'
+    dispatcher_run_id: 2026-09-02T21-43-26Z-codex-family
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T21-43-26Z-codex-family/CX-SOL-LOW-1/summary.md
+    branch: feat/CX-SOL-LOW-1-codex-sol-low-1-2
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
   - key: CX-SOL-LOW-2
     summary: codex sol-low 2/2 — gpt-5.6-sol@low
     description: "CODEX FAMILY STUDY. Every codex model that answers a live probe,\nacross the effort tiers the CLI actually accepts, two runs each.\n\nWHY IT EXISTS. The dispatcher knew three effort levels; codex takes six\n(low|medium|high|xhigh|max|ultra) and rejects anything else, so it validates\nits own input. The narrow set protected nothing and silently downgraded every\ncodex row — including the operator's own xhigh configuration, validated down to\nhigh, losing two reasoning tiers. And the dispatcher had only ever been pointed\nat one of seven available models.\n\nSOL-XHIGH is the configuration actually in daily interactive use, and it has\nnever been measured here. SOL-HIGH is what the convergence arm ran, so the two\ntogether price the tiers the downgrade cost. LUNA and SPARK are the cheap end:\nif a fast, affordable model at high effort matches SOL at low, the routing rule\nis about buying reasoning where it is cheapest, not about picking a flagship.\n\nTwo replicates per cell, because the within-model noise floor applies here as\nmuch as anywhere — two arms of an earlier bakeoff, same model and same brief,\ndiffered 1.9x in seal count and inverted on the headline metric.\n\nScored by features/model-matrix/scorecard.py: mutation kill rate over nine\ndefects, gate state, token usage, wall-clock. No panel — first-pass output,\nthe same scope as the replicate and effort studies so all three compare.\n\n--- THE BRIEF ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -106,9 +185,14 @@ tasks:
     model: gpt-5.6-sol
     effort: low
     role: seals
-    status: To Do
+    status: In Progress
     blockedBy:
       - CX-SCAFFOLD
+    started_at: '2026-09-02T15:11:00-07:00'
+    dispatcher_run_id: 2026-09-02T21-43-26Z-codex-family
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T21-43-26Z-codex-family/CX-SOL-LOW-2/summary.md
+    branch: feat/CX-SOL-LOW-2-codex-sol-low-2-2
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
   - key: CX-TERRA-XHIGH-1
     summary: codex terra-xhigh 1/2 — gpt-5.6-terra@xhigh
     description: "CODEX FAMILY STUDY. Every codex model that answers a live probe,\nacross the effort tiers the CLI actually accepts, two runs each.\n\nWHY IT EXISTS. The dispatcher knew three effort levels; codex takes six\n(low|medium|high|xhigh|max|ultra) and rejects anything else, so it validates\nits own input. The narrow set protected nothing and silently downgraded every\ncodex row — including the operator's own xhigh configuration, validated down to\nhigh, losing two reasoning tiers. And the dispatcher had only ever been pointed\nat one of seven available models.\n\nSOL-XHIGH is the configuration actually in daily interactive use, and it has\nnever been measured here. SOL-HIGH is what the convergence arm ran, so the two\ntogether price the tiers the downgrade cost. LUNA and SPARK are the cheap end:\nif a fast, affordable model at high effort matches SOL at low, the routing rule\nis about buying reasoning where it is cheapest, not about picking a flagship.\n\nTwo replicates per cell, because the within-model noise floor applies here as\nmuch as anywhere — two arms of an earlier bakeoff, same model and same brief,\ndiffered 1.9x in seal count and inverted on the headline metric.\n\nScored by features/model-matrix/scorecard.py: mutation kill rate over nine\ndefects, gate state, token usage, wall-clock. No panel — first-pass output,\nthe same scope as the replicate and effort studies so all three compare.\n\n--- THE BRIEF ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."

@@ -160,7 +160,7 @@ tasks:
     agent: claude
     model: claude-haiku-4-5-20251001
     role: seals
-    status: In Progress
+    status: Blocked
     blockedBy:
       - CV-SCAFFOLD
     started_at: '2026-09-02T09:52:47-07:00'
@@ -171,6 +171,31 @@ tasks:
     cost_usd: 13.494161950000002
     effort: high
     effort_escalated: true
+    completed_at: '2026-09-02T14:28:44-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H) (after 20 iterate attempt(s))'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 1
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=8 (0C/8H)
+    panel_blocking_findings: 8
+    panel_iterations_used: 20
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 289
+    output_tokens: 15422
+    cache_read_input_tokens: 1845851
+    cache_creation_input_tokens: 54263
+    duration_ms: 219106
+    num_turns: 36
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: CV-CODEX
     summary: convergence — codex/gpt-5.6-sol
     description: "CONVERGENCE MATRIX. Same seven implementers, same contract, one variable\nchanged: the author gets up to 20 attempts to fix its OWN panel findings before\nanything else happens.\n\nWHY, and it is a correction to the previous run's premise. Panel-blocking is not\nthe exception, it is the normal first-pass state for work this size: 7 of 7 arms\nblocked in the matrix, 4 of 4 in the bakeoff, and GO-2-1's contract needed 7\ndispatched rounds plus ~25 by hand. Scoring on first-pass approval therefore\nmeasures almost nothing — and worse, it discards the possibility that a CHEAP,\nFAST agent needing twelve rounds beats an expensive one needing two, on both\nwall-clock and dollars. The old scoring would have called the cheap one junk.\n\nSo the metric is COST AND WALL-CLOCK TO CONVERGENCE, with rounds recorded but\nnot itself the score. An arm that never converges in 20 is a result too.\n\n`--cross-family-panel-iterate 20` and `--stay-in-family`: the author fixes its\nown findings, and no other family finishes its work.\n\nMODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff`
@@ -235,7 +260,7 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T16-21-45Z-convergence/CV-GROK/summary.md
     branch: feat/CV-GROK-convergence-grok-grok-4-6
     gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
-    cost_usd: 4.182705759999999
+    cost_usd: 4.92254644
   - key: CV-DEEPSEEK
     summary: convergence — deepseek/deepseek-v4-pro
     description: "CONVERGENCE MATRIX. Same seven implementers, same contract, one variable\nchanged: the author gets up to 20 attempts to fix its OWN panel findings before\nanything else happens.\n\nWHY, and it is a correction to the previous run's premise. Panel-blocking is not\nthe exception, it is the normal first-pass state for work this size: 7 of 7 arms\nblocked in the matrix, 4 of 4 in the bakeoff, and GO-2-1's contract needed 7\ndispatched rounds plus ~25 by hand. Scoring on first-pass approval therefore\nmeasures almost nothing — and worse, it discards the possibility that a CHEAP,\nFAST agent needing twelve rounds beats an expensive one needing two, on both\nwall-clock and dollars. The old scoring would have called the cheap one junk.\n\nSo the metric is COST AND WALL-CLOCK TO CONVERGENCE, with rounds recorded but\nnot itself the score. An arm that never converges in 20 is a result too.\n\n`--cross-family-panel-iterate 20` and `--stay-in-family`: the author fixes its\nown findings, and no other family finishes its work.\n\nMODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff`
@@ -257,4 +282,4 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T16-21-45Z-convergence/CV-DEEPSEEK/summary.md
     branch: feat/CV-DEEPSEEK-convergence-deepseek-deepseek-v4-pro
     gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
-    cost_usd: 15.236935499999998
+    cost_usd: 23.049681499999995

@@ -378,12 +378,13 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:L, area:go-tools]
-    agent: claude
+    agent: codex
     role: seals
     status: To Do
     blockedBy: [GO-1-1]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-1-3
     summary: bodies — make the wiring executable by a test without rebuilding the fixture
     description: |
@@ -401,12 +402,13 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:L, area:go-tools]
-    agent: claude
+    agent: codex
     role: bodies
     status: To Do
     blockedBy: [GO-1-2]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-1-4
     summary: adjudicate — rule the vacuous digest seal and GO-1-3's disputes
     description: |
@@ -427,7 +429,7 @@ tasks:
       - cmd/classify/capability_seal_test.go
     status: To Do
     blockedBy: [GO-1-3]
-    model: claude-opus-5
+    model: claude-fable-5-1
 
   # ---- GO-2  nine tracked binaries, warned about nowhere ------------------
   - key: GO-2-1
@@ -670,12 +672,13 @@ tasks:
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
-    agent: claude
+    agent: codex
     role: seals
     status: To Do
     blockedBy: [GO-2-1]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-2-3
     summary: bodies — close the drift the way GO-2-1 ruled
     description: |
@@ -690,12 +693,13 @@ tasks:
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
-    agent: claude
+    agent: codex
     role: bodies
     status: To Do
     blockedBy: [GO-2-2]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-2-4
     summary: adjudicate — rule which of the nine are deliverables and which are accidents
     description: |
@@ -713,7 +717,7 @@ tasks:
       - .gitignore
     status: To Do
     blockedBy: [GO-2-3]
-    model: claude-opus-5
+    model: claude-fable-5-1
 
   # ---- GO-3  the schema does not describe the tool that writes it ---------
   - key: GO-3-1
@@ -858,12 +862,13 @@ tasks:
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
-    agent: claude
+    agent: codex
     role: seals
     status: To Do
     blockedBy: [GO-3-1]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-3-3
     summary: bodies — make the schema and the writer agree, once
     description: |
@@ -880,12 +885,13 @@ tasks:
     type: Task
     estimate: 1h
     labels: [size:S, area:go-tools]
-    agent: claude
+    agent: codex
     role: bodies
     status: To Do
     blockedBy: [GO-3-2]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-3-4
     summary: adjudicate — rule where the gate-key contract lives
     description: |
@@ -902,7 +908,7 @@ tasks:
       - config/run-state.schema.json
     status: To Do
     blockedBy: [GO-3-3]
-    model: claude-opus-5
+    model: claude-fable-5-1
 
   # ---- GO-4  VerifyPreservation is dark in both modules -------------------
   - key: GO-4-1
@@ -1119,12 +1125,13 @@ tasks:
     type: Task
     estimate: 2h
     labels: [size:M, area:go-tools]
-    agent: claude
+    agent: codex
     role: seals
     status: To Do
     blockedBy: [GO-4-1]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-4-3
     summary: bodies — give the checker a production caller, or declare why it has none
     description: |
@@ -1147,12 +1154,13 @@ tasks:
     type: Task
     estimate: 3h
     labels: [size:L, area:go-tools]
-    agent: claude
+    agent: codex
     role: bodies
     status: To Do
     blockedBy: [GO-4-2]
-    model: claude-opus-5
+    model: gpt-5.6-sol
 
+    effort: xhigh
   - key: GO-4-4
     summary: adjudicate — rule the three abstentions and GO-4-3's disputes
     description: |
@@ -1177,4 +1185,4 @@ tasks:
       - cmd/gates/preserve_seal_test.go
     status: To Do
     blockedBy: [GO-4-3]
-    model: claude-opus-5
+    model: claude-fable-5-1
