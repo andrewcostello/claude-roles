@@ -33,16 +33,47 @@ import time
 from pathlib import Path
 
 
-def _failing(mod: Path) -> set[str]:
-    p = subprocess.run(["go", "test", "./..."], cwd=mod,
+def _results(mod: Path) -> tuple[set[str], set[str]]:
+    """(failing, passing) test names, from `go test -json`.
+
+    STRUCTURED, not scraped. The regex this replaces matched `--- FAIL: ` at a
+    line start, which loses subtests, misses panics that never print the
+    marker, and is the same brittleness that twice today produced a false
+    negative from an exact string match (`"OK."` vs `"OK"`). go test emits one
+    JSON object per event; Action is authoritative.
+    """
+    p = subprocess.run(["go", "test", "-json", "./..."], cwd=mod,
                        capture_output=True, text=True, timeout=900)
-    return set(re.findall(r"^\s*--- FAIL: (\S+)", p.stdout, re.M))
+    failing: set[str] = set()
+    passing: set[str] = set()
+    for line in p.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        name, action = ev.get("Test"), ev.get("Action")
+        if not name:
+            continue
+        if action == "fail":
+            failing.add(name)
+        elif action == "pass":
+            passing.add(name)
+    # A build failure produces no test events at all; surface it as a distinct
+    # marker rather than as "nothing failed", which would read as a green gate.
+    if not failing and not passing and p.returncode != 0:
+        failing.add("<BUILD OR SETUP FAILED>")
+    return failing, passing
+
+
+def _failing(mod: Path) -> set[str]:
+    return _results(mod)[0]
 
 
 def _passing(mod: Path) -> set[str]:
-    p = subprocess.run(["go", "test", "-v", "./..."], cwd=mod,
-                       capture_output=True, text=True, timeout=900)
-    return set(re.findall(r"^\s*--- PASS: (\S+)", p.stdout, re.M))
+    return _results(mod)[1]
 
 
 def score_arm(worktree: Path, module: str, muts: dict) -> dict:

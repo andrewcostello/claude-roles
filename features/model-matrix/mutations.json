@@ -64,7 +64,36 @@
       "before": "\t\tremoved, err := RemoveV2Sidecar(opts.out)",
       "after": "\t\tremoved, err := false, error(nil); _ = removed; if false { removed, err = RemoveV2Sidecar(opts.out) }; if err == nil {} else",
       "defect": "a stale v2 sidecar survives a v1 run"
+    },
+    {
+      "id": "digests-swapped",
+      "file": "contract.go",
+      "before": "\tconfigSHA, diffSHA, err := src.ConsumedDigests()",
+      "after": "\tdiffSHA, configSHA, err := src.ConsumedDigests()",
+      "defect": "config and diff digests transposed in the wrapper \u2014 caught only by a seal that compares each digest to the bytes it should hash"
+    },
+    {
+      "id": "empty-digest-allowed",
+      "file": "contract.go",
+      "before": "\tif configSHA == \"\" || diffSHA == \"\" {",
+      "after": "\tif false {",
+      "defect": "the wrapper emits blank digests instead of raising \u2014 the exact 'unimplementable echo' the contract rejects"
+    },
+    {
+      "id": "digest-source-optional",
+      "file": "contract.go",
+      "before": "\tsrc := digestSource\n\tif src == nil {",
+      "after": "\tsrc := digestSource\n\tif false && src == nil {",
+      "defect": "v2 emission proceeds with no DigestSource installed"
+    },
+    {
+      "id": "wrapper-indent-dropped",
+      "file": "contract.go",
+      "before": "\tenc.SetIndent(\"\", \"  \")",
+      "after": "\t_ = enc",
+      "defect": "wire format changes \u2014 caught only by a seal asserting on exact bytes rather than on a parsed object"
     }
   ],
-  "_discrimination_note": "Measured 2026-09-02 across four arms: config-failure-exits-ok, contract-three-accepted, emit-v1-answers-v2 and sidecar-never-written were killed by EVERY arm and carry no signal; bad-contract-exits-ok was killed by NONE, which is a hole in the brief rather than in the arms. Only emit-v2-answers-v1 and invalid-input-exits-ok discriminated. The additions below target the seam the brief actually names \u2014 the mapping from (contract x -out x -json) to artifact set and exit code \u2014 at finer grain."
+  "_discrimination_note": "Measured 2026-09-02 across four arms: config-failure-exits-ok, contract-three-accepted, emit-v1-answers-v2 and sidecar-never-written were killed by EVERY arm and carry no signal; bad-contract-exits-ok was killed by NONE, which is a hole in the brief rather than in the arms. Only emit-v2-answers-v1 and invalid-input-exits-ok discriminated. The additions below target the seam the brief actually names \u2014 the mapping from (contract x -out x -json) to artifact set and exit code \u2014 at finer grain.",
+  "_ceiling_note": "Measured 2026-09-02: Opus and Sonnet both scored 7/9, with SEVEN of the nine killed by both, so the instrument had two discriminating rungs and could not have shown one model better than another whatever the truth. The additions below target assertions only a seal that checks VALUES catches \u2014 a seal that merely asserts a field is present, or that a call was made, survives all of them. That is the distinction between a real seal and a vacuous one, and it is what should separate a careful arm from a hasty one."
 }
