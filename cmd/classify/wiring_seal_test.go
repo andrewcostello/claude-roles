@@ -754,6 +754,7 @@ var (
 	}
 	v2PanelRequiredKeys = []string{"intensity", "reasons"}
 	runStateLiveKeys    = []string{"schema_version", "repo", "classification", "status"}
+	runStateRepoKeys    = []string{"worktree", "base_ref"}
 	sidecarRequiredKeys = []string{"schema_version", "response"}
 	volatileWireKeys    = map[string]bool{
 		"classified_at": true,
@@ -946,6 +947,16 @@ func decodeRunStateBytes(data []byte, requireClassification bool) (RunState, sta
 		return rs, stableVerdict{}, problems
 	}
 	problems = append(problems, rawKeyProblems("run-state", data, runStateLiveKeys)...)
+	problems = append(problems, nestedRawKeyProblems("run-state", "repo", data, runStateRepoKeys)...)
+	if rs.Status == "" {
+		problems = append(problems, "run-state status is empty — a present key with an empty value is not this run's status")
+	}
+	if rs.Repo.Worktree == "" {
+		problems = append(problems, "run-state repo.worktree is empty — {} for repo is not the resolved repository")
+	}
+	if rs.Repo.BaseRef == "" {
+		problems = append(problems, "run-state repo.base_ref is empty")
+	}
 	if rs.Classification == nil {
 		problems = append(problems, "run-state has no classification — arbitrary status bytes are not this run's artifact")
 		return rs, stableVerdict{}, problems
@@ -1038,8 +1049,11 @@ func wiringWireProblems(row wiringRow, bed classifyBed, got Artifacts) []string 
 		if len(got.RunState.Bytes) == 0 {
 			problems = append(problems, "run-state Bytes are empty")
 		} else {
-			_, _, p := decodeRunStateBytes(got.RunState.Bytes, requireRunClass)
+			rs, _, p := decodeRunStateBytes(got.RunState.Bytes, requireRunClass)
 			problems = append(problems, p...)
+			if requireRunClass && rs.Repo.Worktree != "" && !sameResolvedPath(rs.Repo.Worktree, bed.dir) {
+				problems = append(problems, fmt.Sprintf("run-state repo.worktree %q is not the subject bed %q", rs.Repo.Worktree, bed.dir))
+			}
 		}
 	}
 
@@ -1050,6 +1064,14 @@ func wiringWireProblems(row wiringRow, bed classifyBed, got Artifacts) []string 
 		} else {
 			sc, _, p := decodeSidecarBytes(got.V2Sidecar.Bytes, requireSidecarWrapper)
 			problems = append(problems, p...)
+			if requireSidecarWrapper {
+				if want := sha256Bytes(mustRead(bed.cfgPath)); sc.Response.ComputedConfigSHA256 != want {
+					problems = append(problems, fmt.Sprintf("sidecar computed_config_sha256 = %q, want SHA-256 of the subject config %q — the persisted sidecar is the v2 response for the consumed inputs, including when stdout is the human report", sc.Response.ComputedConfigSHA256, want))
+				}
+				if want := sha256Bytes(mustRead(bed.diffPath)); sc.Response.ComputedDiffSHA256 != want {
+					problems = append(problems, fmt.Sprintf("sidecar computed_diff_sha256 = %q, want SHA-256 of the subject diff %q", sc.Response.ComputedDiffSHA256, want))
+				}
+			}
 			if requireSidecarWrapper && row.wantStdout == shapeV2Wrapper && json.Valid(bytes.TrimSpace(got.Stdout)) {
 				var w ResponseWrapper
 				if json.Unmarshal(got.Stdout, &w) == nil {
@@ -1124,16 +1146,25 @@ func wiringOracleProblems(row wiringRow, got, live Artifacts) []string {
 		}
 	}
 	if row.wantRunState == ArtifactWritten && row.wantExit == exitOK {
-		_, gv, gp := decodeRunStateBytes(got.RunState.Bytes, true)
-		_, lv, lp := decodeRunStateBytes(live.RunState.Bytes, true)
+		gotRS, gv, gp := decodeRunStateBytes(got.RunState.Bytes, true)
+		liveRS, lv, lp := decodeRunStateBytes(live.RunState.Bytes, true)
 		if missing := liveKeysMissingFrom(got.RunState.Bytes, live.RunState.Bytes); len(missing) > 0 {
 			problems = append(problems, fmt.Sprintf("run-state dropped live key(s) %v", missing))
 		}
 		if missing := liveNestedKeysMissingFrom(got.RunState.Bytes, live.RunState.Bytes, "classification"); len(missing) > 0 {
 			problems = append(problems, fmt.Sprintf("run-state classification dropped live key(s) %v", missing))
 		}
+		if missing := liveNestedKeysMissingFrom(got.RunState.Bytes, live.RunState.Bytes, "repo"); len(missing) > 0 {
+			problems = append(problems, fmt.Sprintf("run-state repo dropped live key(s) %v", missing))
+		}
 		if len(gp) == 0 && len(lp) == 0 && !sameVerdict(gv, lv) {
 			problems = append(problems, fmt.Sprintf("run-state stable verdict %+v does not match live run() %+v", gv, lv))
+		}
+		if gotRS.Status != liveRS.Status {
+			problems = append(problems, fmt.Sprintf("run-state status %q does not match live run() %q — a present key with an arbitrary value is not this run's status", gotRS.Status, liveRS.Status))
+		}
+		if gotRS.Repo.BaseRef != liveRS.Repo.BaseRef {
+			problems = append(problems, fmt.Sprintf("run-state repo.base_ref %q does not match live run() %q", gotRS.Repo.BaseRef, liveRS.Repo.BaseRef))
 		}
 	}
 	if row.wantSidecar == ArtifactWritten && row.wantExit == exitOK {
@@ -1264,7 +1295,9 @@ func TestSeal_Wiring_TheContractSelectsTheWire(t *testing.T) {
 		t.Errorf("the config and the diff digest are the same string %q", wrapper.ComputedConfigSHA256)
 	}
 
-	if !bytes.Equal(v1Report.Stdout, v2Report.Stdout) {
+	v1Human, v1HumanProblems := parseHumanReport(v1Report.Stdout)
+	v2Human, v2HumanProblems := parseHumanReport(v2Report.Stdout)
+	if len(v1HumanProblems) == 0 && len(v2HumanProblems) == 0 && !sameHumanReport(v1Human, v2Human) {
 		t.Errorf("the human report differs between contracts, but emit returns before the contract switch when asJSON is false.\ncontract 1:\n%s\ncontract 2:\n%s", v1Report.Stdout, v2Report.Stdout)
 	}
 	if bytes.Equal(v1JSON.Stdout, v2JSON.Stdout) {
@@ -3611,12 +3644,12 @@ func peelPayloadWrapper(e ast.Expr) ast.Expr {
 	return peelConv(call.Args[0])
 }
 
-func payloadExprForwardsField(e ast.Expr, obj, field string, origins map[string]identOrigin) bool {
+func payloadExprForwardsField(e ast.Expr, obj, field string, origins map[string]identOrigin, st *pathState) bool {
 	if e == nil {
 		return false
 	}
 	if exprIsField(e, obj, field) {
-		return true
+		return st == nil || !st.fieldInvalid(field)
 	}
 	if id, ok := peelConv(e).(*ast.Ident); ok {
 		o := origins[id.Name]
@@ -3628,27 +3661,27 @@ func payloadExprForwardsField(e ast.Expr, obj, field string, origins map[string]
 		}
 	}
 	wrapped := peelPayloadWrapper(e)
-	if wrapped != e && payloadExprForwardsField(wrapped, obj, field, origins) {
+	if wrapped != e && payloadExprForwardsField(wrapped, obj, field, origins, st) {
 		return true
 	}
 	return false
 }
 
-func callPayloadUsesField(call *ast.CallExpr, obj, field string, origins map[string]identOrigin) bool {
+func callPayloadUsesField(call *ast.CallExpr, obj, field string, origins map[string]identOrigin, st *pathState) bool {
 	for _, a := range call.Args {
-		if payloadExprForwardsField(a, obj, field, origins) {
+		if payloadExprForwardsField(a, obj, field, origins, st) {
 			return true
 		}
 	}
 	return false
 }
 
-func callPayloadIsErrorValue(call *ast.CallExpr, errIdent string, origins map[string]identOrigin) bool {
+func callPayloadIsErrorValue(call *ast.CallExpr, errIdent string, origins map[string]identOrigin, errInvalid bool) bool {
 	if errIdent == "" {
 		return false
 	}
 	for _, a := range call.Args {
-		if exprIsErrorValue(a, errIdent, origins) {
+		if exprIsErrorValue(a, errIdent, origins, errInvalid) {
 			return true
 		}
 	}
@@ -3659,14 +3692,14 @@ func callPayloadIsErrorValue(call *ast.CallExpr, errIdent string, origins map[st
 // alias of it), optionally via .Error(). A comparison, a slice of a formatted
 // string, or an identifier nested inside some other expression is not
 // reporting the error.
-func exprIsErrorValue(e ast.Expr, errIdent string, origins map[string]identOrigin) bool {
+func exprIsErrorValue(e ast.Expr, errIdent string, origins map[string]identOrigin, errInvalid bool) bool {
 	if e == nil || errIdent == "" {
 		return false
 	}
 	e = peelConv(e)
 	if id, ok := e.(*ast.Ident); ok {
 		if id.Name == errIdent {
-			return true
+			return !errInvalid
 		}
 		return origins[id.Name].fromError
 	}
@@ -3678,7 +3711,7 @@ func exprIsErrorValue(e ast.Expr, errIdent string, origins map[string]identOrigi
 	if !ok || sel.Sel.Name != "Error" {
 		return false
 	}
-	return exprIsErrorValue(sel.X, errIdent, origins)
+	return exprIsErrorValue(sel.X, errIdent, origins, errInvalid)
 }
 
 func runWiringResultBinding(fn *ast.FuncDecl) (artIdent, errIdent string, ok bool) {
@@ -3709,23 +3742,38 @@ func runWiringResultBinding(fn *ast.FuncDecl) (artIdent, errIdent string, ok boo
 // both origins. `code := int(art.ExitCode); code = 0` therefore does not
 // still count as fromExitCode. Arithmetic and slicing are not aliases:
 // `int(art.ExitCode) * 0` and `exitInternal * 0` clear both origins.
-func originFromRHS(rhs ast.Expr, artIdent, errIdent string, origins map[string]identOrigin) identOrigin {
+func originFromRHS(rhs ast.Expr, artIdent, errIdent string, origins map[string]identOrigin, st *pathState) identOrigin {
 	if rhs == nil {
 		return identOrigin{}
 	}
+	fieldInvalid := func(field string) bool {
+		return st != nil && st.fieldsInvalid[field]
+	}
 	if exprIsField(rhs, artIdent, "ExitCode") {
+		if fieldInvalid("ExitCode") {
+			return identOrigin{}
+		}
 		return identOrigin{fromExitCode: true}
 	}
 	if exprIsField(rhs, artIdent, "Stdout") {
+		if fieldInvalid("Stdout") {
+			return identOrigin{}
+		}
 		return identOrigin{fromStdout: true}
 	}
 	if exprIsField(rhs, artIdent, "Stderr") {
+		if fieldInvalid("Stderr") {
+			return identOrigin{}
+		}
 		return identOrigin{fromStderr: true}
 	}
 	if exprIsIdentExact(rhs, "exitInternal") {
 		return identOrigin{fromInternal: true}
 	}
 	if errIdent != "" && exprIsIdentExact(rhs, errIdent) {
+		if st != nil && st.errInvalid {
+			return identOrigin{}
+		}
 		return identOrigin{fromError: true}
 	}
 	if id, ok := peelConv(rhs).(*ast.Ident); ok {
@@ -3733,27 +3781,33 @@ func originFromRHS(rhs ast.Expr, artIdent, errIdent string, origins map[string]i
 	}
 	wrapped := peelPayloadWrapper(rhs)
 	if wrapped != rhs {
-		return originFromRHS(wrapped, artIdent, errIdent, origins)
+		return originFromRHS(wrapped, artIdent, errIdent, origins, st)
 	}
 	return identOrigin{}
 }
 
-func assignLastWrite(origins map[string]identOrigin, lhs []ast.Expr, rhs []ast.Expr, artIdent, errIdent string) {
+func rhsAt(lhs, rhs []ast.Expr, i int) ast.Expr {
+	switch {
+	case len(rhs) == len(lhs) && i < len(rhs):
+		return rhs[i]
+	case len(rhs) == 1:
+		return rhs[0]
+	default:
+		return nil
+	}
+}
+
+func assignLastWrite(origins map[string]identOrigin, lhs []ast.Expr, rhs []ast.Expr, artIdent, errIdent string, st *pathState) {
 	for i, dest := range lhs {
 		id, ok := dest.(*ast.Ident)
 		if !ok || id.Name == "" || id.Name == "_" {
 			continue
 		}
-		var src ast.Expr
-		switch {
-		case len(rhs) == len(lhs):
-			src = rhs[i]
-		case len(rhs) == 1:
-			src = rhs[0]
-		default:
+		src := rhsAt(lhs, rhs, i)
+		if src == nil && len(rhs) != 0 && len(rhs) != len(lhs) {
 			continue
 		}
-		origins[id.Name] = originFromRHS(src, artIdent, errIdent, origins)
+		origins[id.Name] = originFromRHS(src, artIdent, errIdent, origins, st)
 	}
 }
 
@@ -3765,21 +3819,24 @@ func collectIdentOrigins(fn *ast.FuncDecl, artIdent string) map[string]identOrig
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch s := n.(type) {
 		case *ast.AssignStmt:
-			assignLastWrite(origins, s.Lhs, s.Rhs, artIdent, "")
+			assignLastWrite(origins, s.Lhs, s.Rhs, artIdent, "", nil)
 		case *ast.ValueSpec:
 			lhs := make([]ast.Expr, len(s.Names))
 			for i, name := range s.Names {
 				lhs[i] = name
 			}
-			assignLastWrite(origins, lhs, s.Values, artIdent, "")
+			assignLastWrite(origins, lhs, s.Values, artIdent, "", nil)
 		}
 		return true
 	})
 	return origins
 }
 
-func exitArgOrigins(arg ast.Expr, artIdent string, origins map[string]identOrigin) (fromCode, fromInternal bool) {
+func exitArgOrigins(arg ast.Expr, artIdent string, origins map[string]identOrigin, st *pathState) (fromCode, fromInternal bool) {
 	if exprIsField(arg, artIdent, "ExitCode") {
+		if st != nil && st.fieldInvalid("ExitCode") {
+			return false, false
+		}
 		return true, false
 	}
 	if exprIsIdentExact(arg, "exitInternal") {
@@ -3794,6 +3851,7 @@ func exitArgOrigins(arg ast.Expr, artIdent string, origins map[string]identOrigi
 
 type pathState struct {
 	origins          map[string]identOrigin
+	fieldsInvalid    map[string]bool
 	stdoutFromArt    bool
 	stderrFromArt    bool
 	errReported      bool
@@ -3804,6 +3862,7 @@ type pathState struct {
 	exitFromCode     bool
 	exitFromInternal bool
 	runWiringBound   bool
+	errInvalid       bool
 }
 
 func clonePathState(st pathState) pathState {
@@ -3812,7 +3871,39 @@ func clonePathState(st pathState) pathState {
 	for k, v := range st.origins {
 		cp.origins[k] = v
 	}
+	if st.fieldsInvalid != nil {
+		cp.fieldsInvalid = make(map[string]bool, len(st.fieldsInvalid))
+		for k, v := range st.fieldsInvalid {
+			cp.fieldsInvalid[k] = v
+		}
+	}
 	return cp
+}
+
+func (st *pathState) invalidateField(field string) {
+	if st.fieldsInvalid == nil {
+		st.fieldsInvalid = map[string]bool{}
+	}
+	st.fieldsInvalid[field] = true
+}
+
+func (st *pathState) fieldInvalid(field string) bool {
+	return st.fieldsInvalid[field]
+}
+
+func identBool(e ast.Expr) (value, ok bool) {
+	id, isID := e.(*ast.Ident)
+	if !isID {
+		return false, false
+	}
+	switch id.Name {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 func elseAsBlock(e ast.Stmt) *ast.BlockStmt {
@@ -3907,7 +3998,7 @@ func bodyWritesOnlyGuardedField(body *ast.BlockStmt, field, artIdent, errIdent s
 			return
 		}
 		saw = true
-		if target != field || !callPayloadUsesField(call, artIdent, field, origins) {
+		if target != field || !callPayloadUsesField(call, artIdent, field, origins, nil) {
 			ok = false
 		}
 	})
@@ -3933,15 +4024,15 @@ func errNilBranches(ifs *ast.IfStmt, errIdent string) (errBody, okBody *ast.Bloc
 func applyCall(st *pathState, call *ast.CallExpr, artIdent, errIdent string) {
 	switch streamWriteTarget(call) {
 	case "Stdout":
-		if callPayloadUsesField(call, artIdent, "Stdout", st.origins) {
+		if callPayloadUsesField(call, artIdent, "Stdout", st.origins, st) {
 			st.stdoutFromArt = true
 		} else {
 			st.unrelatedStdout = true
 		}
 	case "Stderr":
-		if callPayloadUsesField(call, artIdent, "Stderr", st.origins) {
+		if callPayloadUsesField(call, artIdent, "Stderr", st.origins, st) {
 			st.stderrFromArt = true
-		} else if callPayloadIsErrorValue(call, errIdent, st.origins) {
+		} else if callPayloadIsErrorValue(call, errIdent, st.origins, st.errInvalid) {
 			st.errReported = true
 		} else {
 			st.unrelatedStderr = true
@@ -3949,7 +4040,7 @@ func applyCall(st *pathState, call *ast.CallExpr, artIdent, errIdent string) {
 	}
 	if isSelectorCall("os", "Exit")(call) && len(call.Args) == 1 {
 		st.sawExit = true
-		st.exitFromCode, st.exitFromInternal = exitArgOrigins(call.Args[0], artIdent, st.origins)
+		st.exitFromCode, st.exitFromInternal = exitArgOrigins(call.Args[0], artIdent, st.origins, st)
 	}
 }
 
@@ -3982,10 +4073,46 @@ func isRunWiringCall(e ast.Expr) bool {
 	return isIdentCall("RunWiring")(e)
 }
 
+func applySourceMutations(st *pathState, lhs, rhs []ast.Expr, artIdent, errIdent string) {
+	for i, dest := range lhs {
+		src := rhsAt(lhs, rhs, i)
+		switch x := dest.(type) {
+		case *ast.Ident:
+			if x.Name == artIdent {
+				if isRunWiringCall(src) {
+					st.fieldsInvalid = nil
+				} else {
+					st.invalidateField("Stdout")
+					st.invalidateField("Stderr")
+					st.invalidateField("ExitCode")
+				}
+			}
+			if x.Name == errIdent {
+				if isRunWiringCall(src) {
+					st.errInvalid = false
+				} else if originFromRHS(src, artIdent, errIdent, st.origins, st).fromError {
+					st.errInvalid = false
+				} else {
+					st.errInvalid = true
+				}
+			}
+		case *ast.SelectorExpr:
+			id, ok := x.X.(*ast.Ident)
+			if !ok || x.Sel == nil {
+				continue
+			}
+			if id.Name == artIdent {
+				st.invalidateField(x.Sel.Name)
+			}
+		}
+	}
+}
+
 func applyStmt(st *pathState, s ast.Stmt, artIdent, errIdent string) {
 	switch x := s.(type) {
 	case *ast.AssignStmt:
-		assignLastWrite(st.origins, x.Lhs, x.Rhs, artIdent, errIdent)
+		assignLastWrite(st.origins, x.Lhs, x.Rhs, artIdent, errIdent, st)
+		applySourceMutations(st, x.Lhs, x.Rhs, artIdent, errIdent)
 		for _, rhs := range x.Rhs {
 			if isRunWiringCall(rhs) {
 				st.runWiringBound = true
@@ -4006,7 +4133,8 @@ func applyStmt(st *pathState, s ast.Stmt, artIdent, errIdent string) {
 			for i, name := range vs.Names {
 				lhs[i] = name
 			}
-			assignLastWrite(st.origins, lhs, vs.Values, artIdent, errIdent)
+			assignLastWrite(st.origins, lhs, vs.Values, artIdent, errIdent, st)
+			applySourceMutations(st, lhs, vs.Values, artIdent, errIdent)
 			for _, v := range vs.Values {
 				if isRunWiringCall(v) {
 					st.runWiringBound = true
@@ -4019,6 +4147,19 @@ func applyStmt(st *pathState, s ast.Stmt, artIdent, errIdent string) {
 	case *ast.IncDecStmt:
 		if id, ok := x.X.(*ast.Ident); ok {
 			st.origins[id.Name] = identOrigin{}
+			if id.Name == artIdent {
+				st.invalidateField("Stdout")
+				st.invalidateField("Stderr")
+				st.invalidateField("ExitCode")
+			}
+			if id.Name == errIdent {
+				st.errInvalid = true
+			}
+		}
+		if sel, ok := x.X.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == artIdent && sel.Sel != nil {
+				st.invalidateField(sel.Sel.Name)
+			}
 		}
 	case *ast.DeferStmt:
 		// Deferred calls are not evidence before os.Exit.
@@ -4109,7 +4250,7 @@ func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]p
 			}
 		}
 		errBody, okBody, isErr := errNilBranches(x, errIdent)
-		if isErr {
+		if isErr && !st.errInvalid {
 			errSt := clonePathState(st)
 			errSt.tookErrorBranch = true
 			var errDone []pathState
@@ -4128,6 +4269,14 @@ func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]p
 		if field := outputLengthGuardField(x.Cond, artIdent, st.origins); field != "" && emptyElse(x.Else) &&
 			bodyWritesOnlyGuardedField(x.Body, field, artIdent, errIdent, st.origins) {
 			walkSeq(append(append([]ast.Stmt{}, blockList(x.Body)...), rest...), st, artIdent, errIdent, out)
+			return
+		}
+		if val, ok := identBool(x.Cond); ok {
+			if val {
+				walkSeq(append(append([]ast.Stmt{}, blockList(x.Body)...), rest...), st, artIdent, errIdent, out)
+			} else {
+				walkSeq(append(append([]ast.Stmt{}, blockList(elseAsBlock(x.Else))...), rest...), st, artIdent, errIdent, out)
+			}
 			return
 		}
 		thenSt := clonePathState(st)
@@ -4165,13 +4314,17 @@ func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]p
 			walkSeq(rest, st, artIdent, errIdent, out)
 			return
 		}
+		hasDefault := false
 		for _, stmt := range clauses {
 			cc, ok := stmt.(*ast.CaseClause)
 			if !ok {
 				continue
 			}
+			if cc.List == nil {
+				hasDefault = true
+			}
 			clauseSt := clonePathState(st)
-			if switchClauseIsError(cc, clauses, errIdent, x.Tag) {
+			if !st.errInvalid && switchClauseIsError(cc, clauses, errIdent, x.Tag) {
 				clauseSt.tookErrorBranch = true
 			}
 			var done []pathState
@@ -4179,6 +4332,9 @@ func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]p
 			for _, p := range done {
 				walkSeq(rest, p, artIdent, errIdent, out)
 			}
+		}
+		if !hasDefault {
+			walkSeq(rest, clonePathState(st), artIdent, errIdent, out)
 		}
 	case *ast.ForStmt:
 		if x.Init != nil {
@@ -4361,6 +4517,20 @@ func collectIdentBindings(fn *ast.FuncDecl) []identBinding {
 					continue
 				}
 				record(s.Pos(), id.Name, rhs)
+			}
+			// Field writes (inv.Args = nil) invalidate the composite
+			// binding: last-write of the ident itself is no longer the
+			// Invocation literal judged at the call site.
+			for _, lhs := range s.Lhs {
+				sel, ok := lhs.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				id, ok := sel.X.(*ast.Ident)
+				if !ok || id.Name == "" || id.Name == "_" {
+					continue
+				}
+				out = append(out, identBinding{pos: s.Pos(), name: id.Name})
 			}
 		case *ast.ValueSpec:
 			if len(s.Values) == 1 && isSelectorCall("os", "Getwd")(s.Values[0]) && len(s.Names) > 0 && s.Names[0] != nil {
@@ -4574,19 +4744,24 @@ func mainForwardingProblems(fn *ast.FuncDecl) []string {
 
 	var (
 		anyError, anySuccess     bool
+		anyRunWiring             bool
 		missingSuccessStreams    bool
 		missingSuccessExitCode   bool
 		missingErrorReport       bool
 		missingErrorExitInternal bool
 		unrelatedWrite           bool
-		missingRunWiring         bool
 	)
 	for _, p := range paths {
+		// A path that never bound RunWiring is neither a success path nor
+		// an error path: os.Getwd failing and os.Exit before the call has
+		// no Artifacts to forward. Scoring it as a missing success path
+		// forces the body to discard Getwd's error.
+		if !p.runWiringBound {
+			continue
+		}
+		anyRunWiring = true
 		if p.unrelatedStdout || p.unrelatedStderr {
 			unrelatedWrite = true
-		}
-		if !p.runWiringBound {
-			missingRunWiring = true
 		}
 		if p.tookErrorBranch {
 			anyError = true
@@ -4606,8 +4781,8 @@ func mainForwardingProblems(fn *ast.FuncDecl) []string {
 			missingSuccessExitCode = true
 		}
 	}
-	if missingRunWiring {
-		problems = append(problems, "RunWiring is not executed on every path (a call inside if false or a zero-iteration loop is not a binding; zero-valued art/err cannot be forwarded)")
+	if !anyRunWiring {
+		problems = append(problems, "RunWiring is not executed on any path (a call inside if false or a zero-iteration loop is not a binding; zero-valued art/err cannot be forwarded)")
 	}
 	if unrelatedWrite {
 		problems = append(problems, "a write to os.Stdout/os.Stderr is neither the RunWiring artifact stream nor the RunWiring error — unrelated bytes are not forwarding")
@@ -4756,6 +4931,66 @@ func main() {
 }`)
 	if problems := mainForwardingProblems(lastWriteClears); len(problems) == 0 {
 		t.Fatal("CONTROL: code := int(art.ExitCode); code = 0; os.Exit(code) must redden — last-write of 0 is not ExitCode or exitInternal")
+	}
+
+	mutatedArt := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	art.Stdout = nil
+	art.Stderr = nil
+	art.ExitCode = 0
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(mutatedArt); len(problems) == 0 {
+		t.Fatal("CONTROL: art.Stdout/Stderr/ExitCode mutated after the binding must redden — forwarding the mutated fields is not the RunWiring result")
+	}
+
+	clearedErr := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	err = nil
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(clearedErr); len(problems) == 0 {
+		t.Fatal("CONTROL: err = nil after RunWiring must redden — the identifier is no longer the returned error")
+	}
+
+	mutatedInv := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	inv := Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd}
+	inv.Args = nil
+	art, err := RunWiring(inv)
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := runWiringInvocationProblems(mutatedInv); len(problems) == 0 {
+		t.Fatal("CONTROL: inv.Args = nil after constructing the Invocation must redden — the call site no longer forwards os.Args[1:]")
 	}
 	if o := collectIdentOrigins(lastWriteClears, "art")["code"]; o.fromExitCode || o.fromInternal {
 		t.Fatal("collectIdentOrigins still ORs origins across assignments: last write of 0 must clear both")
@@ -4997,6 +5232,26 @@ func main() {
 		t.Fatalf("CONTROL: switch { case err != nil: ... default: writes } must pass, got %v", problems)
 	}
 
+	unmatchedSwitch := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	}
+	switch {
+	case false:
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(unmatchedSwitch); len(problems) == 0 {
+		t.Fatal("CONTROL: stream writes only in switch { case false: ... } with no default must redden — the unmatched path emits nothing")
+	}
+
 	deferred := parseMainSnippet(t, `package main
 func main() {
 	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
@@ -5135,6 +5390,29 @@ func main() {
 }`)
 	if problems := mainForwardingProblems(ifFalseBind); len(problems) == 0 {
 		t.Fatal("CONTROL: RunWiring inside if false must redden — a reachable-looking call that does not execute is not a binding")
+	}
+
+	getwdErr := parseMainSnippet(t, `package main
+func main() {
+	code := exitInternal
+	wd, gerr := os.Getwd()
+	if gerr != nil {
+		fmt.Fprintln(os.Stderr, gerr)
+		os.Exit(code)
+	}
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	code = int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(getwdErr); len(problems) != 0 {
+		t.Fatalf("CONTROL: handling os.Getwd's error and exiting before RunWiring must pass — that path has no Artifacts to forward, got %v", problems)
 	}
 
 	forFalseWrite := parseMainSnippet(t, `package main
@@ -5575,6 +5853,89 @@ func TestSeal_Wiring_RunWiringWireMatcherRejectsShapeOnly(t *testing.T) {
 	}
 	if problems := wiringOracleProblems(row, deletedStatus, live); len(problems) == 0 {
 		t.Fatal("CONTROL: oracle must reject a run-state that dropped live status")
+	}
+
+	setJSONKey := func(data []byte, key string, val any) []byte {
+		t.Helper()
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(data, &obj); err != nil {
+			t.Fatalf("CONTROL: bytes are not a JSON object: %v\n%s", err, data)
+		}
+		raw, err := json.Marshal(val)
+		if err != nil {
+			t.Fatal(err)
+		}
+		obj[key] = raw
+		out, err := json.Marshal(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	setNestedKey := func(data []byte, outer, inner string, val any) []byte {
+		t.Helper()
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(data, &obj); err != nil {
+			t.Fatalf("CONTROL: bytes are not a JSON object: %v", err)
+		}
+		innerBytes, ok := obj[outer]
+		if !ok {
+			t.Fatalf("CONTROL: live bytes have no %q", outer)
+		}
+		obj[outer] = json.RawMessage(setJSONKey(innerBytes, inner, val))
+		out, err := json.Marshal(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	replacedStatus := live
+	replacedStatus.RunState.Bytes = setJSONKey(live.RunState.Bytes, "status", "not-the-oracle")
+	if problems := wiringOracleProblems(row, replacedStatus, live); len(problems) == 0 {
+		t.Fatal("CONTROL: replacing run-state status without deleting the key must redden the oracle — presence is not the live value")
+	}
+
+	replacedRepo := live
+	replacedRepo.RunState.Bytes = setJSONKey(live.RunState.Bytes, "repo", map[string]any{})
+	if problems := wiringWireProblems(row, bed, replacedRepo); len(problems) == 0 {
+		t.Fatal("CONTROL: replacing run-state repo with {} without deleting the key must redden — an empty repo is not the subject bed")
+	}
+	if problems := wiringOracleProblems(row, replacedRepo, live); len(problems) == 0 {
+		t.Fatal("CONTROL: oracle must reject a run-state whose repo values were replaced with {}")
+	}
+
+	var reportOutRow wiringRow
+	for _, r := range wiringRows() {
+		if r.name == "v2/report/out" {
+			reportOutRow = r
+			break
+		}
+	}
+	if reportOutRow.name == "" {
+		t.Fatal("CONTROL: wiringRows has no v2/report/out")
+	}
+	reportOutBed := newClassifyBed(t)
+	reportOutLive := reportOutBed.driveLive(t, "2", false, true)
+	if reportOutLive.ExitCode != exitOK {
+		t.Fatalf("CONTROL: live v2/report/out exited %d:\n%s", reportOutLive.ExitCode, reportOutLive.Stdout)
+	}
+	if reportOutLive.V2Sidecar.State != ArtifactWritten || len(reportOutLive.V2Sidecar.Bytes) == 0 {
+		t.Fatal("CONTROL: live v2/report/out must write a sidecar — that is the row whose digests are not on stdout")
+	}
+	if problems := wiringWireProblems(reportOutRow, reportOutBed, reportOutLive); len(problems) != 0 {
+		t.Fatalf("CONTROL: live v2/report/out must pass the wire matcher, got %v", problems)
+	}
+	mutatedSidecar := reportOutLive
+	bogusDigest := strings.Repeat("a", 64)
+	mutatedSidecar.V2Sidecar.Bytes = setNestedKey(reportOutLive.V2Sidecar.Bytes, "response", "computed_config_sha256", bogusDigest)
+	if problems := wiringWireProblems(reportOutRow, reportOutBed, mutatedSidecar); len(problems) == 0 {
+		t.Fatal("CONTROL: mutating sidecar computed_config_sha256 on v2/report/out must redden — stdout is the human report so a stdout-wrapper comparison cannot catch a bogus digest")
+	}
+	mutatedDiff := reportOutLive
+	mutatedDiff.V2Sidecar.Bytes = setNestedKey(reportOutLive.V2Sidecar.Bytes, "response", "computed_diff_sha256", bogusDigest)
+	if problems := wiringWireProblems(reportOutRow, reportOutBed, mutatedDiff); len(problems) == 0 {
+		t.Fatal("CONTROL: mutating sidecar computed_diff_sha256 on v2/report/out must redden")
 	}
 
 	var reportRow wiringRow
