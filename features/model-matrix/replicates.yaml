@@ -593,3 +593,5 @@ tasks:
     blockedBy:
       - RP-SCAFFOLD
     effort: high
+base_branch: b0313fa
+_base_note: Pinned to a SHA, not a branch. feat/GO-1-1-... moved 30+ times during the 2026-09-02 runs, so a re-run against the branch forks from a different tree and is not comparable. b0313fa is the tree every arm in those runs actually saw.
