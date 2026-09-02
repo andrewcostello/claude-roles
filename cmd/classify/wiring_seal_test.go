@@ -404,28 +404,126 @@ func processStreamsOf(t *testing.T, fn func()) (stdout, stderr, logged string) {
 }
 
 // judgeDisk holds one FileArtifact a run reported against the two snapshots
-// the driver took of the same path. The state must be the one the oracle
-// derives, and Bytes must be the file's content after the run — or nothing,
-// when there is no file. A not-applicable artifact must have no file at its
-// conventional path either: a run that says it produces no run-state and
-// writes one anyway is not exempt for having said so.
-func judgeDisk(t *testing.T, what string, got FileArtifact, before, after fileSnap) {
+// the driver took of the same path, IN EVERY FIELD AND EVERY STATE. It is the
+// one oracle for a wire artifact, and every driver that has a FileArtifact to
+// judge — mapping cells, rejected contracts, subcommands, the child process,
+// the live binary — feeds it here, so a malformed artifact reads the same
+// wherever it came from.
+//
+//   - Path is empty exactly when the state is NotApplicable, and otherwise is
+//     wantPath: the conventional path as the row resolved it (clause 7), not
+//     "some path" and not the relative name the argv carried.
+//   - State is the one the oracle derives from the two snapshots.
+//   - Bytes is the file's content after the run when there is a file, and
+//     nothing when there is not — NotApplicable, Absent and Removed all carry
+//     no bytes.
+//   - A not-applicable artifact must have no file at its conventional path
+//     either: a run that says it produces no run-state and writes one anyway
+//     is not exempt for having said so.
+func judgeDisk(t *testing.T, what string, got FileArtifact, wantPath string, before, after fileSnap) {
 	t.Helper()
+	for _, f := range diskFindings(got, wantPath, before, after) {
+		t.Errorf("%s: %s", what, f)
+	}
+}
+
+// diskFindings is judgeDisk's whole verdict as a list, so the oracle can be
+// pinned (TestSeal_Wiring_DiskOracle_EveryFieldEveryState) without a body to
+// drive. Empty means the artifact is exactly what the tree says.
+func diskFindings(got FileArtifact, wantPath string, before, after fileSnap) []string {
+	var out []string
 	disk := stateOf(before, after)
 	if got.State == ArtifactNotApplicable {
 		if disk != ArtifactAbsent {
-			t.Errorf("%s: reported not-applicable, but the file at its conventional path is %s — the run touched an artifact it says it does not produce", what, disk)
+			out = append(out, fmt.Sprintf("reported not-applicable, but the file at its conventional path is %s — the run touched an artifact it says it does not produce", disk))
 		}
-		return
+		if got.Path != "" {
+			out = append(out, fmt.Sprintf("reported not-applicable with path %q — Path is empty exactly when the artifact is not applicable", got.Path))
+		}
+		if len(got.Bytes) != 0 {
+			out = append(out, fmt.Sprintf("reported not-applicable with %d bytes — an artifact the run does not produce has no content", len(got.Bytes)))
+		}
+		return out
+	}
+	if got.Path != wantPath {
+		out = append(out, fmt.Sprintf("reported path %q, want the resolved conventional path %q", got.Path, wantPath))
 	}
 	if got.State != disk {
-		t.Errorf("%s: reported %s, but the two snapshots say %s — the struct does not match the tree", what, got.State, disk)
+		out = append(out, fmt.Sprintf("reported %s, but the two snapshots say %s — the struct does not match the tree", got.State, disk))
 	}
 	if after.present && !bytes.Equal(got.Bytes, after.bytes) {
-		t.Errorf("%s: reported %d bytes, but the file on disk holds %d different bytes — Bytes must be the content after the run", what, len(got.Bytes), len(after.bytes))
+		out = append(out, fmt.Sprintf("reported %d bytes, but the file on disk holds %d different bytes — Bytes must be the content after the run", len(got.Bytes), len(after.bytes)))
 	}
 	if !after.present && len(got.Bytes) != 0 {
-		t.Errorf("%s: reported %d bytes for a file that is not there — Bytes is nil in every state but written and stale", what, len(got.Bytes))
+		out = append(out, fmt.Sprintf("reported %d bytes for a file that is not there — Bytes is nil in every state but written and stale", len(got.Bytes)))
+	}
+	return out
+}
+
+// The disk oracle is test code and every RunWiring row rests on it, so what
+// it accepts and what it rejects is pinned once, field by field. Each
+// rejecting row names the one thing wrong with an otherwise-correct artifact;
+// the accepting rows are the controls that the oracle is not simply red.
+func TestSeal_Wiring_DiskOracle_EveryFieldEveryState(t *testing.T) {
+	defer red(t)
+	const path = "/tmp/x/run.json"
+	a, b := fileSnap{present: true, bytes: []byte("a")}, fileSnap{present: true, bytes: []byte("b")}
+	none := fileSnap{}
+	for _, row := range []struct {
+		name          string
+		got           FileArtifact
+		before, after fileSnap
+		reject        string // a substring of the one finding wanted; "" = accept
+	}{
+		// Accepting.
+		{"not-applicable, nothing there", FileArtifact{State: ArtifactNotApplicable}, none, none, ""},
+		{"absent", FileArtifact{Path: path, State: ArtifactAbsent}, none, none, ""},
+		{"written (created)", FileArtifact{Path: path, State: ArtifactWritten, Bytes: []byte("a")}, none, a, ""},
+		{"written (rewritten)", FileArtifact{Path: path, State: ArtifactWritten, Bytes: []byte("b")}, a, b, ""},
+		{"stale", FileArtifact{Path: path, State: ArtifactStale, Bytes: []byte("a")}, a, a, ""},
+		{"removed", FileArtifact{Path: path, State: ArtifactRemoved}, a, none, ""},
+		// Rejecting — one field wrong each.
+		{"not-applicable with a path", FileArtifact{Path: path, State: ArtifactNotApplicable}, none, none, "with path"},
+		{"not-applicable with bytes", FileArtifact{State: ArtifactNotApplicable, Bytes: []byte("a")}, none, none, "with 1 bytes"},
+		{"not-applicable, but the run wrote there", FileArtifact{State: ArtifactNotApplicable}, none, a, "touched an artifact"},
+		{"absent with an empty path", FileArtifact{State: ArtifactAbsent}, none, none, "want the resolved conventional path"},
+		{"written under the relative name", FileArtifact{Path: fixtureRunState, State: ArtifactWritten, Bytes: []byte("a")}, none, a, "want the resolved conventional path"},
+		{"written, but the tree says stale", FileArtifact{Path: path, State: ArtifactWritten, Bytes: []byte("a")}, a, a, "the struct does not match the tree"},
+		{"stale, but the tree says written", FileArtifact{Path: path, State: ArtifactStale, Bytes: []byte("b")}, a, b, "the struct does not match the tree"},
+		{"written with the wrong bytes", FileArtifact{Path: path, State: ArtifactWritten, Bytes: []byte("a")}, a, b, "different bytes"},
+		{"stale with no bytes", FileArtifact{Path: path, State: ArtifactStale}, a, a, "different bytes"},
+		{"absent with bytes", FileArtifact{Path: path, State: ArtifactAbsent, Bytes: []byte("a")}, none, none, "a file that is not there"},
+		{"removed with bytes", FileArtifact{Path: path, State: ArtifactRemoved, Bytes: []byte("a")}, a, none, "a file that is not there"},
+		{"removed with an empty path", FileArtifact{State: ArtifactRemoved}, a, none, "want the resolved conventional path"},
+	} {
+		got := diskFindings(row.got, path, row.before, row.after)
+		switch {
+		case row.reject == "" && len(got) != 0:
+			t.Errorf("%s: a correct artifact was rejected: %v", row.name, got)
+		case row.reject != "" && len(got) != 1:
+			t.Errorf("%s: want exactly one finding containing %q, got %d: %v", row.name, row.reject, len(got), got)
+		case row.reject != "" && !strings.Contains(got[0], row.reject):
+			t.Errorf("%s: finding %q does not name the defect (%q)", row.name, got[0], row.reject)
+		}
+	}
+}
+
+// judgeArtifactsEmpty is clause 5's other half: beside a non-nil error the
+// Artifacts "is empty and asserts nothing". A body that fails and still
+// hands back an exit code, a stream or an artifact state has asserted
+// something a caller might act on.
+func judgeArtifactsEmpty(t *testing.T, what string, art Artifacts) {
+	t.Helper()
+	if art.ExitCode != 0 || len(art.Stdout) != 0 || len(art.Stderr) != 0 {
+		t.Errorf("%s: RunWiring returned an error AND an answer (exit %d, %d bytes stdout, %d bytes stderr) — beside a non-nil error the Artifacts is empty (clause 5)", what, art.ExitCode, len(art.Stdout), len(art.Stderr))
+	}
+	for _, a := range []struct {
+		name string
+		fa   FileArtifact
+	}{{"run-state", art.RunState}, {"v2 sidecar", art.V2Sidecar}} {
+		if a.fa.State != 0 || a.fa.Path != "" || len(a.fa.Bytes) != 0 {
+			t.Errorf("%s: RunWiring returned an error and a %s artifact (state %s, path %q, %d bytes) — beside a non-nil error the Artifacts is empty (clause 5)", what, a.name, a.fa.State, a.fa.Path, len(a.fa.Bytes))
+		}
 	}
 }
 
@@ -476,8 +574,8 @@ func judgeUntouched(t *testing.T, name string, before pairSnap) {
 	t.Helper()
 	after := snapPair(t, before.path)
 	notApplicable := FileArtifact{State: ArtifactNotApplicable}
-	judgeDisk(t, name+": run-state at "+before.path+" (a path this row never named)", notApplicable, before.rs, after.rs)
-	judgeDisk(t, name+": v2 sidecar beside "+before.path+" (a path this row never named)", notApplicable, before.sc, after.sc)
+	judgeDisk(t, name+": run-state at "+before.path+" (a path this row never named)", notApplicable, "", before.rs, after.rs)
+	judgeDisk(t, name+": v2 sidecar beside "+before.path+" (a path this row never named)", notApplicable, "", before.sc, after.sc)
 	for _, f := range []struct {
 		p             string
 		before, after fileSnap
@@ -577,7 +675,9 @@ func invocationFor(f wiringFixture, cell mappingCell) Invocation {
 //
 // Every row names -out as fixtureRunState relative to Dir, or not at all, so
 // the driver snapshots that conventional path either way and judgeDisk decides
-// what the reported state may be beside what the tree says. The process cwd is
+// what the reported state, path and bytes may be beside what the tree says —
+// a Path that is the relative name the argv carried, or a path under the cwd,
+// is red there, not only in judgeCell. The process cwd is
 // snapshotted too: a body that resolved "run.json" against the cwd instead of
 // Dir would leave the Dir path absent — caught — and the cwd path written,
 // which is the operator's tree polluted and is reported as such.
@@ -594,8 +694,8 @@ func driveRunWiring(t *testing.T, name string, inv Invocation) wiringRun {
 		return r
 	}
 	rsAfter, scAfter := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
-	judgeDisk(t, name+": run-state", r.art.RunState, rsBefore, rsAfter)
-	judgeDisk(t, name+": v2 sidecar", r.art.V2Sidecar, scBefore, scAfter)
+	judgeDisk(t, name+": run-state", r.art.RunState, runState, rsBefore, rsAfter)
+	judgeDisk(t, name+": v2 sidecar", r.art.V2Sidecar, V2SidecarPath(runState), scBefore, scAfter)
 	judgeUntouched(t, name, cwd)
 	return r
 }
@@ -763,8 +863,8 @@ func driveChild(t *testing.T, name string, inv Invocation) wiringRun {
 		return r
 	}
 	rsAfter, scAfter := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
-	judgeDisk(t, name+": run-state", r.art.RunState, rsBefore, rsAfter)
-	judgeDisk(t, name+": v2 sidecar", r.art.V2Sidecar, scBefore, scAfter)
+	judgeDisk(t, name+": run-state", r.art.RunState, runState, rsBefore, rsAfter)
+	judgeDisk(t, name+": v2 sidecar", r.art.V2Sidecar, V2SidecarPath(runState), scBefore, scAfter)
 	return r
 }
 
@@ -887,16 +987,50 @@ func riskOf(c *Classification) string {
 	return c.Risk
 }
 
+// The human report's first and last lines, and the two verdict lines the
+// wallet diff owes. printReport's own strings; the report is the WHOLE of
+// stdout, first byte to last.
+const (
+	reportOpens   = "=== CLASSIFICATION ===\n"
+	reportCloses  = "=== END CLASSIFICATION ===\n"
+	reportGate    = "Human PR gate:        true\n"
+	reportRisk    = "Risk:       CRITICAL\n"
+	wireVersion   = `"response_version"`
+	wireContract  = `"contract_version"`
+	wireGateField = `"human_pr_gate"`
+)
+
 // judgeStdout reads stdout as the shape the cell promises AND as not the other
-// machine shape. The wrapper and the bare v1 payload are both JSON objects, so
+// shapes. The wrapper and the bare v1 payload are both JSON objects, so
 // "parses" proves nothing; the discriminators are the wrapper's own four keys
-// and the envelope's contract_version, which v1 does not carry.
+// and the envelope's contract_version, which v1 does not carry. The human
+// report is judged the same way — as the whole of stdout, opening line to
+// closing line, carrying the verdict, and carrying NO machine payload: a run
+// that was not asked for JSON and publishes a v2 envelope after the report
+// anyway is exactly the divergence the -json axis exists to close, and a
+// prefix check alone cannot see it.
 func judgeStdout(t *testing.T, cell mappingCell, f wiringFixture, stdout []byte) {
 	t.Helper()
 	switch cell.stdout {
 	case shapeReport:
-		if !bytes.HasPrefix(stdout, []byte("=== CLASSIFICATION ===")) {
-			t.Errorf("%s: stdout is not the human report:\n%s", cell.name, stdout)
+		if !bytes.HasPrefix(stdout, []byte(reportOpens)) {
+			t.Errorf("%s: stdout does not open with the human report:\n%s", cell.name, stdout)
+		}
+		if !bytes.HasSuffix(stdout, []byte(reportCloses)) {
+			t.Errorf("%s: stdout does not END with the human report's last line — something was written after it:\n%s", cell.name, stdout)
+		}
+		if n := bytes.Count(stdout, []byte(reportOpens)); n != 1 {
+			t.Errorf("%s: the report header appears ×%d, want exactly once", cell.name, n)
+		}
+		for _, want := range []string{reportGate, reportRisk} {
+			if !bytes.Contains(stdout, []byte(want)) {
+				t.Errorf("%s: the report does not carry %q — not this run's verdict:\n%s", cell.name, strings.TrimSpace(want), stdout)
+			}
+		}
+		for _, wire := range []string{wireVersion, wireContract, wireGateField} {
+			if bytes.Contains(stdout, []byte(wire)) {
+				t.Errorf("%s: a run that did not ask for -json put %s on stdout — a machine payload nobody asked for:\n%s", cell.name, wire, stdout)
+			}
 		}
 	case shapeV1:
 		if !json.Valid(stdout) {
@@ -1581,7 +1715,7 @@ func cellNamed(name string) (mappingCell, bool) {
 	return mappingCell{}, false
 }
 
-// ─── RunWiring clause 8: the shipped binary ──────────────────────────────────
+// ─── RunWiring clause 8: the shipped binary ──────────────────────────────
 
 // Clause 8 — "main() FORWARDS THE RESULT AND ADDS NOTHING" — is the one
 // clause no in-process row can reach, and the structural row exempts main()
@@ -1605,24 +1739,32 @@ func cellNamed(name string) (mappingCell, bool) {
 // payload carries classified_at, and the two runs are moments apart); every
 // other leg is compared raw.
 //
+// The in-process side is held to the same rules as every other RunWiring
+// row: nothing on the process's stdout, stderr or logger (clause 3), and the
+// returned artifacts judged against the tree by judgeDisk (clause 4) — for
+// the legs that name -out, at that path; for the rest, NotApplicable and
+// nothing at the conventional path.
+//
 // Each leg also pins the exit code the mapping rows already owe, and the live
 // stream must SAY something the leg names outright — an instrument that agreed
 // on two empty streams would have agreed on nothing.
 //
-// The non-nil-error arm is provoked with an -out that names a DIRECTORY, which
-// can neither be snapshotted (clause 4) nor written. Whether the body reports
-// that as a returned error or as exitInternal beside a nil error is its call;
-// either way the binary exits exitInternal, and on the error arm its stderr
-// carries the error's text and its stdout nothing (clause 8).
+// THE NON-NIL-ERROR ARM is its own leg, below the table, and it is
+// deterministic: -out names a DIRECTORY. Clause 4 says RunWiring snapshots
+// each artifact it produces before running; a directory cannot be read as a
+// file, so the snapshot fails, and clause 5 names "could not snapshot" as the
+// case where RunWiring itself could not run the invocation. The leg therefore
+// REQUIRES a non-nil error — a body that answers exit 1 beside a nil error
+// there has classified a run it could not observe. Its in-process side runs
+// through runWiringChild rather than in this process: today's persist()
+// still reaches log.Fatalf on that argv, and a GO-1-3 body that wraps run()
+// before converting the fatals would exit the whole test binary instead of
+// failing one row. In the child a Fatalf is a child exit the parent reports.
 func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 	defer red(t)
 	bin := liveClassify(t)
 	f := newWiringFixture(t)
 	runState := filepath.Join(f.dir, fixtureRunState)
-	outDir := filepath.Join(f.dir, "out-is-a-directory")
-	if err := os.Mkdir(outDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	classifyArgs := func(extra ...string) []string {
 		args := []string{"-no-git", "-worktree", f.dir, "-config", f.configPath}
 		args = append(args, extra...)
@@ -1633,17 +1775,15 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 		name     string
 		args     []string
 		exit     ExitCode
-		mask     bool // -out is written: mask timestamps before comparing
-		errArm   bool // RunWiring may answer with a non-nil error here
+		out      bool // -out names runState: judge the artifacts there, mask timestamps
 		liveSays says
 	}{
-		{"classify report, no -out", classifyArgs("-contract-version", "1"), exitOK, false, false, says{"stdout", "=== CLASSIFICATION ==="}},
-		{"classify -json -out, contract 2", classifyArgs("-contract-version", "2", "-json", "-out", runState), exitOK, true, false, says{"stderr", saysSidecarWritten}},
-		{"rejected -contract-version 3", classifyArgs("-contract-version", "3", "-json", "-out", runState), exitInvalid, false, false, says{"stdout", "accepted values are 1 and 2"}},
-		{"capabilities", []string{probeSubcommand}, exitCapabilityIncomplete, false, false, says{"stdout", `"cmd/classify"`}},
-		{"help", []string{"help"}, exitOK, false, false, says{"stderr", "classify init"}},
-		{"unknown flag", []string{"-no-such-flag"}, exitFlagError, false, false, says{"stderr", "no-such-flag"}},
-		{"-out names a directory", classifyArgs("-contract-version", "1", "-out", outDir), exitInternal, true, true, says{"stderr", ""}},
+		{"classify report, no -out", classifyArgs("-contract-version", "1"), exitOK, false, says{"stdout", "=== CLASSIFICATION ==="}},
+		{"classify -json -out, contract 2", classifyArgs("-contract-version", "2", "-json", "-out", runState), exitOK, true, says{"stderr", saysSidecarWritten}},
+		{"rejected -contract-version 3", classifyArgs("-contract-version", "3", "-json", "-out", runState), exitInvalid, true, says{"stdout", "accepted values are 1 and 2"}},
+		{"capabilities", []string{probeSubcommand}, exitCapabilityIncomplete, false, says{"stdout", `"cmd/classify"`}},
+		{"help", []string{"help"}, exitOK, false, says{"stderr", "classify init"}},
+		{"unknown flag", []string{"-no-such-flag"}, exitFlagError, false, says{"stderr", "no-such-flag"}},
 	}
 	resetOut := func() {
 		t.Helper()
@@ -1659,32 +1799,24 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 			defer red(t)
 			isolateProcessState(t)
 			resetOut()
-			var (
-				art Artifacts
-				err error
-			)
-			processStreamsOf(t, func() { art, err = RunWiring(Invocation{Args: leg.args, Dir: f.dir}) })
-			if errors.Is(err, ErrWiringNotImplemented) {
-				requireRunWiringBody(t, err)
+			wantRS, wantSC := "", ""
+			if leg.out {
+				wantRS, wantSC = runState, V2SidecarPath(runState)
 			}
+			rsBefore, scBefore := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
+			cwd := snapPair(t, cwdRunState(t))
+			var r wiringRun
+			r.leakedStdout, r.leakedStderr, r.logged = processStreamsOf(t, func() { r.art, r.err = RunWiring(Invocation{Args: leg.args, Dir: f.dir}) })
+			requireRunWiringBody(t, r.err)
+			judgeNoLeak(t, leg.name, r)
+			rsAfter, scAfter := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
+			judgeDisk(t, leg.name+": run-state", r.art.RunState, wantRS, rsBefore, rsAfter)
+			judgeDisk(t, leg.name+": v2 sidecar", r.art.V2Sidecar, wantSC, scBefore, scAfter)
+			judgeUntouched(t, leg.name, cwd)
+			art := r.art
+
 			resetOut()
 			live := runLive(t, bin, f.dir, nil, leg.args...)
-
-			if err != nil {
-				if !leg.errArm {
-					t.Fatalf("RunWiring itself failed (clause 5 — not the run's exit code): %v", err)
-				}
-				if live.exit != exitInternal {
-					t.Errorf("%s: RunWiring returned an error and the binary exited %d, want %d (clause 8)", leg.name, live.exit, exitInternal)
-				}
-				if !strings.Contains(live.stderr, err.Error()) {
-					t.Errorf("%s: RunWiring returned %q and the binary's stderr does not report it (clause 8):\n%s", leg.name, err, live.stderr)
-				}
-				if live.stdout != "" {
-					t.Errorf("%s: RunWiring returned an error — Artifacts asserts nothing — and the binary still wrote to stdout:\n%s", leg.name, live.stdout)
-				}
-				return
-			}
 
 			if art.ExitCode != leg.exit {
 				t.Errorf("%s: RunWiring answered exit %d, want %d", leg.name, art.ExitCode, leg.exit)
@@ -1692,22 +1824,207 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 			if live.exit != int(art.ExitCode) {
 				t.Errorf("%s: the binary exited %d, RunWiring answered %d — main() does not exit with ExitCode (clause 8)\nbinary stderr:\n%s", leg.name, live.exit, art.ExitCode, live.stderr)
 			}
-			judgeForwarded(t, leg.name, "stdout", live.stdout, art.Stdout, leg.mask)
-			judgeForwarded(t, leg.name, "stderr", live.stderr, art.Stderr, leg.mask)
-			if leg.liveSays.substr != "" {
-				got := map[string]string{"stdout": live.stdout, "stderr": live.stderr}[leg.liveSays.stream]
-				if !strings.Contains(got, leg.liveSays.substr) {
-					t.Errorf("%s: the binary's %s does not say %q:\n%s", leg.name, leg.liveSays.stream, leg.liveSays.substr, got)
-				}
+			judgeForwarded(t, leg.name, "stdout", live.stdout, art.Stdout, leg.out)
+			judgeForwarded(t, leg.name, "stderr", live.stderr, art.Stderr, leg.out)
+			got := map[string]string{"stdout": live.stdout, "stderr": live.stderr}[leg.liveSays.stream]
+			if !strings.Contains(got, leg.liveSays.substr) {
+				t.Errorf("%s: the binary's %s does not say %q:\n%s", leg.name, leg.liveSays.stream, leg.liveSays.substr, got)
 			}
 		})
 	}
+
+	t.Run("-out names a directory (non-nil error)", func(t *testing.T) {
+		defer red(t)
+		const name = "-out names a directory"
+		outDir := filepath.Join(f.dir, "out-is-a-directory")
+		if err := os.Mkdir(outDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		args := classifyArgs("-contract-version", "1", "-out", outDir)
+		resetOut()
+
+		// In process — in a CHILD process. What the parent sees on the child's
+		// fds 1 and 2 is every byte the run emitted, the logger's included.
+		treeBefore := treeSnap(t, f.dir)
+		stdout, stderr, reply := runWiringChild(t, wiringChildRequest{Mode: wiringChildModeRun, Args: args, Dir: f.dir})
+		if reply.Stub {
+			requireRunWiringBody(t, ErrWiringNotImplemented)
+		}
+		if reply.Err == "" {
+			t.Fatalf("%s: RunWiring answered exit %d beside a nil error — it cannot have snapshotted -out (clause 4: a directory is not a file), and \"could not snapshot\" is a non-nil error (clause 5)\nstdout:\n%s\nstderr:\n%s", name, reply.Art.ExitCode, reply.Art.Stdout, reply.Art.Stderr)
+		}
+		judgeNoLeak(t, name, wiringRun{leakedStdout: stdout, leakedStderr: stderr})
+		judgeArtifactsEmpty(t, name, reply.Art)
+		if diff := treeDiff(treeBefore, treeSnap(t, f.dir)); diff != "" {
+			t.Errorf("%s: RunWiring returned an error and the tree under Dir changed — a run it could not observe still wrote:\n%s", name, diff)
+		}
+
+		// The binary, on the same argv: exitInternal, nothing on stdout, and
+		// stderr is the error — rendered once, on one line, ending in the
+		// error's own text, with nothing after it. A duplicated error, or a
+		// stray line of main()'s own, is "adding something" (clause 8).
+		treeBefore = treeSnap(t, f.dir)
+		live := runLive(t, bin, f.dir, nil, args...)
+		if live.exit != exitInternal {
+			t.Errorf("%s: RunWiring returned an error and the binary exited %d, want %d (clause 8)", name, live.exit, exitInternal)
+		}
+		if live.stdout != "" {
+			t.Errorf("%s: RunWiring returned an error — Artifacts asserts nothing — and the binary still wrote to stdout:\n%s", name, live.stdout)
+		}
+		judgeErrorRendering(t, name, live.stderr, reply.Err)
+		if diff := treeDiff(treeBefore, treeSnap(t, f.dir)); diff != "" {
+			t.Errorf("%s: the binary changed the tree under Dir on a run RunWiring could not observe:\n%s", name, diff)
+		}
+	})
 }
 
-// wiringTimestamps matches the two stamps a run can carry: RFC3339 in the
-// payloads (classified_at, created_at, updated_at) and the log package's
-// default prefix, should a body build a logger with the default flags.
-var wiringTimestamps = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z|\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}`)
+// judgeErrorRendering is clause 8's error arm on stderr: the error, once,
+// as the whole of one line, and nothing else. A prefix (the program's name,
+// a logger's stamp) is reporting; a second copy, a trailing line, or the
+// error's text buried inside something longer is main() adding something.
+func judgeErrorRendering(t *testing.T, name, stderr, errText string) {
+	t.Helper()
+	if errText == "" {
+		t.Fatalf("%s: judgeErrorRendering called with no error text", name)
+	}
+	for _, f := range errorRenderingFindings(stderr, errText) {
+		t.Errorf("%s: %s (clause 8)\nwant the error: %q\nstderr:\n%s", name, f, errText, stderr)
+	}
+}
+
+// errorRenderingFindings is judgeErrorRendering's verdict as a list, pinned
+// by TestSeal_Wiring_ErrorRendering_OnceWholeAndNothingElse.
+func errorRenderingFindings(stderr, errText string) []string {
+	var out []string
+	if n := strings.Count(stderr, errText); n != 1 {
+		out = append(out, fmt.Sprintf("the binary's stderr carries RunWiring's error ×%d, want exactly once", n))
+	}
+	if !strings.HasSuffix(stderr, errText+"\n") {
+		out = append(out, "the binary's stderr does not END with RunWiring's error and a newline — something was added after it, or the error was rewritten")
+	}
+	if lines := strings.Count(stderr, "\n") - strings.Count(errText, "\n"); lines != 1 {
+		out = append(out, fmt.Sprintf("the binary's stderr is %d line(s) beyond the error, want exactly one — the error and nothing else", lines))
+	}
+	return out
+}
+
+// What the error arm's stderr judge accepts and rejects, pinned. The two
+// accepting rows are the renderings clause 8 permits — the error alone, or
+// with a reporting prefix; every rejecting row is a way main() could "add
+// something" while a strings.Contains check stayed green.
+func TestSeal_Wiring_ErrorRendering_OnceWholeAndNothingElse(t *testing.T) {
+	defer red(t)
+	const e = "classify wiring: snapshot /x/out: read /x/out: is a directory"
+	for _, row := range []struct{ name, stderr, reject string }{
+		{"the error alone", e + "\n", ""},
+		{"with a program-name prefix", "classify: " + e + "\n", ""},
+		{"with a logger stamp", "2026/09/02 12:00:00 " + e + "\n", ""},
+		{"empty", "", "×0"},
+		{"no trailing newline", e, "does not END"},
+		{"rendered twice", e + "\n" + e + "\n", "×2"},
+		{"a line appended after it", e + "\nexiting 1\n", "does not END"},
+		{"a line prepended before it", "starting\n" + e + "\n", "line(s) beyond the error"},
+		{"buried inside a longer line", "error: " + e + " (exit 1)\n", "does not END"},
+		{"only a substring of the error", "classify wiring: snapshot /x/out\n", "×0"},
+	} {
+		got := errorRenderingFindings(row.stderr, e)
+		switch {
+		case row.reject == "" && len(got) != 0:
+			t.Errorf("%s: a permitted rendering was rejected: %v", row.name, got)
+		case row.reject != "" && len(got) == 0:
+			t.Errorf("%s: accepted %q", row.name, row.stderr)
+		case row.reject != "" && !strings.Contains(strings.Join(got, "\n"), row.reject):
+			t.Errorf("%s: findings %v do not name the defect (%q)", row.name, got, row.reject)
+		}
+	}
+}
+
+// treeSnap is every regular file under dir, by relative path, with its bytes,
+// and every directory, with none. It is how a row asks "did this run touch
+// anything here?" of a tree it cannot enumerate by name in advance.
+func treeSnap(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	snap := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			snap[rel+"/"] = ""
+			return nil
+		}
+		data, err := os.ReadFile(p) // #nosec G304 -- a temp tree this test created
+		if err != nil {
+			return err
+		}
+		snap[rel] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", dir, err)
+	}
+	return snap
+}
+
+// treeDiff names every path that appeared, vanished or changed between two
+// snapshots; "" when they are the same tree.
+func treeDiff(before, after map[string]string) string {
+	var lines []string
+	for p, b := range before {
+		a, ok := after[p]
+		switch {
+		case !ok:
+			lines = append(lines, "removed: "+p)
+		case a != b:
+			lines = append(lines, "changed: "+p)
+		}
+	}
+	for p := range after {
+		if _, ok := before[p]; !ok {
+			lines = append(lines, "created: "+p)
+		}
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
+// wiringTimestamps matches the two stamps a run can carry: an RFC3339
+// production in the payloads (classified_at, created_at, updated_at) — with
+// or without a fractional second, in Z or with a numeric offset, which is
+// what a time.Time or RFC3339Nano would emit — and the log package's default
+// prefix, should a body build a logger with the default flags. Pinned by
+// TestSeal_Wiring_TimestampMask_CoversRFC3339.
+var wiringTimestamps = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})|\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}`)
+
+// The mask is test code that the only successful -out comparison in the live
+// binary row rests on, so its reach is pinned: every stamp shape Go can put
+// in the payload is replaced whole, and nothing that is not a stamp is
+// touched. A mask narrower than RFC3339 would false-red a correct forwarding
+// main() the moment a body stamps with RFC3339Nano; a mask wider than a
+// stamp would hide a forwarding defect inside a digest.
+func TestSeal_Wiring_TimestampMask_CoversRFC3339(t *testing.T) {
+	defer red(t)
+	for _, row := range []struct{ name, in, want string }{
+		{"RFC3339 Z (today's main.go)", `"classified_at": "2026-09-02T12:00:00Z"`, `"classified_at": "<timestamp>"`},
+		{"RFC3339Nano Z", `"classified_at": "2026-09-02T12:00:00.123456789Z"`, `"classified_at": "<timestamp>"`},
+		{"fractional, offset", `"created_at": "2026-09-02T12:00:00.5+02:00"`, `"created_at": "<timestamp>"`},
+		{"offset, no fraction", `"updated_at": "2026-09-02T12:00:00-07:00"`, `"updated_at": "<timestamp>"`},
+		{"log prefix", "2026/09/02 12:00:00 run state written to /x/run.json\n", "<timestamp> run state written to /x/run.json\n"},
+		{"two stamps in one payload", `{"a":"2026-09-02T12:00:00Z","b":"2026-09-02T12:00:01.001Z"}`, `{"a":"<timestamp>","b":"<timestamp>"}`},
+		// CONTROLS — not stamps, and must survive untouched.
+		{"a sha256 digest", `"computed_diff_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"`, `"computed_diff_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"`},
+		{"a bare date", `"base": "origin/main (2026-09-02)"`, `"base": "origin/main (2026-09-02)"`},
+		{"a stamp with no zone", `"x": "2026-09-02T12:00:00"`, `"x": "2026-09-02T12:00:00"`},
+	} {
+		if got := wiringTimestamps.ReplaceAllString(row.in, "<timestamp>"); got != row.want {
+			t.Errorf("%s: mask(%q) = %q, want %q", row.name, row.in, got, row.want)
+		}
+	}
+}
 
 // judgeForwarded requires the binary's stream to be the Artifacts field byte
 // for byte. With mask, timestamps are replaced on both sides first.
@@ -1732,6 +2049,11 @@ func judgeForwarded(t *testing.T, name, stream, live string, want []byte, mask b
 //     second caller");
 //   - os.Exit is called inside main() and nowhere else, and log.Fatal* and
 //     log.Panic* are called nowhere (clause 2);
+//   - os.Chdir (and syscall.Chdir) is called nowhere, main() included
+//     (clause 7). Green today; it is the only row that can tell a body that
+//     resolves Dir by `os.Chdir(inv.Dir); defer os.Chdir(old)` from one that
+//     resolves paths, because the cwd is back before any before/after
+//     comparison looks;
 //   - main() never exits with a literal: `os.Exit(0)` is an exit code nobody
 //     returned. This is the syntactic half of clause 8; the whole of it is
 //     TestSeal_Wiring_MainForwardsRunWiring_LiveBinary;
@@ -1766,6 +2088,7 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 	type site struct{ file, fn, call string }
 	var (
 		exits, fatals []site
+		chdirs        []site
 		globals       = map[site]int{}
 		streamRefs    int
 		mainCallsRun  bool
@@ -1812,6 +2135,12 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 							}
 						case pkg.Name == "log" && (strings.HasPrefix(f.Sel.Name, "Fatal") || strings.HasPrefix(f.Sel.Name, "Panic")):
 							fatals = append(fatals, s)
+						case (pkg.Name == "os" || pkg.Name == "syscall") && f.Sel.Name == "Chdir":
+							// Anywhere in the package, main() included:
+							// clause 7 grants no exemption, and a Chdir that
+							// restores the cwd before returning passes every
+							// behavioural row while still being the race.
+							chdirs = append(chdirs, s)
 						case pkg.Name == "log" && f.Sel.Name != "New" && !isMain:
 							// Print*, SetOutput, SetFlags, Default, Writer ...:
 							// the standard logger. log.New over a supplied
@@ -1907,6 +2236,9 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 	}
 	for _, s := range fatals {
 		t.Errorf("clause 2: %s called from %s.%s — every log.Fatalf on this path becomes a returned ExitCode", s.call, s.file, s.fn)
+	}
+	for _, s := range chdirs {
+		t.Errorf("clause 7: %s called from %s.%s — RunWiring never calls os.Chdir; paths resolve against Invocation.Dir, and the working directory is shared by every goroutine in the process", s.call, s.file, s.fn)
 	}
 	sites := make([]site, 0, len(globals))
 	for s := range globals {
