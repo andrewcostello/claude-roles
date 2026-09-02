@@ -404,6 +404,50 @@ func assertArtifact(t *testing.T, label string, want ArtifactState, got FileArti
 	}
 }
 
+// acceptedContractValuesPhrase is the rendered accepted-set clause derived
+// from contractVersionSet, e.g. "accepted values are 1 and 2". Bare digits
+// are not a seal: INVALID_INPUT reports print Worktree: /tmp/TestSeal_...,
+// so Contains(report, "1") is decided by t.TempDir().
+func acceptedContractValuesPhrase() string {
+	parts := make([]string, len(contractVersionSet))
+	for i, v := range contractVersionSet {
+		parts[i] = v.String()
+	}
+	switch len(parts) {
+	case 0:
+		return "accepted values are"
+	case 1:
+		return "accepted values are " + parts[0]
+	default:
+		return "accepted values are " + strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+	}
+}
+
+// rejectedContractReportProblems requires the INVALID_INPUT report to carry
+// ParseContractVersion("3")'s own message (the resolver, not a re-worded
+// copy) and the accepted-set phrase derived from contractVersionSet.
+func rejectedContractReportProblems(report string) []string {
+	var problems []string
+	_, err := ParseContractVersion("3")
+	if err == nil {
+		return []string{`ParseContractVersion("3") succeeded — the accepted-set claim cannot be judged`}
+	}
+	if !strings.Contains(report, err.Error()) {
+		problems = append(problems, fmt.Sprintf("does not carry ParseContractVersion's message %q", err.Error()))
+	}
+	phrase := acceptedContractValuesPhrase()
+	if !strings.Contains(report, phrase) {
+		problems = append(problems, fmt.Sprintf("does not name the accepted set as %q", phrase))
+	}
+	if !strings.Contains(report, `"3"`) {
+		problems = append(problems, `does not name the rejected value "3"`)
+	}
+	if !strings.Contains(report, "-"+flagContractVersion) {
+		problems = append(problems, "does not name -"+flagContractVersion)
+	}
+	return problems
+}
+
 func assertMapping(t *testing.T, row wiringRow, bed classifyBed, got Artifacts) {
 	t.Helper()
 	if got.ExitCode != row.wantExit {
@@ -432,16 +476,8 @@ func assertMapping(t *testing.T, row wiringRow, bed classifyBed, got Artifacts) 
 
 	if row.contract == "3" {
 		report := string(got.Stdout)
-		if !strings.Contains(report, `"3"`) {
-			t.Errorf("the report does not name the value it rejected:\n%s", report)
-		}
-		for _, v := range contractVersionSet {
-			if !strings.Contains(report, v.String()) {
-				t.Errorf("the report does not name accepted contract %s:\n%s", v, report)
-			}
-		}
-		if !strings.Contains(report, "-"+flagContractVersion) {
-			t.Errorf("the report never names -%s:\n%s", flagContractVersion, report)
+		for _, p := range rejectedContractReportProblems(report) {
+			t.Errorf("rejected-contract report %s:\n%s", p, report)
 		}
 	}
 
@@ -688,14 +724,8 @@ func TestSeal_Wiring_RejectedContractIsValidatedFirst(t *testing.T) {
 	if !strings.Contains(stdout, "=== CLASSIFY: INVALID_INPUT ===") {
 		t.Errorf("stdout is not the INVALID_INPUT report:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, `"3"`) {
-		t.Errorf("the report does not name the value it rejected:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "1") || !strings.Contains(stdout, "2") {
-		t.Errorf("the report does not name the accepted set {1,2}:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "-"+flagContractVersion) {
-		t.Errorf("the report never names -%s:\n%s", flagContractVersion, stdout)
+	for _, p := range rejectedContractReportProblems(stdout) {
+		t.Errorf("rejected-contract report %s:\n%s", p, stdout)
 	}
 	for _, wrong := range []string{"no risk-paths config found", "no rule table", "diff is empty", "risk-paths.json"} {
 		if strings.Contains(stdout, wrong) {
@@ -730,6 +760,34 @@ func TestSeal_Wiring_RejectedContractIsValidatedFirst(t *testing.T) {
 	}
 	assertArtifact(t, "CONTROL run-state", ArtifactWritten, accepted.RunState)
 	assertArtifact(t, "CONTROL v2 sidecar", ArtifactWritten, accepted.V2Sidecar)
+}
+
+// TestSeal_Wiring_RejectedContractReportNamesTheAcceptedSet is GREEN today:
+// it is the in-test control for the accepted-set claim. A report that
+// mentions "3", the flag, and the digits 1 and 2 only because Worktree
+// contains them must redden; a report that carries ParseContractVersion's
+// own message must pass.
+func TestSeal_Wiring_RejectedContractReportNamesTheAcceptedSet(t *testing.T) {
+	defer red(t)
+
+	_, err := ParseContractVersion("3")
+	if err == nil {
+		t.Fatal(`CONTROL: ParseContractVersion("3") must error`)
+	}
+	honest := "=== CLASSIFY: INVALID_INPUT ===\nWorktree: /tmp/TestSeal_no-digits-here\n" + err.Error() + "\n"
+	if problems := rejectedContractReportProblems(honest); len(problems) != 0 {
+		t.Fatalf("CONTROL: a report carrying ParseContractVersion's message must pass, got %v", problems)
+	}
+
+	// The defect the panel measured: Contains(report, "1") && Contains(report, "2")
+	// on the whole report, satisfied by Worktree: /tmp/...12... with no accepted set.
+	vacuous := fmt.Sprintf("=== CLASSIFY: INVALID_INPUT ===\nWorktree: /tmp/TestSeal_12/001\n-%s %q is not a classification contract this binary emits\n", flagContractVersion, "3")
+	if !strings.Contains(vacuous, "1") || !strings.Contains(vacuous, "2") || !strings.Contains(vacuous, `"3"`) || !strings.Contains(vacuous, "-"+flagContractVersion) {
+		t.Fatal("CONTROL: the vacuous payload must contain the old substring matches so this row actually judges the defect")
+	}
+	if problems := rejectedContractReportProblems(vacuous); len(problems) == 0 {
+		t.Fatal("a report that names 1 and 2 only because Worktree contains those digits passed the accepted-set check")
+	}
 }
 
 // TestSeal_Wiring_TwoBedsAreNotByteIdentical is a self-measurement: two live
@@ -817,6 +875,129 @@ func TestSeal_Wiring_RunWiringHonoursTheMapping(t *testing.T) {
 	}
 }
 
+// TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir seals clause 7
+// behaviourally: relative -config, -worktree, -out and the diff argument
+// resolve against Invocation.Dir, which is not the process working
+// directory, and the process directory does not change.
+//
+// RED today on the stub. A body that ignores inv.Dir and resolves against
+// cwd would classify the decoy bed and write artifacts there.
+func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
+	defer red(t)
+
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	cwdDir := t.TempDir()
+	invDir := t.TempDir()
+	if err := os.Chdir(cwdDir); err != nil {
+		t.Fatalf("chdir to decoy cwd: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(origWD); err != nil {
+			t.Errorf("restore wd: %v", err)
+		}
+	})
+
+	cfgBytes, err := os.ReadFile(filepath.Join(origWD, exampleConfigPath))
+	if err != nil {
+		t.Fatalf("read fixture config: %v", err)
+	}
+
+	const (
+		relCfg      = "risk-paths.json"
+		relDiff     = "change.diff"
+		relOut      = "artifacts/run-state.json"
+		relWorktree = "."
+	)
+	if err := os.WriteFile(filepath.Join(invDir, relCfg), cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invDir, relDiff), []byte(diffFor(walletPath)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	decoyCfg := []byte(`{"schema_version":1,"unmatched_risk":"low","rules":[{"id":"decoy","paths":["never-matches-this"],"risk":"low"}]}` + "\n")
+	decoyDiff := []byte(diffFor("docs/README.md"))
+	decoyOut := []byte(`{"schema_version":1,"status":"decoy-cwd"}` + "\n")
+	if err := os.WriteFile(filepath.Join(cwdDir, relCfg), decoyCfg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdDir, relDiff), decoyDiff, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cwdDir, "artifacts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwdDir, relOut), decoyOut, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	args := []string{
+		"-no-git",
+		"-worktree", relWorktree,
+		"-config", relCfg,
+		"-out", relOut,
+		"-json",
+		"-" + flagContractVersion, "1",
+		relDiff,
+	}
+	got, runErr := RunWiring(Invocation{Args: args, Dir: invDir})
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd after RunWiring: %v", err)
+	}
+	if !sameResolvedPath(wd, cwdDir) {
+		t.Errorf("RunWiring changed the process working directory to %s; clause 7 forbids os.Chdir and paths resolve against inv.Dir (%s)", wd, invDir)
+	}
+
+	if stubRED(t, runErr, "RunWiring must resolve relative -config/-worktree/-out/diff against Invocation.Dir without changing the process working directory") {
+		return
+	}
+	if got.ExitCode != exitOK {
+		t.Errorf("relative-path classify exited %d, want %d:\nstdout=%s\nstderr=%s", got.ExitCode, exitOK, got.Stdout, got.Stderr)
+	}
+
+	wantOut := filepath.Join(invDir, relOut)
+	if !fileExists(wantOut) {
+		t.Errorf("did not write the run-state under Invocation.Dir at %s", wantOut)
+	}
+	afterDecoy := snap(t, filepath.Join(cwdDir, relOut))
+	if !afterDecoy.exists || !bytes.Equal(afterDecoy.bytes, decoyOut) {
+		t.Errorf("resolved -out against the process working directory (decoy run-state was rewritten)")
+	}
+	if got.RunState.State != ArtifactWritten {
+		t.Errorf("run-state state = %s, want written (the file under Invocation.Dir)", got.RunState.State)
+	}
+	if got.RunState.Path != "" && !pathUnderDir(got.RunState.Path, invDir) {
+		t.Errorf("reported run-state path %q is not under Invocation.Dir %q", got.RunState.Path, invDir)
+	}
+}
+
+func sameResolvedPath(a, b string) bool {
+	ea, err1 := filepath.EvalSymlinks(a)
+	eb, err2 := filepath.EvalSymlinks(b)
+	if err1 == nil && err2 == nil {
+		return ea == eb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func pathUnderDir(p, dir string) bool {
+	absP, err1 := filepath.Abs(p)
+	absDir, err2 := filepath.Abs(dir)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absDir, absP)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
 // TestSeal_Wiring_RunWiringDispatchesSubcommands seals RunWiring clause 6:
 // "init", "capabilities", "help", "-h" and "--help" as Args[0] take the
 // pre-flag-parse branch. The capabilities probe's ordering is part of the
@@ -837,8 +1018,8 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if got.ExitCode != exitOK && got.ExitCode != ExitCode(exitCapabilityIncomplete) {
 			t.Errorf("capabilities exited %d, want 0 or %d", got.ExitCode, exitCapabilityIncomplete)
 		}
-		if !bytes.Contains(got.Stdout, []byte(`"cmd/classify"`)) || !bytes.Contains(got.Stdout, []byte(`"probe_version"`)) {
-			t.Errorf("capabilities stdout is not the probe report:\n%s", got.Stdout)
+		for _, p := range capabilityProbeProblems(got.Stdout, got.ExitCode) {
+			t.Errorf("capabilities probe %s:\n%s", p, got.Stdout)
 		}
 		if bytes.Contains(got.Stdout, []byte("=== CLASSIFY: INVALID_INPUT ===")) {
 			t.Errorf("capabilities fell through to the classify path")
@@ -900,13 +1081,152 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if got.V2Sidecar.State != ArtifactNotApplicable {
 			t.Errorf("init asserted a v2 sidecar artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams — ArtifactNotApplicable exactly, not Unset", got.V2Sidecar.State)
 		}
-		if _, err := os.Stat(out); err != nil {
+		first, err := os.ReadFile(out)
+		if err != nil {
 			t.Errorf("init did not write the scaffold at %s: %v", out, err)
+			return
 		}
 		if !bytes.Contains(got.Stdout, []byte("=== CLASSIFY INIT ===")) && !bytes.Contains(got.Stderr, []byte("=== CLASSIFY INIT ===")) {
 			t.Errorf("init did not print its report; stdout=%q stderr=%q", got.Stdout, got.Stderr)
 		}
+
+		again, err := RunWiring(Invocation{Args: []string{"init", "-worktree", dir, "-out", out}, Dir: dir})
+		if err != nil {
+			t.Fatalf("second init without -force: %v", err)
+		}
+		if again.ExitCode != ExitCode(exitInvalid) {
+			t.Errorf("second init without -force exited %d, want %d — the refusal to overwrite is the safety property", again.ExitCode, exitInvalid)
+		}
+		after, err := os.ReadFile(out)
+		if err != nil {
+			t.Errorf("second init removed the scaffold: %v", err)
+		} else if !bytes.Equal(after, first) {
+			t.Errorf("second init without -force rewrote the scaffold")
+		}
 	})
+
+	t.Run("init-refuses-existing-without-force", func(t *testing.T) {
+		defer red(t)
+		dest := t.TempDir()
+		out := filepath.Join(dest, "risk-paths.json")
+		seed := []byte(`{"schema_version":1,"scaffold":true,"seeded":"by-the-seal"}` + "\n")
+		if err := os.WriteFile(out, seed, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := RunWiring(Invocation{Args: []string{"init", "-worktree", dest, "-out", out}, Dir: dest})
+		if stubRED(t, err, "RunWiring(init) against an existing table without -force must exit %d and leave the file byte-identical", exitInvalid) {
+			return
+		}
+		if got.ExitCode != ExitCode(exitInvalid) {
+			t.Errorf("init without -force over a seeded table exited %d, want %d", got.ExitCode, exitInvalid)
+		}
+		after, err := os.ReadFile(out)
+		if err != nil {
+			t.Errorf("init without -force removed the seeded table: %v", err)
+		} else if !bytes.Equal(after, seed) {
+			t.Errorf("init without -force rewrote an existing rule table")
+		}
+	})
+
+	t.Run("init-force-overwrites", func(t *testing.T) {
+		defer red(t)
+		dest := t.TempDir()
+		out := filepath.Join(dest, "risk-paths.json")
+		seed := []byte(`{"schema_version":1,"seeded":"by-the-seal"}` + "\n")
+		if err := os.WriteFile(out, seed, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := RunWiring(Invocation{Args: []string{"init", "-worktree", dest, "-out", out, "-force"}, Dir: dest})
+		if stubRED(t, err, "RunWiring(init -force) must overwrite an existing table, exit 0, and write a scaffold") {
+			return
+		}
+		if got.ExitCode != exitOK {
+			t.Errorf("init -force exited %d, want 0", got.ExitCode)
+		}
+		after, err := os.ReadFile(out)
+		if err != nil {
+			t.Errorf("init -force did not leave a file at %s: %v", out, err)
+			return
+		}
+		if bytes.Equal(after, seed) {
+			t.Errorf("init -force left the seeded table unchanged — -force is part of the init contract")
+		}
+		if !bytes.Contains(after, []byte(`"scaffold"`)) {
+			t.Errorf("init -force did not write a scaffold:\n%s", after)
+		}
+	})
+}
+
+// capabilityProbeProblems requires stdout to be a CapabilityReport, not two
+// quoted substrings. The two-substring check accepted `"cmd/classify"
+// "probe_version"` and any other malformed payload that happened to mention
+// those tokens.
+func capabilityProbeProblems(stdout []byte, code ExitCode) []string {
+	var problems []string
+	trim := bytes.TrimSpace(stdout)
+	if !json.Valid(trim) {
+		return []string{"stdout is not valid JSON"}
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(trim, &raw); err != nil {
+		return []string{fmt.Sprintf("stdout is not a JSON object: %v", err)}
+	}
+	for _, k := range []string{"probe_version", "producer", "capabilities", "contract_versions", "missing"} {
+		if _, ok := raw[k]; !ok {
+			problems = append(problems, fmt.Sprintf("missing schema key %q", k))
+		}
+	}
+	var rep CapabilityReport
+	if err := json.Unmarshal(trim, &rep); err != nil {
+		problems = append(problems, fmt.Sprintf("does not unmarshal as CapabilityReport: %v", err))
+		return problems
+	}
+	if rep.ProbeVersion != probeVersion {
+		problems = append(problems, fmt.Sprintf("probe_version = %d, want %d", rep.ProbeVersion, probeVersion))
+	}
+	if rep.Producer != "cmd/classify" {
+		problems = append(problems, fmt.Sprintf("producer = %q, want %q", rep.Producer, "cmd/classify"))
+	}
+	var caps map[string]json.RawMessage
+	if err := json.Unmarshal(raw["capabilities"], &caps); err != nil {
+		problems = append(problems, fmt.Sprintf("capabilities is not an object: %v", err))
+	} else {
+		for _, name := range requiredCapabilities {
+			if _, ok := caps[name]; !ok {
+				problems = append(problems, fmt.Sprintf("capability %q is absent from the report", name))
+			}
+		}
+	}
+	if bytes.Equal(bytes.TrimSpace(raw["missing"]), []byte("null")) {
+		problems = append(problems, "missing marshaled as null; the contract is an empty slice, never null")
+	}
+	wantVersions := make([]int, 0, len(contractVersionSet))
+	for _, v := range contractVersionSet {
+		wantVersions = append(wantVersions, int(v))
+	}
+	if len(rep.ContractVersions) != len(wantVersions) {
+		problems = append(problems, fmt.Sprintf("contract_versions = %v, want %v", rep.ContractVersions, wantVersions))
+	} else {
+		for i, v := range wantVersions {
+			if rep.ContractVersions[i] != v {
+				problems = append(problems, fmt.Sprintf("contract_versions = %v, want %v", rep.ContractVersions, wantVersions))
+				break
+			}
+		}
+	}
+	switch code {
+	case exitOK:
+		if len(rep.Missing) != 0 {
+			problems = append(problems, fmt.Sprintf("exit 0 with missing %v — the biconditional is empty missing iff exit 0", rep.Missing))
+		}
+	case ExitCode(exitCapabilityIncomplete):
+		if len(rep.Missing) == 0 {
+			problems = append(problems, fmt.Sprintf("exit %d with empty missing — the biconditional is empty missing iff exit 0", exitCapabilityIncomplete))
+		}
+	default:
+		problems = append(problems, fmt.Sprintf("exit %d is not 0 or %d", code, exitCapabilityIncomplete))
+	}
+	return problems
 }
 
 func stubRED(t *testing.T, err error, format string, args ...any) bool {
@@ -1019,6 +1339,12 @@ func TestSeal_Wiring_InitStillScaffolds(t *testing.T) {
 	stdoutOf(t, func() { again = cmdInit([]string{"-worktree", dir, "-out", out}) })
 	if again != exitInvalid {
 		t.Errorf("CONTROL: a second init without -force exited %d, want %d — the refusal to overwrite is the safety property", again, exitInvalid)
+	}
+	after, err := os.ReadFile(out)
+	if err != nil {
+		t.Errorf("CONTROL: the refusing init removed the scaffold: %v", err)
+	} else if !bytes.Equal(after, data) {
+		t.Errorf("CONTROL: the refusing init rewrote the scaffold — overwrite-refusal is the file still being byte-identical, not just the exit code")
 	}
 }
 
@@ -1399,6 +1725,10 @@ func TestSeal_Wiring_MainForwardsTheResult(t *testing.T) {
 
 	if countCalls(mainFn, isIdentCall("RunWiring")) != 1 {
 		t.Errorf("main() does not call RunWiring exactly once (found %d). Clause 1: RunWiring IS the code main() runs.", countCalls(mainFn, isIdentCall("RunWiring")))
+	} else {
+		for _, p := range runWiringInvocationProblems(mainFn) {
+			t.Errorf("clause 8 argv: %s", p)
+		}
 	}
 	if countNodes(mainFn, isSelectorIdent("os", "Args")) == 0 {
 		t.Errorf("main() does not mention os.Args. Clause 8's forwarding starts from os.Args[1:] into RunWiring.")
@@ -1882,51 +2212,64 @@ func runWiringResultBinding(fn *ast.FuncDecl) (artIdent, errIdent string, ok boo
 	return artIdent, errIdent, artIdent != "" && errIdent != ""
 }
 
+// originFromRHS is last-write, not a monotonic OR. An assignment whose RHS
+// is neither art.ExitCode nor exitInternal (nor an alias of one) CLEARS
+// both origins. `code := int(art.ExitCode); code = 0` therefore does not
+// still count as fromExitCode.
+func originFromRHS(rhs ast.Expr, artIdent string, origins map[string]identOrigin) identOrigin {
+	if rhs == nil {
+		return identOrigin{}
+	}
+	var o identOrigin
+	if exprUsesField(rhs, artIdent, "ExitCode") {
+		o.fromExitCode = true
+	}
+	if exprUsesIdent(rhs, "exitInternal") {
+		o.fromInternal = true
+	}
+	if o.fromExitCode || o.fromInternal {
+		return o
+	}
+	if id, ok := peelConv(rhs).(*ast.Ident); ok {
+		return origins[id.Name]
+	}
+	return identOrigin{}
+}
+
+func assignLastWrite(origins map[string]identOrigin, lhs []ast.Expr, rhs []ast.Expr, artIdent string) {
+	for i, dest := range lhs {
+		id, ok := dest.(*ast.Ident)
+		if !ok || id.Name == "" || id.Name == "_" {
+			continue
+		}
+		var src ast.Expr
+		switch {
+		case len(rhs) == len(lhs):
+			src = rhs[i]
+		case len(rhs) == 1:
+			src = rhs[0]
+		default:
+			continue
+		}
+		origins[id.Name] = originFromRHS(src, artIdent, origins)
+	}
+}
+
 func collectIdentOrigins(fn *ast.FuncDecl, artIdent string) map[string]identOrigin {
 	origins := map[string]identOrigin{}
-	add := func(name string, rhs ast.Expr) {
-		if name == "" || name == "_" || rhs == nil {
-			return
-		}
-		o := origins[name]
-		if exprUsesField(rhs, artIdent, "ExitCode") {
-			o.fromExitCode = true
-		}
-		if exprUsesIdent(rhs, "exitInternal") {
-			o.fromInternal = true
-		}
-		if id, ok := peelConv(rhs).(*ast.Ident); ok {
-			inner := origins[id.Name]
-			o.fromExitCode = o.fromExitCode || inner.fromExitCode
-			o.fromInternal = o.fromInternal || inner.fromInternal
-		}
-		origins[name] = o
+	if fn == nil || fn.Body == nil {
+		return origins
 	}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch s := n.(type) {
 		case *ast.AssignStmt:
-			for i, lhs := range s.Lhs {
-				id, ok := lhs.(*ast.Ident)
-				if !ok {
-					continue
-				}
-				var rhs ast.Expr
-				switch {
-				case len(s.Rhs) == len(s.Lhs):
-					rhs = s.Rhs[i]
-				case len(s.Rhs) == 1:
-					rhs = s.Rhs[0]
-				default:
-					continue
-				}
-				add(id.Name, rhs)
-			}
+			assignLastWrite(origins, s.Lhs, s.Rhs, artIdent)
 		case *ast.ValueSpec:
+			lhs := make([]ast.Expr, len(s.Names))
 			for i, name := range s.Names {
-				if i < len(s.Values) {
-					add(name.Name, s.Values[i])
-				}
+				lhs[i] = name
 			}
+			assignLastWrite(origins, lhs, s.Values, artIdent)
 		}
 		return true
 	})
@@ -1948,60 +2291,365 @@ func exitArgOrigins(arg ast.Expr, artIdent string, origins map[string]identOrigi
 	return fromCode, fromInternal
 }
 
-func nilCheckErrorBody(ifs *ast.IfStmt, errIdent string) *ast.BlockStmt {
-	bin, ok := ifs.Cond.(*ast.BinaryExpr)
-	if !ok || (bin.Op != token.NEQ && bin.Op != token.EQL) {
+type pathState struct {
+	origins          map[string]identOrigin
+	stdoutFromArt    bool
+	stderrFromArt    bool
+	errReported      bool
+	unrelatedStdout  bool
+	unrelatedStderr  bool
+	tookErrorBranch  bool
+	sawExit          bool
+	exitFromCode     bool
+	exitFromInternal bool
+}
+
+func clonePathState(st pathState) pathState {
+	cp := st
+	cp.origins = make(map[string]identOrigin, len(st.origins))
+	for k, v := range st.origins {
+		cp.origins[k] = v
+	}
+	return cp
+}
+
+func elseAsBlock(e ast.Stmt) *ast.BlockStmt {
+	if e == nil {
 		return nil
+	}
+	if b, ok := e.(*ast.BlockStmt); ok {
+		return b
+	}
+	return &ast.BlockStmt{List: []ast.Stmt{e}}
+}
+
+func errNilBranches(ifs *ast.IfStmt, errIdent string) (errBody, okBody *ast.BlockStmt, ok bool) {
+	bin, binOK := ifs.Cond.(*ast.BinaryExpr)
+	if !binOK || (bin.Op != token.NEQ && bin.Op != token.EQL) {
+		return nil, nil, false
 	}
 	mentions := (isIdentNamed(bin.X, errIdent) && isIdentNamed(bin.Y, "nil")) ||
 		(isIdentNamed(bin.Y, errIdent) && isIdentNamed(bin.X, "nil"))
 	if !mentions {
-		return nil
+		return nil, nil, false
 	}
 	if bin.Op == token.NEQ {
-		return ifs.Body
+		return ifs.Body, elseAsBlock(ifs.Else), true
 	}
-	elseBlk, ok := ifs.Else.(*ast.BlockStmt)
-	if !ok {
-		return nil
-	}
-	return elseBlk
+	return elseAsBlock(ifs.Else), ifs.Body, true
 }
 
-func errorBranchReportsErr(fn *ast.FuncDecl, errIdent string) bool {
-	if fn == nil || fn.Body == nil || errIdent == "" {
-		return false
+func applyCall(st *pathState, call *ast.CallExpr, artIdent, errIdent string) {
+	switch streamWriteTarget(call) {
+	case "Stdout":
+		if callPayloadUsesField(call, artIdent, "Stdout") {
+			st.stdoutFromArt = true
+		} else {
+			st.unrelatedStdout = true
+		}
+	case "Stderr":
+		if callPayloadUsesField(call, artIdent, "Stderr") {
+			st.stderrFromArt = true
+		} else if callPayloadUsesIdent(call, errIdent) {
+			st.errReported = true
+		} else {
+			st.unrelatedStderr = true
+		}
 	}
-	reported := false
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		ifs, ok := n.(*ast.IfStmt)
+	if isSelectorCall("os", "Exit")(call) && len(call.Args) == 1 {
+		st.sawExit = true
+		st.exitFromCode, st.exitFromInternal = exitArgOrigins(call.Args[0], artIdent, st.origins)
+	}
+}
+
+func applyExpr(st *pathState, e ast.Expr, artIdent, errIdent string) {
+	if e == nil {
+		return
+	}
+	ast.Inspect(e, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if ok {
+			applyCall(st, call, artIdent, errIdent)
+		}
+		return true
+	})
+}
+
+func applyStmt(st *pathState, s ast.Stmt, artIdent, errIdent string) {
+	switch x := s.(type) {
+	case *ast.AssignStmt:
+		assignLastWrite(st.origins, x.Lhs, x.Rhs, artIdent)
+		for _, rhs := range x.Rhs {
+			applyExpr(st, rhs, artIdent, errIdent)
+		}
+	case *ast.DeclStmt:
+		gen, ok := x.Decl.(*ast.GenDecl)
 		if !ok {
-			return true
+			return
 		}
-		body := nilCheckErrorBody(ifs, errIdent)
-		if body == nil {
-			return true
-		}
-		ast.Inspect(body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
 			if !ok {
-				return true
+				continue
 			}
-			if streamWriteTarget(call) == "Stderr" && callPayloadUsesIdent(call, errIdent) {
-				reported = true
+			lhs := make([]ast.Expr, len(vs.Names))
+			for i, name := range vs.Names {
+				lhs[i] = name
+			}
+			assignLastWrite(st.origins, lhs, vs.Values, artIdent)
+			for _, v := range vs.Values {
+				applyExpr(st, v, artIdent, errIdent)
+			}
+		}
+	case *ast.ExprStmt:
+		applyExpr(st, x.X, artIdent, errIdent)
+	case *ast.IncDecStmt:
+		if id, ok := x.X.(*ast.Ident); ok {
+			st.origins[id.Name] = identOrigin{}
+		}
+	default:
+		ast.Inspect(s, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				applyCall(st, call, artIdent, errIdent)
 			}
 			return true
 		})
+	}
+}
+
+func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]pathState) {
+	if st.sawExit || len(stmts) == 0 {
+		*out = append(*out, st)
+		return
+	}
+	s, rest := stmts[0], stmts[1:]
+	switch x := s.(type) {
+	case *ast.BlockStmt:
+		walkSeq(append(append([]ast.Stmt{}, x.List...), rest...), st, artIdent, errIdent, out)
+	case *ast.IfStmt:
+		if x.Init != nil {
+			applyStmt(&st, x.Init, artIdent, errIdent)
+			if st.sawExit {
+				*out = append(*out, st)
+				return
+			}
+		}
+		errBody, okBody, isErr := errNilBranches(x, errIdent)
+		if isErr {
+			errSt := clonePathState(st)
+			errSt.tookErrorBranch = true
+			var errDone []pathState
+			walkSeq(blockList(errBody), errSt, artIdent, errIdent, &errDone)
+			for _, p := range errDone {
+				walkSeq(rest, p, artIdent, errIdent, out)
+			}
+			okSt := clonePathState(st)
+			var okDone []pathState
+			walkSeq(blockList(okBody), okSt, artIdent, errIdent, &okDone)
+			for _, p := range okDone {
+				walkSeq(rest, p, artIdent, errIdent, out)
+			}
+			return
+		}
+		thenSt := clonePathState(st)
+		var thenDone []pathState
+		walkSeq(blockList(x.Body), thenSt, artIdent, errIdent, &thenDone)
+		for _, p := range thenDone {
+			walkSeq(rest, p, artIdent, errIdent, out)
+		}
+		elseSt := clonePathState(st)
+		var elseDone []pathState
+		walkSeq(blockList(elseAsBlock(x.Else)), elseSt, artIdent, errIdent, &elseDone)
+		for _, p := range elseDone {
+			walkSeq(rest, p, artIdent, errIdent, out)
+		}
+	case *ast.ReturnStmt:
+		*out = append(*out, st)
+	default:
+		applyStmt(&st, s, artIdent, errIdent)
+		walkSeq(rest, st, artIdent, errIdent, out)
+	}
+}
+
+func blockList(b *ast.BlockStmt) []ast.Stmt {
+	if b == nil {
+		return nil
+	}
+	return b.List
+}
+
+func analyzeMainPaths(fn *ast.FuncDecl, artIdent, errIdent string) []pathState {
+	st := pathState{origins: map[string]identOrigin{}}
+	var out []pathState
+	walkSeq(fn.Body.List, st, artIdent, errIdent, &out)
+	return out
+}
+
+func isOsArgsSlicedFromOne(e ast.Expr) bool {
+	sl, ok := e.(*ast.SliceExpr)
+	if !ok || sl.Low == nil || sl.High != nil || sl.Max != nil || sl.Slice3 {
+		return false
+	}
+	if !isSelectorIdent("os", "Args")(sl.X) {
+		return false
+	}
+	lit, ok := sl.Low.(*ast.BasicLit)
+	return ok && lit.Kind == token.INT && lit.Value == "1"
+}
+
+func compositeHasKeyedElts(lit *ast.CompositeLit) bool {
+	for _, elt := range lit.Elts {
+		if _, ok := elt.(*ast.KeyValueExpr); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func invocationLitArgsFromOsArgsSlice(lit *ast.CompositeLit, aliases map[string]bool) bool {
+	if lit == nil {
+		return false
+	}
+	if !compositeHasKeyedElts(lit) {
+		if len(lit.Elts) == 0 {
+			return false
+		}
+		return exprIsOsArgsSlice(lit.Elts[0], aliases)
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Args" {
+			continue
+		}
+		return exprIsOsArgsSlice(kv.Value, aliases)
+	}
+	return false
+}
+
+func exprIsOsArgsSlice(e ast.Expr, aliases map[string]bool) bool {
+	if isOsArgsSlicedFromOne(e) {
+		return true
+	}
+	id, ok := e.(*ast.Ident)
+	return ok && aliases[id.Name]
+}
+
+func collectOsArgsSliceAliases(fn *ast.FuncDecl) map[string]bool {
+	aliases := map[string]bool{}
+	if fn == nil || fn.Body == nil {
+		return aliases
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			var rhs ast.Expr
+			switch {
+			case len(as.Rhs) == len(as.Lhs):
+				rhs = as.Rhs[i]
+			case len(as.Rhs) == 1:
+				rhs = as.Rhs[0]
+			default:
+				continue
+			}
+			aliases[id.Name] = isOsArgsSlicedFromOne(rhs)
+		}
 		return true
 	})
-	return reported
+	return aliases
+}
+
+func collectInvocationLits(fn *ast.FuncDecl) map[string]*ast.CompositeLit {
+	lits := map[string]*ast.CompositeLit{}
+	if fn == nil || fn.Body == nil {
+		return lits
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			var rhs ast.Expr
+			switch {
+			case len(as.Rhs) == len(as.Lhs):
+				rhs = as.Rhs[i]
+			case len(as.Rhs) == 1:
+				rhs = as.Rhs[0]
+			default:
+				continue
+			}
+			if lit, ok := rhs.(*ast.CompositeLit); ok {
+				lits[id.Name] = lit
+			}
+		}
+		return true
+	})
+	return lits
+}
+
+func exprIsInvocationFromOsArgs(e ast.Expr, aliases map[string]bool, lits map[string]*ast.CompositeLit) bool {
+	switch x := e.(type) {
+	case *ast.CompositeLit:
+		return invocationLitArgsFromOsArgsSlice(x, aliases)
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			return exprIsInvocationFromOsArgs(x.X, aliases, lits)
+		}
+	case *ast.Ident:
+		return invocationLitArgsFromOsArgsSlice(lits[x.Name], aliases)
+	}
+	return false
+}
+
+func runWiringInvocationProblems(fn *ast.FuncDecl) []string {
+	if fn == nil || fn.Body == nil {
+		return []string{"main has no body"}
+	}
+	var call *ast.CallExpr
+	count := 0
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		c, ok := n.(*ast.CallExpr)
+		if !ok || !isIdentCall("RunWiring")(c) {
+			return true
+		}
+		count++
+		call = c
+		return true
+	})
+	if count != 1 {
+		return []string{fmt.Sprintf("RunWiring is called %d time(s), want 1", count)}
+	}
+	if len(call.Args) != 1 {
+		return []string{"RunWiring is not passed a single Invocation"}
+	}
+	aliases := collectOsArgsSliceAliases(fn)
+	lits := collectInvocationLits(fn)
+	if !exprIsInvocationFromOsArgs(call.Args[0], aliases, lits) {
+		return []string{"RunWiring's Invocation.Args does not derive from os.Args[1:]. An empty Invocation, unsliced os.Args, or an unrelated slice drops the operator's argv"}
+	}
+	return nil
 }
 
 // mainForwardingProblems walks main's body for clause 8 data flow from the
-// single RunWiring result. Identifier presence is not enough: Stdout/Stderr
-// fields must be the values written to the corresponding streams, ExitCode
-// must feed os.Exit, and the non-nil error branch must report that error on
-// os.Stderr and select exitInternal.
+// single RunWiring result. The walk is control-flow and last-assignment
+// aware: artifact streams must be written on the successful path, exitInternal
+// must be the value reaching os.Exit on the non-nil-error path, and a later
+// write of 0 (or any unrelated RHS) clears both origins.
 func mainForwardingProblems(fn *ast.FuncDecl) []string {
 	if fn == nil || fn.Body == nil {
 		return []string{"main has no body"}
@@ -2010,53 +2658,66 @@ func mainForwardingProblems(fn *ast.FuncDecl) []string {
 	if !ok {
 		return []string{"RunWiring's Artifacts and error results are not both bound to names. Clause 8 forwards that result; discarding either answer cannot forward it"}
 	}
-	origins := collectIdentOrigins(fn, artIdent)
+	var problems []string
+	problems = append(problems, runWiringInvocationProblems(fn)...)
+
+	paths := analyzeMainPaths(fn, artIdent, errIdent)
+	if len(paths) == 0 {
+		return append(problems, "main has no executable path")
+	}
 
 	var (
-		stdoutFromArt, stderrFromArt   bool
-		exitFromCode, exitFromInternal bool
-		problems                       []string
+		anyError, anySuccess     bool
+		missingSuccessStreams    bool
+		missingSuccessExitCode   bool
+		missingErrorReport       bool
+		missingErrorExitInternal bool
+		unrelatedWrite           bool
 	)
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+	for _, p := range paths {
+		if p.unrelatedStdout || p.unrelatedStderr {
+			unrelatedWrite = true
 		}
-		switch streamWriteTarget(call) {
-		case "Stdout":
-			if callPayloadUsesField(call, artIdent, "Stdout") {
-				stdoutFromArt = true
-			} else {
-				problems = append(problems, "a write to os.Stdout does not take "+artIdent+".Stdout — unrelated bytes are not forwarding")
+		if p.tookErrorBranch {
+			anyError = true
+			if !p.errReported {
+				missingErrorReport = true
 			}
-		case "Stderr":
-			if callPayloadUsesField(call, artIdent, "Stderr") {
-				stderrFromArt = true
-			} else if !callPayloadUsesIdent(call, errIdent) {
-				problems = append(problems, "a write to os.Stderr is neither "+artIdent+".Stderr nor the RunWiring error")
+			if !p.sawExit || !p.exitFromInternal {
+				missingErrorExitInternal = true
 			}
+			continue
 		}
-		if isSelectorCall("os", "Exit")(call) && len(call.Args) == 1 {
-			fromCode, fromInternal := exitArgOrigins(call.Args[0], artIdent, origins)
-			exitFromCode = exitFromCode || fromCode
-			exitFromInternal = exitFromInternal || fromInternal
+		anySuccess = true
+		if !p.stdoutFromArt || !p.stderrFromArt {
+			missingSuccessStreams = true
 		}
-		return true
-	})
-	if !stdoutFromArt {
-		problems = append(problems, artIdent+".Stdout is never written to os.Stdout")
+		if !p.sawExit || !p.exitFromCode {
+			missingSuccessExitCode = true
+		}
 	}
-	if !stderrFromArt {
-		problems = append(problems, artIdent+".Stderr is never written to os.Stderr")
+	if unrelatedWrite {
+		problems = append(problems, "a write to os.Stdout/os.Stderr is neither the RunWiring artifact stream nor the RunWiring error — unrelated bytes are not forwarding")
 	}
-	if !exitFromCode {
-		problems = append(problems, "os.Exit is not fed "+artIdent+".ExitCode")
+	if !anySuccess {
+		problems = append(problems, "there is no successful path on which to forward "+artIdent+".Stdout/"+artIdent+".Stderr and "+artIdent+".ExitCode")
+	} else {
+		if missingSuccessStreams {
+			problems = append(problems, artIdent+".Stdout/.Stderr are not written to the process streams on the successful path")
+		}
+		if missingSuccessExitCode {
+			problems = append(problems, "os.Exit on the successful path is not fed "+artIdent+".ExitCode (a later overwrite of the exit identifier is not forwarding)")
+		}
 	}
-	if !errorBranchReportsErr(fn, errIdent) {
-		problems = append(problems, "the non-nil error branch does not report the returned error on os.Stderr")
-	}
-	if !exitFromInternal {
-		problems = append(problems, "exitInternal does not feed os.Exit (a dead mention is not selecting it)")
+	if !anyError {
+		problems = append(problems, "there is no non-nil error path that reports the returned error on os.Stderr and selects exitInternal")
+	} else {
+		if missingErrorReport {
+			problems = append(problems, "the non-nil error path does not report the returned error on os.Stderr")
+		}
+		if missingErrorExitInternal {
+			problems = append(problems, "os.Exit on the non-nil error path is not fed exitInternal (a later overwrite of the exit identifier is not selecting it)")
+		}
 	}
 	return problems
 }
@@ -2142,5 +2803,141 @@ func main() {
 }`)
 	if problems := mainForwardingProblems(discardedErr); len(problems) == 0 {
 		t.Fatal("discarding RunWiring's error must not pass the walk")
+	}
+
+	overwriteWrongBranch := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	code = 0
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(overwriteWrongBranch); len(problems) == 0 {
+		t.Fatal("CONTROL: streams only on the error path plus overwriting code with 0 before os.Exit must redden — that body emits nothing on success and always exits 0")
+	}
+
+	lastWriteClears := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	}
+	code = 0
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(lastWriteClears); len(problems) == 0 {
+		t.Fatal("CONTROL: code := int(art.ExitCode); code = 0; os.Exit(code) must redden — last-write of 0 is not ExitCode or exitInternal")
+	}
+	if o := collectIdentOrigins(lastWriteClears, "art")["code"]; o.fromExitCode || o.fromInternal {
+		t.Fatal("collectIdentOrigins still ORs origins across assignments: last write of 0 must clear both")
+	}
+
+	emptyInv := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := runWiringInvocationProblems(emptyInv); len(problems) == 0 {
+		t.Fatal("CONTROL: RunWiring(Invocation{}) must fail the argv check — it drops os.Args[1:]")
+	}
+
+	unsliced := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := runWiringInvocationProblems(unsliced); len(problems) == 0 {
+		t.Fatal("CONTROL: RunWiring(Invocation{Args: os.Args}) must fail the argv check — the slice is not os.Args[1:]")
+	}
+
+	unrelatedArgs := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: []string{"classify"}})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := runWiringInvocationProblems(unrelatedArgs); len(problems) == 0 {
+		t.Fatal("CONTROL: RunWiring with an unrelated Args slice must fail the argv check")
+	}
+}
+
+// TestSeal_Wiring_CapabilityProbeMatcherRejectsTwoSubstrings is GREEN today:
+// it is the in-test control for the capabilities dispatch row. The two
+// quoted-substring check accepted `"cmd/classify" "probe_version"`.
+func TestSeal_Wiring_CapabilityProbeMatcherRejectsTwoSubstrings(t *testing.T) {
+	defer red(t)
+
+	malformed := []byte(`"cmd/classify" "probe_version"`)
+	if bytes.Contains(malformed, []byte(`"cmd/classify"`)) && bytes.Contains(malformed, []byte(`"probe_version"`)) {
+		// the old check would have accepted this payload
+	} else {
+		t.Fatal("CONTROL: the malformed payload must contain the two substrings the old check looked for")
+	}
+	if problems := capabilityProbeProblems(malformed, exitOK); len(problems) == 0 {
+		t.Fatal("the two-substring malformed payload passed the probe matcher")
+	}
+
+	honest, err := json.Marshal(CapabilityReport{
+		ProbeVersion:     probeVersion,
+		Producer:         "cmd/classify",
+		Capabilities:     Capabilities{FramedAuthoritativeStdin: true, DualDigestEcho: true, ContractVersionFlag: true},
+		ContractVersions: []int{int(ContractV1), int(ContractV2)},
+		Missing:          []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if problems := capabilityProbeProblems(honest, exitOK); len(problems) != 0 {
+		t.Fatalf("CONTROL: a complete CapabilityReport at exit 0 must pass, got %v", problems)
+	}
+
+	incomplete, err := json.Marshal(CapabilityReport{
+		ProbeVersion:     probeVersion,
+		Producer:         "cmd/classify",
+		Capabilities:     Capabilities{ContractVersionFlag: true, DualDigestEcho: true},
+		ContractVersions: []int{int(ContractV1), int(ContractV2)},
+		Missing:          []string{"framed_authoritative_stdin"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if problems := capabilityProbeProblems(incomplete, ExitCode(exitCapabilityIncomplete)); len(problems) != 0 {
+		t.Fatalf("CONTROL: a CapabilityReport at exit %d with missing must pass, got %v", exitCapabilityIncomplete, problems)
+	}
+	if problems := capabilityProbeProblems(incomplete, exitOK); len(problems) == 0 {
+		t.Fatal("CONTROL: exit 0 with a non-empty missing list must redden")
 	}
 }
