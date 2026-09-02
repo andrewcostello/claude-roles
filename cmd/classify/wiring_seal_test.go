@@ -1788,6 +1788,11 @@ func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
 // and -out, so a body that resolves classify arguments against inv.Dir and
 // dispatches init against the process cwd would still pass.
 //
+// The nested-worktree subtest is the -worktree half: default output is
+// <worktree>/.agent/risk-paths.json, so an implementation that resolves only
+// an explicit -out against inv.Dir while leaving -worktree relative to the
+// process cwd cannot pass.
+//
 // RED today on the stub. A body that forwards relative -worktree/-out to
 // cmdInit unchanged writes the scaffold under the process cwd.
 func TestSeal_Wiring_RunWiringInitResolvesPathsAgainstInvocationDir(t *testing.T) {
@@ -1833,30 +1838,112 @@ func TestSeal_Wiring_RunWiringInitResolvesPathsAgainstInvocationDir(t *testing.T
 		t.Errorf("RunWiring(init) changed the process working directory to %s; clause 7 forbids os.Chdir and paths resolve against inv.Dir (%s)", wd, invDir)
 	}
 
-	if stubRED(t, runErr, "RunWiring(init) must resolve relative -worktree/-out against Invocation.Dir without changing the process working directory") {
-		return
-	}
-	if got.ExitCode != exitOK {
-		t.Errorf("relative-path init exited %d, want %d:\nstdout=%s\nstderr=%s", got.ExitCode, exitOK, got.Stdout, got.Stderr)
-	}
-	assertInitArtifactsNotApplicable(t, "init-relative", got)
-
-	data, err := os.ReadFile(wantOut)
-	if err != nil {
-		t.Errorf("init did not write the scaffold under Invocation.Dir at %s: %v", wantOut, err)
-	} else {
-		for _, p := range scaffoldConfigProblems(data) {
-			t.Errorf("relative-path init did not write a complete scaffold under Invocation.Dir: %s\n%s", p, data)
+	if !stubRED(t, runErr, "RunWiring(init) must resolve relative -worktree/-out against Invocation.Dir without changing the process working directory") {
+		if got.ExitCode != exitOK {
+			t.Errorf("relative-path init exited %d, want %d:\nstdout=%s\nstderr=%s", got.ExitCode, exitOK, got.Stdout, got.Stderr)
 		}
-	}
+		assertInitArtifactsNotApplicable(t, "init-relative", got)
 
-	afterDecoy := snap(t, cwdOut)
-	if !afterDecoy.exists || !bytes.Equal(afterDecoy.bytes, beforeDecoy.bytes) {
-		t.Errorf("cwd decoy %s was rewritten — a body that dispatches init against the process cwd mutates the decoy bed", cwdOut)
+		data, err := os.ReadFile(wantOut)
+		if err != nil {
+			t.Errorf("init did not write the scaffold under Invocation.Dir at %s: %v", wantOut, err)
+		} else {
+			for _, p := range scaffoldConfigProblems(data) {
+				t.Errorf("relative-path init did not write a complete scaffold under Invocation.Dir: %s\n%s", p, data)
+			}
+		}
+
+		afterDecoy := snap(t, cwdOut)
+		if !afterDecoy.exists || !bytes.Equal(afterDecoy.bytes, beforeDecoy.bytes) {
+			t.Errorf("cwd decoy %s was rewritten — a body that dispatches init against the process cwd mutates the decoy bed", cwdOut)
+		}
 	}
 	if sameResolvedPath(wantOut, cwdOut) {
 		t.Fatal("CONTROL: Invocation.Dir and the process cwd must be distinct so this row can tell them apart")
 	}
+
+	// The explicit -out row above cannot tell a body that only resolves -out
+	// against inv.Dir from one that also resolves -worktree. Default output
+	// is <worktree>/.agent/risk-paths.json, so a nested relative worktree is
+	// the location.
+	t.Run("default-out-under-nested-relative-worktree", func(t *testing.T) {
+		defer red(t)
+
+		const relWorktree = "nested-wt"
+		invWT := filepath.Join(invDir, relWorktree)
+		cwdWT := filepath.Join(cwdDir, relWorktree)
+		if err := os.MkdirAll(invWT, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(cwdWT, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		defaultRel := filepath.Join(relWorktree, agentConfigDirs[0], "risk-paths.json")
+		wantDefault := filepath.Join(invDir, defaultRel)
+		cwdDefault := filepath.Join(cwdDir, defaultRel)
+		invIgnored := filepath.Join(invDir, agentConfigDirs[0], "risk-paths.json")
+		cwdRootDefault := filepath.Join(cwdDir, agentConfigDirs[0], "risk-paths.json")
+
+		decoy := []byte(`{"schema_version":1,"scaffold":true,"seeded":"cwd-worktree-decoy"}` + "\n")
+		for _, p := range []string{cwdDefault, invIgnored, cwdRootDefault} {
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, decoy, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		beforeCWD := snap(t, cwdDefault)
+		beforeInvIgnored := snap(t, invIgnored)
+		beforeCWDRoot := snap(t, cwdRootDefault)
+
+		got, runErr := RunWiring(Invocation{
+			Args: []string{"init", "-worktree", relWorktree},
+			Dir:  invDir,
+		})
+
+		wd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("getwd after RunWiring: %v", err)
+		}
+		if !sameResolvedPath(wd, cwdDir) {
+			t.Errorf("RunWiring(init) changed the process working directory to %s; clause 7 forbids os.Chdir", wd)
+		}
+
+		if stubRED(t, runErr, "RunWiring(init) with relative -worktree and default -out must write the scaffold under Invocation.Dir/<worktree>, not the process cwd") {
+			return
+		}
+		if got.ExitCode != exitOK {
+			t.Errorf("nested-worktree init exited %d, want %d:\nstdout=%s\nstderr=%s", got.ExitCode, exitOK, got.Stdout, got.Stderr)
+		}
+		assertInitArtifactsNotApplicable(t, "init-nested-worktree", got)
+
+		data, err := os.ReadFile(wantDefault)
+		if err != nil {
+			t.Errorf("init did not write the scaffold under the resolved Invocation.Dir worktree at %s: %v", wantDefault, err)
+		} else {
+			for _, p := range scaffoldConfigProblems(data) {
+				t.Errorf("nested-worktree init did not write a complete scaffold under Invocation.Dir: %s\n%s", p, data)
+			}
+		}
+
+		afterCWD := snap(t, cwdDefault)
+		if !afterCWD.exists || !bytes.Equal(afterCWD.bytes, beforeCWD.bytes) {
+			t.Errorf("cwd worktree decoy %s was rewritten — a body that leaves -worktree relative to the process cwd mutates the decoy", cwdDefault)
+		}
+		afterInvIgnored := snap(t, invIgnored)
+		if !afterInvIgnored.exists || !bytes.Equal(afterInvIgnored.bytes, beforeInvIgnored.bytes) {
+			t.Errorf("Invocation.Dir default-out decoy %s was rewritten — a body that ignores relative -worktree and scaffolds inv.Dir itself is not resolving -worktree", invIgnored)
+		}
+		afterCWDRoot := snap(t, cwdRootDefault)
+		if !afterCWDRoot.exists || !bytes.Equal(afterCWDRoot.bytes, beforeCWDRoot.bytes) {
+			t.Errorf("cwd default-out decoy %s was rewritten — a body that treats -worktree as \".\" against the process cwd mutates it", cwdRootDefault)
+		}
+		if sameResolvedPath(wantDefault, cwdDefault) {
+			t.Fatal("CONTROL: resolved default-out under inv.Dir and the cwd decoy must be distinct")
+		}
+	})
 }
 
 func sha256Bytes(b []byte) string {
@@ -2181,9 +2268,8 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 			if got.ExitCode != exitOK {
 				t.Errorf("%s exited %d, want 0", help, got.ExitCode)
 			}
-			combined := string(got.Stdout) + string(got.Stderr)
-			if !strings.Contains(combined, "classify") {
-				t.Errorf("%s did not print usage:\n%s", help, combined)
+			for _, p := range helpUsageProblems(got.Stdout, got.Stderr) {
+				t.Errorf("%s %s", help, p)
 			}
 		})
 	}
@@ -2284,6 +2370,105 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 func assertInitArtifactsNotApplicable(t *testing.T, label string, got Artifacts) {
 	t.Helper()
 	assertNoOutputArtifacts(t, label, got)
+}
+
+// documentedClassifyFlags is the closed flag set parseInvocationFlags / parseFlags
+// register. Help must name each of them; the word "classify" is not usage.
+var documentedClassifyFlags = []string{
+	"config", "worktree", "base", "task", "out", "json", "no-git", flagContractVersion,
+}
+
+func helpUsageProblems(stdout, stderr []byte) []string {
+	var problems []string
+	if len(stdout) != 0 {
+		problems = append(problems, fmt.Sprintf("help stdout is not empty (%q); usage belongs on stderr, matching usage()", stdout))
+	}
+	if len(stderr) == 0 {
+		problems = append(problems, "help stderr is empty; usage() writes the documented invocation to os.Stderr")
+		return problems
+	}
+	text := string(stderr)
+	required := []string{
+		"classify [flags]",
+		"init",
+		probeSubcommand,
+	}
+	for _, tok := range required {
+		if !strings.Contains(text, tok) {
+			problems = append(problems, fmt.Sprintf("usage on stderr does not name %q", tok))
+		}
+	}
+	for _, name := range documentedClassifyFlags {
+		flagTok := "-" + name
+		if !strings.Contains(text, flagTok) {
+			problems = append(problems, fmt.Sprintf("usage on stderr does not name documented flag %s", flagTok))
+		}
+	}
+	return problems
+}
+
+func liveUsageBytes(t *testing.T) []byte {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	done := make(chan []byte, 1)
+	go func() {
+		var b bytes.Buffer
+		_, _ = b.ReadFrom(r)
+		done <- b.Bytes()
+	}()
+	func() {
+		defer func() {
+			os.Stderr = old
+			_ = w.Close()
+		}()
+		usage()
+	}()
+	out := <-done
+	_ = r.Close()
+	if len(out) == 0 {
+		t.Fatal("CONTROL: usage() wrote nothing to os.Stderr — the intended help stream cannot be captured")
+	}
+	return out
+}
+
+func completeUsageForMatcher(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	buf.Write(liveUsageBytes(t))
+	for _, name := range documentedClassifyFlags {
+		fmt.Fprintf(&buf, "  -%s\n", name)
+	}
+	return buf.Bytes()
+}
+
+// TestSeal_Wiring_HelpUsageMatcherRejectsClassifyWord is GREEN today: it is
+// the in-test control for the help rows. Artifacts{Stdout: []byte("classify")}
+// used to satisfy every help assertion.
+func TestSeal_Wiring_HelpUsageMatcherRejectsClassifyWord(t *testing.T) {
+	defer red(t)
+
+	complete := completeUsageForMatcher(t)
+	if problems := helpUsageProblems(nil, complete); len(problems) != 0 {
+		t.Fatalf("CONTROL: live usage() plus documented flags on stderr must pass, got %v", problems)
+	}
+	if problems := helpUsageProblems([]byte("classify"), nil); len(problems) == 0 {
+		t.Fatal("CONTROL: Artifacts{Stdout: []byte(\"classify\")} must redden — the word classify is not usage")
+	}
+	if problems := helpUsageProblems(complete, nil); len(problems) == 0 {
+		t.Fatal("CONTROL: complete usage on stdout with empty stderr must redden — the intended stream is stderr")
+	}
+	if problems := helpUsageProblems(nil, []byte("classify")); len(problems) == 0 {
+		t.Fatal("CONTROL: stderr carrying only the word classify must redden")
+	}
+	live := liveUsageBytes(t)
+	if problems := helpUsageProblems(nil, live); len(problems) == 0 {
+		t.Fatal("CONTROL: today's usage() text without documented flags must redden the matcher — flags are part of the required structure")
+	}
 }
 
 func assertNoOutputArtifacts(t *testing.T, label string, got Artifacts) {
@@ -3178,17 +3363,18 @@ func TestSeal_Wiring_MainForwardsTheResult(t *testing.T) {
 // TestSeal_Wiring_MainForwardsProcessStreams is GREEN on today's main. It is
 // the behavioural half of clause 8: a scratch binary's process stdout, stderr
 // and exit code, judged independently, against a live run() CONTROL in the
-// same call. Streams are compared to the complete expected artifact, not a
-// required substring: duplicated or additional stderr reddens, a flag-parse
-// failure must leave stdout empty, and the -out verdict must match live run()
-// the way the no-output row already does.
+// same call. Stdout is the live classification (v1 payload or v2 wrapper)
+// with exact stream framing and exact recursive key sets; stderr is judged
+// on its own descriptor. A -out persist names the run-state path it wrote
+// — not a log-package prefix, not a byte-exact logger transcript. Flag-parse
+// failure must leave stdout empty.
 //
 // Argv / stdin / Dir forwarding is sealed here too, not by walking main's
 // syntax. (a) the file-argument row reddens unsliced os.Args (argv[0] becomes
 // the positional and the wallet verdict is lost); (b) piping the wallet diff
 // with no file argument must reproduce the file-argument verdict (Stdin nil
 // is the empty-diff case); (c) relative -out with cmd.Dir set must write
-// under cmd.Dir and log the relative path.
+// under cmd.Dir and name that relative path on stderr.
 //
 // This test is a currently-green gate. It must be able to fail on its own —
 // it is not bundled with the still-red structural sweep in
@@ -3291,12 +3477,9 @@ func TestSeal_Wiring_MainForwardsProcessStreams(t *testing.T) {
 
 	t.Run("out/persist-line-on-stderr", func(t *testing.T) {
 		outPath := filepath.Join(t.TempDir(), "run-state.json")
-		liveCode, liveStdout, liveLog := liveRunStreams(t, bed.liveOpts("1", true, outPath))
+		liveCode, liveStdout, _ := liveRunStreams(t, bed.liveOpts("1", true, ""))
 		if liveCode != exitOK {
-			t.Fatalf("CONTROL: live run() with -out exited %d:\n%s", liveCode, liveStdout)
-		}
-		if len(liveLog) == 0 {
-			t.Fatalf("CONTROL: live run() with -out wrote nothing to the logger. A process-stderr assertion would then be judging a message production never writes.")
+			t.Fatalf("CONTROL: live run() json/no-out exited %d:\n%s", liveCode, liveStdout)
 		}
 
 		outArgs := []string{
@@ -3313,7 +3496,7 @@ func TestSeal_Wiring_MainForwardsProcessStreams(t *testing.T) {
 			t.Errorf("scratch classify -out exited %d, want live run() %d:\nstdout=%s\nstderr=%s", code, liveCode, stdout, stderr)
 		}
 		assertForwardedV1Stdout(t, "clause-8/-out", stdout, liveStdout)
-		assertExactBytes(t, "clause-8/-out", "stderr", stderr, liveLog)
+		assertPersistNamedOnStderr(t, "clause-8/-out", stderr, outPath)
 	})
 
 	t.Run("out/relative-with-cmd-dir", func(t *testing.T) {
@@ -3351,8 +3534,7 @@ func TestSeal_Wiring_MainForwardsProcessStreams(t *testing.T) {
 			t.Errorf("scratch classify relative -out exited %d, want %d:\nstdout=%s\nstderr=%s. A main() that omits Invocation.Dir leaves resolution to whatever cwd the process happens to hold.", code, exitOK, stdout, stderr)
 		}
 		assertForwardedV1Stdout(t, "clause-8/relative-out", stdout, liveStdout)
-		wantLog := []byte("classify: run state written to " + relOut + "\n")
-		assertExactBytes(t, "clause-8/relative-out", "stderr", stderr, wantLog)
+		assertPersistNamedOnStderr(t, "clause-8/relative-out", stderr, relOut)
 		if _, err := os.Stat(wantPath); err != nil {
 			t.Errorf("relative -out did not write %s (cmd.Dir is the resolution root): %v", wantPath, err)
 		}
@@ -3419,6 +3601,58 @@ func TestSeal_Wiring_MainForwardsProcessStreams(t *testing.T) {
 		assertForwardedV1Stdout(t, "clause-8/unwritable-out", stdout, liveStdout)
 		assertUnwritableOutStderr(t, stderr, out, parent)
 	})
+
+	t.Run("v2-json-no-out", func(t *testing.T) {
+		liveCode, liveStdout, liveLog := liveRunStreams(t, bed.liveOpts("2", true, ""))
+		if liveCode != exitOK {
+			t.Fatalf("CONTROL: live run() v2/json/no-out exited %d:\n%s", liveCode, liveStdout)
+		}
+		if len(liveLog) != 0 {
+			t.Fatalf("CONTROL: live run() v2/json/no-out wrote %q to the logger; asserting empty process-stderr would then be the wrong claim", liveLog)
+		}
+		for _, p := range forwardedV2StdoutProblems(liveStdout, liveStdout) {
+			t.Fatalf("CONTROL: live v2/json compared with itself: %s", p)
+		}
+
+		v2Args := []string{
+			"-no-git",
+			"-worktree", bed.dir,
+			"-config", bed.cfgPath,
+			"-json",
+			"-" + flagContractVersion, "2",
+			bed.diffPath,
+		}
+		code, stdout, stderr := execClassify(t, bin, bed.dir, decoyStdin, 15*time.Second, v2Args...)
+		if code != liveCode {
+			t.Errorf("scratch classify -contract-version 2 exited %d, want live run() %d:\nstdout=%s\nstderr=%s", code, liveCode, stdout, stderr)
+		}
+		assertForwardedV2Stdout(t, "clause-8/v2-json-no-out", stdout, liveStdout)
+		assertExactBytes(t, "clause-8/v2-json-no-out", "stderr", stderr, nil)
+	})
+
+	t.Run("v2-json-out", func(t *testing.T) {
+		outPath := filepath.Join(t.TempDir(), "run-state.json")
+		liveCode, liveStdout, _ := liveRunStreams(t, bed.liveOpts("2", true, ""))
+		if liveCode != exitOK {
+			t.Fatalf("CONTROL: live run() v2/json/no-out exited %d:\n%s", liveCode, liveStdout)
+		}
+
+		v2OutArgs := []string{
+			"-no-git",
+			"-worktree", bed.dir,
+			"-config", bed.cfgPath,
+			"-json",
+			"-out", outPath,
+			"-" + flagContractVersion, "2",
+			bed.diffPath,
+		}
+		code, stdout, stderr := execClassify(t, bin, bed.dir, decoyStdin, 15*time.Second, v2OutArgs...)
+		if code != liveCode {
+			t.Errorf("scratch classify -contract-version 2 -out exited %d, want live run() %d:\nstdout=%s\nstderr=%s", code, liveCode, stdout, stderr)
+		}
+		assertForwardedV2Stdout(t, "clause-8/v2-json-out", stdout, liveStdout)
+		assertPersistNamedOnStderr(t, "clause-8/v2-json-out", stderr, outPath)
+	})
 }
 
 func (b classifyBed) liveOpts(contract string, asJSON bool, out string) options {
@@ -3434,10 +3668,11 @@ func (b classifyBed) liveOpts(contract string, asJSON bool, out string) options 
 	}
 }
 
-// liveRunStreams drives run() the way driveLive does, but captures the process
-// logger so persist / log.Fatalf diagnostics are observable. driveLive only
-// captures os.Stdout; today's persist line is log.Printf, which is how the
-// shipped binary puts "run state written to %s" on stderr.
+// liveRunStreams drives run() the way driveLive does, and captures the process
+// logger so empty-stderr CONTROLs can see whether run() wrote anything through
+// log. Persist diagnostics on process stderr are judged by naming the
+// run-state path, not by this buffer: clause 3 forbids emitting through the
+// log package, so a GREEN -out row must not require log.SetPrefix.
 func liveRunStreams(t *testing.T, opts options) (code int, stdout, logStderr []byte) {
 	t.Helper()
 	savedRec, savedSrc := unframedDigests, digestSource
@@ -3448,15 +3683,9 @@ func liveRunStreams(t *testing.T, opts options) (code int, stdout, logStderr []b
 	}()
 
 	var logBuf bytes.Buffer
-	oldW, oldFlags, oldPrefix := log.Writer(), log.Flags(), log.Prefix()
+	oldW := log.Writer()
 	log.SetOutput(&logBuf)
-	log.SetFlags(0)
-	log.SetPrefix("classify: ")
-	defer func() {
-		log.SetOutput(oldW)
-		log.SetFlags(oldFlags)
-		log.SetPrefix(oldPrefix)
-	}()
+	defer log.SetOutput(oldW)
 
 	out := stdoutOf(t, func() { code = run(opts) })
 	return code, []byte(out), logBuf.Bytes()
@@ -3492,22 +3721,334 @@ func execClassify(t *testing.T, bin, dir string, stdin []byte, timeout time.Dura
 
 // assertForwardedV1Stdout is the no-output row's verdict check, reused wherever
 // clause 8 must forward the live classification rather than "any v1-shaped JSON".
+// Unmarshal + sameVerdict is not enough: trailing bytes and extra keys survive
+// both. Framing, recursive key sets, and non-volatile values are compared;
+// only volatileWireKeys values are normalized away.
 func assertForwardedV1Stdout(t *testing.T, label string, stdout, liveStdout []byte) {
 	t.Helper()
 	assertStdoutShape(t, label, shapeV1Payload, stdout)
-	gotVerdict, gotProblems := decodeV1Stdout(stdout)
-	for _, p := range gotProblems {
-		t.Errorf("%s stdout: %s", label, p)
-	}
-	if missing := liveKeysMissingFrom(stdout, liveStdout); len(missing) > 0 {
-		t.Errorf("%s stdout dropped live key(s) %v", label, missing)
-	}
 	liveDecoded, liveProblems := decodeV1Stdout(liveStdout)
 	if len(liveProblems) != 0 {
 		t.Fatalf("CONTROL: live v1 JSON failed decode: %s", strings.Join(liveProblems, "; "))
 	}
+	gotVerdict, gotProblems := decodeV1Stdout(stdout)
+	for _, p := range gotProblems {
+		t.Errorf("%s stdout: %s", label, p)
+	}
 	if len(gotProblems) == 0 && !sameVerdict(gotVerdict, liveDecoded) {
 		t.Errorf("%s stdout verdict %+v does not match live run() %+v. Extra, dropped, or substituted writes to os.Stdout are not forwarding.", label, gotVerdict, liveDecoded)
+	}
+	for _, p := range forwardedJSONStreamProblems(stdout, liveStdout) {
+		t.Errorf("%s stdout: %s", label, p)
+	}
+}
+
+func assertForwardedV2Stdout(t *testing.T, label string, stdout, liveStdout []byte) {
+	t.Helper()
+	assertStdoutShape(t, label, shapeV2Wrapper, stdout)
+	_, liveDecoded, liveProblems := decodeV2Stdout(liveStdout)
+	if len(liveProblems) != 0 {
+		t.Fatalf("CONTROL: live v2 JSON failed decode: %s", strings.Join(liveProblems, "; "))
+	}
+	_, gotVerdict, gotProblems := decodeV2Stdout(stdout)
+	for _, p := range gotProblems {
+		t.Errorf("%s stdout: %s", label, p)
+	}
+	if len(gotProblems) == 0 && !sameVerdict(gotVerdict, liveDecoded) {
+		t.Errorf("%s stdout verdict %+v does not match live run() %+v. Extra, dropped, or substituted writes to os.Stdout are not forwarding.", label, gotVerdict, liveDecoded)
+	}
+	for _, p := range forwardedV2StdoutProblems(stdout, liveStdout) {
+		t.Errorf("%s stdout: %s", label, p)
+	}
+}
+
+func forwardedV2StdoutProblems(stdout, liveStdout []byte) []string {
+	return forwardedJSONStreamProblems(stdout, liveStdout)
+}
+
+func forwardedV1StdoutProblems(stdout, liveStdout []byte) []string {
+	var problems []string
+	_, gotProblems := decodeV1Stdout(stdout)
+	problems = append(problems, gotProblems...)
+	gv, gp := decodeV1Stdout(stdout)
+	lv, lp := decodeV1Stdout(liveStdout)
+	if len(gp) == 0 && len(lp) == 0 && !sameVerdict(gv, lv) {
+		problems = append(problems, "stable verdict does not match live")
+	}
+	problems = append(problems, forwardedJSONStreamProblems(stdout, liveStdout)...)
+	return problems
+}
+
+// forwardedJSONStreamProblems compares two JSON process streams the way clause
+// 8 forwarding requires: exact leading/trailing framing around the document,
+// exact recursive key sets, and equal values everywhere except volatileWireKeys.
+func forwardedJSONStreamProblems(got, live []byte) []string {
+	var problems []string
+	gf := jsonStreamFrame(got)
+	lf := jsonStreamFrame(live)
+	if !gf.ok {
+		problems = append(problems, "is not a JSON document whose stream framing can be compared")
+	}
+	if gf.ok && lf.ok {
+		if !bytes.Equal(gf.prefix, lf.prefix) || !bytes.Equal(gf.suffix, lf.suffix) {
+			problems = append(problems, fmt.Sprintf("stream framing does not match live (prefix got=%q want=%q; suffix got=%q want=%q) — trailing whitespace or extra bytes after the JSON document are not forwarding", gf.prefix, lf.prefix, gf.suffix, lf.suffix))
+		}
+	}
+	extra, missing := jsonKeySetDiff(got, live)
+	if len(missing) > 0 {
+		problems = append(problems, fmt.Sprintf("dropped live key(s) %v", missing))
+	}
+	if len(extra) > 0 {
+		problems = append(problems, fmt.Sprintf("extra key(s) %v not on the live wire — unknown fields survive unmarshal and are not forwarding", extra))
+	}
+	problems = append(problems, jsonNormalizedValueProblems("", got, live)...)
+	return problems
+}
+
+type jsonFrame struct {
+	prefix, suffix []byte
+	ok             bool
+}
+
+func jsonStreamFrame(b []byte) jsonFrame {
+	i := 0
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	if i >= len(b) || (b[i] != '{' && b[i] != '[') {
+		return jsonFrame{}
+	}
+	dec := json.NewDecoder(bytes.NewReader(b[i:]))
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil {
+		return jsonFrame{}
+	}
+	n := int(dec.InputOffset())
+	if n < 0 || i+n > len(b) {
+		return jsonFrame{}
+	}
+	return jsonFrame{prefix: b[:i], suffix: b[i+n:], ok: true}
+}
+
+func jsonKeySetDiff(got, live []byte) (extra, missing []string) {
+	g := map[string]struct{}{}
+	l := map[string]struct{}{}
+	collectJSONKeys("", got, g)
+	collectJSONKeys("", live, l)
+	for k := range l {
+		if _, ok := g[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	for k := range g {
+		if _, ok := l[k]; !ok {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	return extra, missing
+}
+
+func collectJSONKeys(path string, data []byte, out map[string]struct{}) {
+	switch {
+	case looksJSONObject(data):
+		obj, err := rawObject(data)
+		if err != nil {
+			return
+		}
+		for k, v := range obj {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			out[p] = struct{}{}
+			collectJSONKeys(p, v, out)
+		}
+	case looksJSONArray(data):
+		var arr []json.RawMessage
+		if json.Unmarshal(data, &arr) != nil {
+			return
+		}
+		for i, v := range arr {
+			collectJSONKeys(fmt.Sprintf("%s[%d]", path, i), v, out)
+		}
+	}
+}
+
+func looksJSONObject(data []byte) bool {
+	s := bytes.TrimSpace(data)
+	return len(s) > 0 && s[0] == '{'
+}
+
+func looksJSONArray(data []byte) bool {
+	s := bytes.TrimSpace(data)
+	return len(s) > 0 && s[0] == '['
+}
+
+func jsonNormalizedValueProblems(path string, got, live []byte) []string {
+	if key := jsonPathLeaf(path); volatileWireKeys[key] {
+		return nil
+	}
+	if looksJSONObject(got) && looksJSONObject(live) {
+		g, errG := rawObject(got)
+		l, errL := rawObject(live)
+		if errG != nil || errL != nil {
+			return nil
+		}
+		var problems []string
+		for k, lv := range l {
+			gv, ok := g[k]
+			if !ok {
+				continue
+			}
+			next := k
+			if path != "" {
+				next = path + "." + k
+			}
+			problems = append(problems, jsonNormalizedValueProblems(next, gv, lv)...)
+		}
+		return problems
+	}
+	if looksJSONArray(got) && looksJSONArray(live) {
+		var gArr, lArr []json.RawMessage
+		if json.Unmarshal(got, &gArr) != nil || json.Unmarshal(live, &lArr) != nil {
+			return nil
+		}
+		var problems []string
+		if len(gArr) != len(lArr) {
+			problems = append(problems, fmt.Sprintf("%s array length %d, live %d", pathOrRoot(path), len(gArr), len(lArr)))
+		}
+		n := len(gArr)
+		if len(lArr) < n {
+			n = len(lArr)
+		}
+		for i := 0; i < n; i++ {
+			problems = append(problems, jsonNormalizedValueProblems(fmt.Sprintf("%s[%d]", path, i), gArr[i], lArr[i])...)
+		}
+		return problems
+	}
+	if compactJSONErr(got) != compactJSONErr(live) {
+		return []string{fmt.Sprintf("%s value does not match live", pathOrRoot(path))}
+	}
+	return nil
+}
+
+func jsonPathLeaf(path string) string {
+	if i := strings.LastIndex(path, "."); i >= 0 {
+		path = path[i+1:]
+	}
+	if i := strings.Index(path, "["); i >= 0 {
+		path = path[:i]
+	}
+	return path
+}
+
+func pathOrRoot(path string) string {
+	if path == "" {
+		return "<root>"
+	}
+	return path
+}
+
+func assertPersistNamedOnStderr(t *testing.T, label string, stderr []byte, namedPath string) {
+	t.Helper()
+	if len(stderr) == 0 {
+		t.Errorf("%s process stderr is empty; clause 8: a path that writes run-state must name that path on stderr", label)
+		return
+	}
+	if !bytes.Contains(stderr, []byte(namedPath)) {
+		t.Errorf("%s process stderr does not name the run-state path %q:\n%s", label, namedPath, stderr)
+	}
+}
+
+func withJSONKey(data []byte, key string, val any) []byte {
+	obj, err := rawObject(data)
+	if err != nil {
+		return data
+	}
+	raw, err := json.Marshal(val)
+	if err != nil {
+		return data
+	}
+	obj[key] = raw
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+func withNestedJSONKey(data []byte, outer, key string, val any) []byte {
+	obj, err := rawObject(data)
+	if err != nil {
+		return data
+	}
+	inner, ok := obj[outer]
+	if !ok {
+		return data
+	}
+	obj[outer] = withJSONKey(inner, key, val)
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+func problemsNamed(problems []string, needle string) bool {
+	for _, p := range problems {
+		if strings.Contains(p, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSeal_Wiring_ForwardedV1StdoutMatcherRejectsFramingAndExtraKeys is GREEN
+// today: it is the in-test control for assertForwardedV1Stdout. Unmarshal and
+// sameVerdict ignore trailing bytes and unknown JSON keys; a main that appends
+// a newline only when ExitCode==exitOK, or that injects an extra field, must
+// redden this matcher.
+func TestSeal_Wiring_ForwardedV1StdoutMatcherRejectsFramingAndExtraKeys(t *testing.T) {
+	defer red(t)
+
+	live := newClassifyBed(t).driveLive(t, "1", true, false)
+	if live.ExitCode != exitOK {
+		t.Fatalf("CONTROL: live v1/json exited %d:\n%s", live.ExitCode, live.Stdout)
+	}
+	if problems := forwardedV1StdoutProblems(live.Stdout, live.Stdout); len(problems) != 0 {
+		t.Fatalf("CONTROL: live v1 stdout compared with itself must pass, got %v", problems)
+	}
+
+	trailing := append(append([]byte(nil), live.Stdout...), '\n')
+	if problems := forwardedV1StdoutProblems(trailing, live.Stdout); !problemsNamed(problems, "framing") {
+		t.Fatalf("CONTROL: appending a trailing newline must redden stream framing — json.Unmarshal ignores it. problems=%v", problems)
+	}
+
+	spaces := append(append([]byte(nil), live.Stdout...), ' ', '\t')
+	if problems := forwardedV1StdoutProblems(spaces, live.Stdout); !problemsNamed(problems, "framing") {
+		t.Fatalf("CONTROL: appending trailing whitespace must redden stream framing. problems=%v", problems)
+	}
+
+	extra := withJSONKey(live.Stdout, "not_a_live_field", true)
+	if problems := forwardedV1StdoutProblems(extra, live.Stdout); !problemsNamed(problems, "extra") {
+		t.Fatalf("CONTROL: an extra top-level JSON key must redden — unmarshal drops unknown fields. problems=%v", problems)
+	}
+
+	if _, err := rawObject(live.Stdout); err != nil {
+		t.Fatalf("CONTROL: live v1 stdout is not a JSON object: %v", err)
+	}
+	raw, err := rawObject(live.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["panel"]; !ok {
+		t.Fatal("CONTROL: live v1 stdout has no panel — a nested extra-key mutation would be mis-measured")
+	}
+	nested := withNestedJSONKey(live.Stdout, "panel", "not_a_live_panel_field", true)
+	if problems := forwardedV1StdoutProblems(nested, live.Stdout); !problemsNamed(problems, "extra") {
+		t.Fatalf("CONTROL: an extra nested JSON key must redden the recursive key set. problems=%v", problems)
 	}
 }
 
@@ -4332,12 +4873,14 @@ func exitArgOf(call *ast.CallExpr) ast.Expr {
 }
 
 // runWiringExitMappingProblems is the non-vacuous check for clause 8's two
-// exit arms: a non-nil RunWiring error is written to os.Stderr and exits
-// exitInternal (not exitOK, not 0+0, not Artifacts.ExitCode); the nil-error
-// arm exits with Artifacts.ExitCode. osExitLiteral only rejects integer
-// literals, which is why the exit-argument half exists. A silent
-// `if err != nil { os.Exit(exitInternal) }` is the other half: operational
-// failures are nil-error artifacts, so no subprocess row observes this arm.
+// exit arms: a non-nil RunWiring error is written to os.Stderr with a
+// recognized write (fmt.Fprint*, io.WriteString, os.Stderr.Write*) before
+// os.Exit(exitInternal); the nil-error arm exits with Artifacts.ExitCode.
+// osExitLiteral only rejects integer literals, which is why the
+// exit-argument half exists. A silent `if err != nil { os.Exit(exitInternal) }`
+// is the other half: operational failures are nil-error artifacts, so no
+// subprocess row observes this arm. Sprintf, noop, if false, and a write
+// after os.Exit are not a diagnostic.
 func runWiringExitMappingProblems(fn *ast.FuncDecl) []string {
 	bind, ok := findRunWiringBind(fn)
 	if !ok {
@@ -4414,17 +4957,196 @@ func errorArmReportsErrOnStderr(nodes []ast.Node, errName string) bool {
 	if errName == "" {
 		return false
 	}
+	var stmts []ast.Stmt
 	for _, n := range nodes {
 		if n == nil {
 			continue
 		}
-		found := false
-		ast.Inspect(n, func(x ast.Node) bool {
-			call, ok := x.(*ast.CallExpr)
-			if !ok {
+		switch x := n.(type) {
+		case *ast.BlockStmt:
+			stmts = append(stmts, x.List...)
+		case ast.Stmt:
+			stmts = append(stmts, x)
+		}
+	}
+	return stmtsWriteErrToStderrBeforeExit(stmts, errName)
+}
+
+// stmtsWriteErrToStderrBeforeExit requires a recognized write to os.Stderr
+// that names the bound error, on the guaranteed path of the error arm, before
+// os.Exit or return. fmt.Sprintf, noop(...), if false { write }, and a write
+// after os.Exit do not count.
+func stmtsWriteErrToStderrBeforeExit(stmts []ast.Stmt, errName string) bool {
+	for _, s := range stmts {
+		if s == nil {
+			continue
+		}
+		if stmtIsOsExit(s) || stmtIsReturn(s) {
+			return false
+		}
+		if stmtIsStderrWriteOfErr(s, errName) {
+			return true
+		}
+		switch x := s.(type) {
+		case *ast.BlockStmt:
+			if stmtsWriteErrToStderrBeforeExit(x.List, errName) {
 				return true
 			}
-			if callMentionsOsStderr(call) && callMentionsIdent(call, errName) {
+			if blockAlwaysStops(x) {
+				return false
+			}
+		case *ast.IfStmt:
+			switch {
+			case isConstFalse(x.Cond):
+				if x.Else != nil && stmtsWriteErrToStderrBeforeExit(elseStmts(x.Else), errName) {
+					return true
+				}
+			case isConstTrue(x.Cond):
+				if stmtsWriteErrToStderrBeforeExit(x.Body.List, errName) {
+					return true
+				}
+				if blockAlwaysStops(x.Body) {
+					return false
+				}
+				if x.Else != nil {
+					continue
+				}
+			}
+		}
+	}
+	return false
+}
+
+func elseStmts(elseNode ast.Stmt) []ast.Stmt {
+	switch x := elseNode.(type) {
+	case *ast.BlockStmt:
+		return x.List
+	case ast.Stmt:
+		return []ast.Stmt{x}
+	}
+	return nil
+}
+
+func blockAlwaysStops(b *ast.BlockStmt) bool {
+	if b == nil {
+		return false
+	}
+	for _, s := range b.List {
+		if stmtIsOsExit(s) || stmtIsReturn(s) {
+			return true
+		}
+		if inner, ok := s.(*ast.BlockStmt); ok && blockAlwaysStops(inner) {
+			return true
+		}
+		if ifs, ok := s.(*ast.IfStmt); ok && isConstTrue(ifs.Cond) && blockAlwaysStops(ifs.Body) {
+			return true
+		}
+	}
+	return false
+}
+
+func stmtIsOsExit(s ast.Stmt) bool {
+	es, ok := s.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	return isSelectorCall("os", "Exit")(unwrapParen(es.X))
+}
+
+func stmtIsReturn(s ast.Stmt) bool {
+	_, ok := s.(*ast.ReturnStmt)
+	return ok
+}
+
+func stmtIsStderrWriteOfErr(s ast.Stmt, errName string) bool {
+	switch x := s.(type) {
+	case *ast.ExprStmt:
+		return exprIsStderrWriteOfErr(x.X, errName)
+	case *ast.AssignStmt:
+		for _, rhs := range x.Rhs {
+			if exprIsStderrWriteOfErr(rhs, errName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func exprIsStderrWriteOfErr(e ast.Expr, errName string) bool {
+	call, ok := unwrapParen(e).(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	if !recognizedStderrWrite(call) {
+		return false
+	}
+	return callArgsMentionIdent(call, errName)
+}
+
+func recognizedStderrWrite(call *ast.CallExpr) bool {
+	dest, ok := writeDestination(call)
+	return ok && isOsStderrExpr(dest)
+}
+
+func isOsStderrExpr(e ast.Expr) bool {
+	return isSelectorIdent("os", "Stderr")(unwrapParen(e))
+}
+
+func writeDestination(call *ast.CallExpr) (ast.Expr, bool) {
+	if call == nil {
+		return nil, false
+	}
+	switch fun := unwrapParen(call.Fun).(type) {
+	case *ast.SelectorExpr:
+		if pkg, ok := fun.X.(*ast.Ident); ok {
+			switch pkg.Name {
+			case "fmt":
+				switch fun.Sel.Name {
+				case "Fprint", "Fprintf", "Fprintln":
+					if len(call.Args) > 0 {
+						return call.Args[0], true
+					}
+				}
+			case "io":
+				if fun.Sel.Name == "WriteString" && len(call.Args) > 0 {
+					return call.Args[0], true
+				}
+			}
+		}
+		if isWriteMethod(fun.Sel.Name) && isOsStderrExpr(fun.X) {
+			return fun.X, true
+		}
+	}
+	return nil, false
+}
+
+func isWriteMethod(name string) bool {
+	switch name {
+	case "Write", "WriteString", "WriteByte":
+		return true
+	}
+	return false
+}
+
+func isConstFalse(e ast.Expr) bool {
+	id, ok := unwrapParen(e).(*ast.Ident)
+	return ok && id.Name == "false"
+}
+
+func isConstTrue(e ast.Expr) bool {
+	id, ok := unwrapParen(e).(*ast.Ident)
+	return ok && id.Name == "true"
+}
+
+func callArgsMentionIdent(call *ast.CallExpr, name string) bool {
+	if call == nil || name == "" {
+		return false
+	}
+	for _, a := range call.Args {
+		found := false
+		ast.Inspect(a, func(n ast.Node) bool {
+			id, ok := n.(*ast.Ident)
+			if ok && id.Name == name {
 				found = true
 				return false
 			}
@@ -4435,37 +5157,6 @@ func errorArmReportsErrOnStderr(nodes []ast.Node, errName string) bool {
 		}
 	}
 	return false
-}
-
-func callMentionsOsStderr(call *ast.CallExpr) bool {
-	if call == nil {
-		return false
-	}
-	found := false
-	ast.Inspect(call, func(n ast.Node) bool {
-		if isSelectorIdent("os", "Stderr")(n) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
-}
-
-func callMentionsIdent(call *ast.CallExpr, name string) bool {
-	if call == nil {
-		return false
-	}
-	found := false
-	ast.Inspect(call, func(n ast.Node) bool {
-		id, ok := n.(*ast.Ident)
-		if ok && id.Name == name {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
 }
 
 func parseMainSnippet(t *testing.T, src string) *ast.FuncDecl {
@@ -4642,6 +5333,73 @@ func main() {
 }`)
 	if problems := runWiringExitMappingProblems(constantErr); len(problems) == 0 {
 		t.Fatal("CONTROL: writing a constant to os.Stderr instead of the bound error must redden — the diagnostic is not the RunWiring error")
+	}
+
+	noopErr := parseMainSnippet(t, `package main
+func noop(a, b any) {}
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		noop(os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := runWiringExitMappingProblems(noopErr); len(problems) == 0 {
+		t.Fatal("CONTROL: noop(os.Stderr, err) must redden — mentioning both in a call is not a write to os.Stderr")
+	}
+
+	sprintfErr := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		_ = fmt.Sprintf("%v %v", os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := runWiringExitMappingProblems(sprintfErr); len(problems) == 0 {
+		t.Fatal("CONTROL: fmt.Sprintf naming os.Stderr and err must redden — Sprintf is not a write")
+	}
+
+	afterExitErr := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		os.Exit(exitInternal)
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := runWiringExitMappingProblems(afterExitErr); len(problems) == 0 {
+		t.Fatal("CONTROL: writing the bound error after os.Exit must redden — that write never executes")
+	}
+
+	ifFalseErr := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		if false {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(exitInternal)
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := runWiringExitMappingProblems(ifFalseErr); len(problems) == 0 {
+		t.Fatal("CONTROL: a write under if false must redden — an unreachable diagnostic is not reporting the error")
 	}
 
 	dispatch := parseMainSnippet(t, `package main
