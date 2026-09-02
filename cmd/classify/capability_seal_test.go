@@ -13,6 +13,8 @@ package main
 // state and capture os.Stdout.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"strconv"
@@ -404,23 +406,94 @@ func TestSeal_InstalledRegistrar_RegistersTheRealFlag(t *testing.T) {
 	}
 }
 
-// The installed digest source yields two lowercase-hex SHA-256 strings, or an
-// error. It must never return an empty string for a channel it did not consume.
+// The installed digest source yields two lowercase-hex SHA-256 strings over the
+// bytes each channel consumed, or an error naming the channel it did not.
+//
+// AMENDED (GO-1-2). The previous form called ConsumedDigests on whatever the
+// installed source had recorded so far and RETURNED on error having asserted
+// only that the values were blank. Run alone under coverage it left hexSHA256
+// at 0.0% and ConsumedDigests at 90.0% (re-derived at b0313fa): the
+// hex/length/lowercase assertions below the early return never executed,
+// because nothing in the test consumed either channel and the source raises
+// unless both were. The row passed on the error leg forever, and its stated
+// claim was never once checked.
+//
+// Both legs are now DRIVEN, on a fresh recorder installed as the source, and
+// both are judged on what the source ANSWERED:
+//
+//  1. the installed source IS the recorder the input path writes into —
+//     otherwise the digests in the wrapper describe bytes nobody read;
+//  2. with neither channel consumed, and then with only one, it raises AND
+//     blanks both values, and the error names the unread channel;
+//  3. with both consumed it answers sha256(config), sha256(diff) — computed
+//     here from the bytes handed to it, not read back from hexSHA256 — as 64
+//     lowercase hex characters each, and the two differ.
+//
+// Leg 3's equality also happens to reject a swapped return; the row of record
+// for that defect is TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeThe-
+// CertifiedBytes, and this row's claim is the shape and binding of what one
+// call returns.
 func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 	defer red(t)
 
-	src := digestSource
-	if src == nil {
+	// Leg 1 — identity of the installed object.
+	if digestSource == nil {
 		t.Fatal("digestSource is nil — B1's body must install it")
 	}
+	if digestSource != DigestSource(unframedDigests) {
+		t.Fatalf("the installed DigestSource (%T) is not the recorder the input path writes into (%T) — the wrapper would echo digests over bytes nobody consumed", digestSource, unframedDigests)
+	}
+
+	// Legs 2 and 3 run on a fresh recorder installed as the source, so the row
+	// judges only its own reads. withHooks restores the original.
+	fresh := &unframedDigestSource{}
+	withHooks(t, contractFlagRegistrar, fresh, framedStdinReader)
+	src := digestSource
+
+	config := []byte(`{"rules":[]}` + "\n")
+	diff := []byte(diffFor("README.md"))
+
+	// Leg 2 — nothing consumed, then one channel only.
+	mustRaise := func(when, unread string) {
+		t.Helper()
+		cfgSHA, diffSHA, err := src.ConsumedDigests()
+		if err == nil {
+			t.Errorf("%s: ConsumedDigests returned %q/%q and no error — a channel it did not consume must raise, not blank", when, cfgSHA, diffSHA)
+			return
+		}
+		if cfgSHA != "" || diffSHA != "" {
+			t.Errorf("%s: ConsumedDigests returned an error AND values %q/%q — pick one", when, cfgSHA, diffSHA)
+		}
+		if !strings.Contains(err.Error(), unread) {
+			t.Errorf("%s: the error %q does not name the unread %s channel", when, err, unread)
+		}
+	}
+	mustRaise("nothing consumed", "config")
+	mustRaise("nothing consumed", "diff")
+	fresh.recordConfig(config)
+	mustRaise("config only", "diff")
+	if _, _, err := src.ConsumedDigests(); err != nil && strings.Contains(err.Error(), "config") {
+		t.Errorf("config only: the error %q names the config channel, which WAS consumed", err)
+	}
+
+	// Leg 3 — both consumed.
+	fresh.recordDiff(diff)
 	cfgSHA, diffSHA, err := src.ConsumedDigests()
 	if err != nil {
-		// Legal: this process consumed no config and no diff. The contract is
-		// that it errors rather than returning empty strings.
-		if cfgSHA != "" || diffSHA != "" {
-			t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
-		}
-		return
+		t.Fatalf("both channels consumed, yet ConsumedDigests raised: %v", err)
+	}
+	sum := func(b []byte) string {
+		h := sha256.Sum256(b)
+		return hex.EncodeToString(h[:])
+	}
+	if cfgSHA != sum(config) {
+		t.Errorf("config digest %q is not sha256 of the consumed config bytes %q", cfgSHA, sum(config))
+	}
+	if diffSHA != sum(diff) {
+		t.Errorf("diff digest %q is not sha256 of the consumed diff bytes %q", diffSHA, sum(diff))
+	}
+	if cfgSHA == diffSHA {
+		t.Errorf("both channels digest to %q — the source digested one buffer twice", cfgSHA)
 	}
 	for name, sha := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
 		if len(sha) != 64 {
