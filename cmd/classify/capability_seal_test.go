@@ -406,21 +406,62 @@ func TestSeal_InstalledRegistrar_RegistersTheRealFlag(t *testing.T) {
 
 // The installed digest source yields two lowercase-hex SHA-256 strings, or an
 // error. It must never return an empty string for a channel it did not consume.
+//
+// AMENDED — the row was vacuous. `defer red(t)` plus a bare `return` inside
+// `if err != nil` meant the hex/length/lowercase assertions below never ran
+// against the LIVE installed source: nothing before this test in the package
+// calls readDiff or loadConfig, so the singleton digestSource installs with
+// sawConfig and sawDiff both false, ConsumedDigests(contract.go:373-390) raises
+// on the first call every time, and the row returned having asserted nothing
+// about the values it claims to check. Proved, not argued: running this test
+// ALONE under coverage gave ConsumedDigests 90.0% and hexSHA256 0.0% — the
+// success leg was dead code in every actual test run.
+//
+// The fix records real bytes on the installed source first — the same two
+// calls production makes (main.go:671 recordConfig, main.go:743/759
+// recordDiff) — so the success leg executes, and keeps the original claim
+// about an untouched source as an explicit CONTROL judged in the same call:
+// a row that recorded on both legs and asserted only the defect leg could not
+// tell an implementation from one that always errors.
 func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 	defer red(t)
 
-	src := digestSource
-	if src == nil {
+	installed := digestSource
+	if installed == nil {
 		t.Fatal("digestSource is nil — B1's body must install it")
 	}
-	cfgSHA, diffSHA, err := src.ConsumedDigests()
+	if _, ok := installed.(*unframedDigestSource); !ok {
+		t.Fatalf("digestSource is installed as %T, not *unframedDigestSource — B1's own hook (capability.go:409) is what this row measures", installed)
+	}
+
+	// The registry variable and the process-wide recorder are swapped by
+	// POINTER, not by copying the struct: unframedDigestSource carries a
+	// sync.Mutex, and copying a live one is the class of bug go vet's
+	// copylocks check exists to catch. Restored on cleanup so no bytes
+	// recorded here leak into any other test; this test does not run in
+	// parallel, matching every other row that touches this registry.
+	savedUnframed, savedDigestSource := unframedDigests, digestSource
+	t.Cleanup(func() { unframedDigests, digestSource = savedUnframed, savedDigestSource })
+
+	// CONTROL — an untouched source. Must raise rather than return empty
+	// strings: the original row's whole claim, kept intact and now judged
+	// beside the leg it used to make unreachable.
+	untouched := &unframedDigestSource{}
+	unframedDigests, digestSource = untouched, untouched
+	if cfgSHA, diffSHA, err := digestSource.ConsumedDigests(); err == nil {
+		t.Fatalf("CONTROL: an untouched digest source returned %q/%q with no error — it must raise for a channel it did not consume", cfgSHA, diffSHA)
+	} else if cfgSHA != "" || diffSHA != "" {
+		t.Errorf("CONTROL: ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
+	}
+
+	// THE DEFECT LEG, now reachable.
+	fed := &unframedDigestSource{}
+	unframedDigests, digestSource = fed, fed
+	fed.recordConfig([]byte("seal config bytes"))
+	fed.recordDiff([]byte("seal diff bytes"))
+	cfgSHA, diffSHA, err := digestSource.ConsumedDigests()
 	if err != nil {
-		// Legal: this process consumed no config and no diff. The contract is
-		// that it errors rather than returning empty strings.
-		if cfgSHA != "" || diffSHA != "" {
-			t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
-		}
-		return
+		t.Fatalf("both channels were recorded but ConsumedDigests still errored: %v", err)
 	}
 	for name, sha := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
 		if len(sha) != 64 {
