@@ -66,6 +66,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -366,14 +367,52 @@ func (r wiringRun) searchCertified() bool {
 // digestSource, so swapping unframedDigests alone leaves EmitV2 reading a
 // recorder nothing wrote into. It would raise, run() would log.Fatalf, and the
 // whole test binary would exit 1 mid-row.
-func isolateProcessState(t *testing.T) (*unframedDigestSource, *certifiedConfigRead) {
+//
+// prime, when given, is applied to the fresh slot BEFORE the run: it is how
+// the rejected-contract row plants a decoy certificate that the run's own
+// search must overwrite (see primeDecoyCertificate).
+func isolateProcessState(t *testing.T, prime ...func(*certifiedConfigRead)) (*unframedDigestSource, *certifiedConfigRead) {
 	t.Helper()
 	fresh, slot := &unframedDigestSource{}, &certifiedConfigRead{}
 	savedRecorder, savedSlot := unframedDigests, certifiedConfig
 	t.Cleanup(func() { unframedDigests, certifiedConfig = savedRecorder, savedSlot })
 	unframedDigests, certifiedConfig = fresh, slot
 	withHooks(t, contractFlagRegistrar, fresh, framedStdinReader)
+	for _, p := range prime {
+		p(slot)
+	}
 	return fresh, slot
+}
+
+// wiringDecoyDiff is what the TEST PROCESS's (or the child's) file descriptor
+// 0 carries whenever a row hands RunWiring a diff on Invocation.Stdin: a diff
+// touching a path no money rule matches. A body that reads os.Stdin instead
+// of inv.Stdin classifies THIS — a different digest and a different verdict
+// (no human PR gate) — and is red on both. It is a file, not a pipe, so an
+// unread decoy blocks nothing.
+var wiringDecoyDiff = diffFor("README.md")
+
+// withProcessStdin runs fn with os.Stdin swapped for a regular file holding
+// content, and restores it afterwards. It is the stdin half of what
+// captureStream does for the output streams; like the output swap it cannot
+// reach a reader bound to fd 0 before the swap, which is driveChild's job.
+func withProcessStdin(t *testing.T, content string, fn func()) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(p) // #nosec G304 -- this test's own temp file
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdin
+	os.Stdin = f
+	defer func() {
+		os.Stdin = old
+		_ = f.Close()
+	}()
+	fn()
 }
 
 // processStreamsOf runs fn and returns what reached the process's stdout, its
@@ -621,10 +660,10 @@ func spineOptions(f wiringFixture, cell mappingCell, runState string) options {
 // to the tree: -worktree's conventional run-state path and the process cwd
 // must both be untouched, or the "not applicable" the driver synthesised was
 // a lie the row would have judged as truth.
-func driveSpine(t *testing.T, name string, opts options) wiringRun {
+func driveSpine(t *testing.T, name string, opts options, prime ...func(*certifiedConfigRead)) wiringRun {
 	t.Helper()
 	var r wiringRun
-	r.digests, r.certified = isolateProcessState(t)
+	r.digests, r.certified = isolateProcessState(t, prime...)
 
 	r.art = Artifacts{RunState: FileArtifact{State: ArtifactNotApplicable}, V2Sidecar: FileArtifact{State: ArtifactNotApplicable}}
 	var rsBefore, scBefore fileSnap
@@ -656,8 +695,16 @@ func driveSpine(t *testing.T, name string, opts options) wiringRun {
 // ─── driver 2: RunWiring ─────────────────────────────────────────────────────
 
 // invocationFor is the argv an operator would type for the cell, with every
-// path RELATIVE so that the row also proves Dir resolution (clause 7).
+// path RELATIVE so that the row also proves Dir resolution (clause 7), and
+// the diff as a file argument — so Stdin is nil, "the operator who passed a
+// file argument".
 func invocationFor(f wiringFixture, cell mappingCell) Invocation {
+	return Invocation{Args: append(cellArgs(cell), fixtureDiffName), Dir: f.dir}
+}
+
+// cellArgs is the cell's flags, without the positional diff: the argv of an
+// operator who pipes the diff instead.
+func cellArgs(cell mappingCell) []string {
 	args := []string{"-no-git", "-config", fixtureConfigName, "-contract-version", cell.contract}
 	if cell.json {
 		args = append(args, "-json")
@@ -665,8 +712,7 @@ func invocationFor(f wiringFixture, cell mappingCell) Invocation {
 	if cell.out != outNone {
 		args = append(args, "-out", fixtureRunState)
 	}
-	args = append(args, fixtureDiffName)
-	return Invocation{Args: args, Dir: f.dir}
+	return args
 }
 
 // driveRunWiring calls RunWiring and, beside its answer, reports every byte
@@ -681,15 +727,22 @@ func invocationFor(f wiringFixture, cell mappingCell) Invocation {
 // snapshotted too: a body that resolved "run.json" against the cwd instead of
 // Dir would leave the Dir path absent — caught — and the cwd path written,
 // which is the operator's tree polluted and is reported as such.
-func driveRunWiring(t *testing.T, name string, inv Invocation) wiringRun {
+//
+// THE PROCESS'S OWN STDIN IS A DECOY for the duration of the call: fd 0
+// carries wiringDecoyDiff, so a body that reads os.Stdin where the contract
+// says inv.Stdin classifies the wrong diff and reads as red on the digest and
+// the verdict — whether inv.Stdin carried the real diff, nothing, or nil.
+func driveRunWiring(t *testing.T, name string, inv Invocation, prime ...func(*certifiedConfigRead)) wiringRun {
 	t.Helper()
 	var r wiringRun
-	r.digests, r.certified = isolateProcessState(t)
+	r.digests, r.certified = isolateProcessState(t, prime...)
 
 	runState := filepath.Join(inv.Dir, fixtureRunState)
 	rsBefore, scBefore := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
 	cwd := snapPair(t, cwdRunState(t))
-	r.leakedStdout, r.leakedStderr, r.logged = processStreamsOf(t, func() { r.art, r.err = RunWiring(inv) })
+	withProcessStdin(t, wiringDecoyDiff, func() {
+		r.leakedStdout, r.leakedStderr, r.logged = processStreamsOf(t, func() { r.art, r.err = RunWiring(inv) })
+	})
 	if r.err != nil {
 		return r
 	}
@@ -739,6 +792,10 @@ type wiringChildRequest struct {
 	Mode string
 	Args []string
 	Dir  string
+	// Stdin is Invocation.Stdin's content, or nil for a nil reader — the
+	// pointer keeps "no diff on stdin" distinct from "an empty diff", which
+	// is the distinction Invocation draws.
+	Stdin *string
 }
 
 type wiringChildReply struct {
@@ -773,7 +830,11 @@ func TestWiringSealChild(t *testing.T) {
 		_, _ = fmt.Fprint(wiringCachedStderr, wiringControlStderr)
 		log.Print(wiringControlLogged)
 	case wiringChildModeRun:
-		art, err := RunWiring(Invocation{Args: req.Args, Dir: req.Dir})
+		inv := Invocation{Args: req.Args, Dir: req.Dir}
+		if req.Stdin != nil {
+			inv.Stdin = strings.NewReader(*req.Stdin)
+		}
+		art, err := RunWiring(inv)
 		reply.Art = art
 		switch {
 		case errors.Is(err, ErrWiringNotImplemented):
@@ -820,6 +881,10 @@ func runWiringChild(t *testing.T, req wiringChildRequest) (stdout, stderr string
 	cmd := exec.Command(self, "-test.run=^TestWiringSealChild$") // #nosec G204 -- this test binary
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(), wiringChildEnv+"="+reqPath)
+	// The child's fd 0 is the decoy, whatever Invocation.Stdin carries: a body
+	// that reads the descriptor rather than the reader it was handed
+	// classifies the decoy, and the digest and verdict say so.
+	cmd.Stdin = strings.NewReader(wiringDecoyDiff)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
 	runErr := cmd.Run()
@@ -851,7 +916,16 @@ func driveChild(t *testing.T, name string, inv Invocation) wiringRun {
 	t.Helper()
 	runState := filepath.Join(inv.Dir, fixtureRunState)
 	rsBefore, scBefore := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
-	stdout, stderr, reply := runWiringChild(t, wiringChildRequest{Mode: wiringChildModeRun, Args: inv.Args, Dir: inv.Dir})
+	req := wiringChildRequest{Mode: wiringChildModeRun, Args: inv.Args, Dir: inv.Dir}
+	if inv.Stdin != nil {
+		data, err := io.ReadAll(inv.Stdin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(data)
+		req.Stdin = &s
+	}
+	stdout, stderr, reply := runWiringChild(t, req)
 	r := wiringRun{art: reply.Art, leakedStdout: stdout, leakedStderr: stderr}
 	switch {
 	case reply.Stub:
@@ -1174,10 +1248,14 @@ func containsExit(set []int, code int) bool {
 //     rejected run's stdout.
 //   - BAITED — a table at .agent/risk-paths.json, a wallet diff, no -config:
 //     a run that got past the contract check would search, resolve, read both
-//     channels and WRITE -out. The CONTROL is contract "1", which does exactly
+//     channels and WRITE -out. The CONTROL is contract "2", which does exactly
 //     that and exits 0 — the proof that the recorder sees reads on this path.
-//     The search instrument is controlled by resolving the same table
-//     directly and watching a fresh slot fill.
+//     The search instrument is controlled ON THAT SAME RUN, through the same
+//     driver: the driver's fresh slot is primed with a DECOY certificate for
+//     the bait path, and the control's wrapper must carry the bait's digest
+//     and verdict, not the decoy's, with the slot empty afterwards. A run
+//     whose search bypasses the slot is red there, so an empty slot on a
+//     rejected value is a fact about the run and not about the instrument.
 func TestSeal_Wiring_RejectedContractExits3BeforeAnyInputIsRead(t *testing.T) {
 	defer red(t)
 
@@ -1187,22 +1265,22 @@ func TestSeal_Wiring_RejectedContractExits3BeforeAnyInputIsRead(t *testing.T) {
 	// fixtureRunState, optionally naming the fixture diff, with no -config.
 	type driver struct {
 		name string
-		run  func(t *testing.T, name, dir, raw string, withDiff bool) wiringRun
+		run  func(t *testing.T, name, dir, raw string, withDiff bool, prime ...func(*certifiedConfigRead)) wiringRun
 	}
 	drivers := []driver{
-		{"spine", func(t *testing.T, name, dir, raw string, withDiff bool) wiringRun {
+		{"spine", func(t *testing.T, name, dir, raw string, withDiff bool, prime ...func(*certifiedConfigRead)) wiringRun {
 			opts := options{worktree: dir, base: "origin/main", out: filepath.Join(dir, fixtureRunState), json: true, noGit: true, contractVersion: raw}
 			if withDiff {
 				opts.args = []string{filepath.Join(dir, fixtureDiffName)}
 			}
-			return driveSpine(t, name, opts)
+			return driveSpine(t, name, opts, prime...)
 		}},
-		{"RunWiring", func(t *testing.T, name, dir, raw string, withDiff bool) wiringRun {
+		{"RunWiring", func(t *testing.T, name, dir, raw string, withDiff bool, prime ...func(*certifiedConfigRead)) wiringRun {
 			args := []string{"-no-git", "-json", "-out", fixtureRunState, "-contract-version", raw}
 			if withDiff {
 				args = append(args, fixtureDiffName)
 			}
-			r := driveRunWiring(t, name, Invocation{Args: args, Dir: dir})
+			r := driveRunWiring(t, name, Invocation{Args: args, Dir: dir}, prime...)
 			requireRunWiringBody(t, r.err)
 			judgeNoLeak(t, name, r)
 			return r
@@ -1283,9 +1361,10 @@ func TestSeal_Wiring_RejectedContractExits3BeforeAnyInputIsRead(t *testing.T) {
 			prepareOut(t, dir, outSeeded)
 			f := baitedWorktree(t, dir)
 
-			// INSTRUMENT CONTROL — the search, run directly against this
-			// worktree, resolves the bait and fills a fresh slot. Without this,
-			// "the slot stayed empty" could mean the instrument sees nothing.
+			// INSTRUMENT CONTROL, part 1 — the slot TYPE can fill: the search,
+			// run directly against this worktree, resolves the bait and
+			// certifies into a fresh slot. This says nothing yet about the
+			// code under test.
 			_, slot := isolateProcessState(t)
 			if got, err := ResolveConfigDual(dir); err != nil || got != f.configPath {
 				t.Fatalf("INSTRUMENT: the search over the bait resolved %q, %v — want %q", got, err, f.configPath)
@@ -1294,17 +1373,39 @@ func TestSeal_Wiring_RejectedContractExits3BeforeAnyInputIsRead(t *testing.T) {
 				t.Fatal("INSTRUMENT: the search resolved a table and certified nothing — the slot cannot witness a search that ran")
 			}
 
-			// CONTROL — an accepted contract against the bait runs to the end:
-			// exit 0, the v1 payload on stdout, both channels consumed, -out
-			// written. This is the run every rejected value must NOT have been.
-			ctl := d.run(t, "CONTROL", dir, "1", true)
-			if ctl.art.ExitCode != exitOK {
-				t.Fatalf("CONTROL: contract \"1\" against the bait exited %d, want %d\n%s\n%s", ctl.art.ExitCode, exitOK, ctl.art.Stdout, ctl.art.Stderr)
+			// CONTROL, and INSTRUMENT CONTROL part 2 — the SAME DRIVER the
+			// rejected values go through, and it must prove the driver's slot
+			// is the one the run's search writes. The slot is one-shot: a
+			// successful classify certifies at the search and TAKES at the
+			// load, so "held afterwards" cannot be the witness. The witness is
+			// a DECOY: the driver's fresh slot is primed with a certificate for
+			// the bait path over a table with no money rules. A search that
+			// certifies through the slot overwrites it, the load takes the real
+			// table, and the wrapper's config digest and verdict are the real
+			// table's. A search through a twin that certifies nothing leaves
+			// the decoy for the load to take — the wallet diff then classifies
+			// with no human PR gate and the digest names the decoy; a load
+			// that never takes leaves the decoy held. Each of those is red on
+			// its own line, so an empty slot on a rejected value below means
+			// "the search did not run", not "the instrument sees nothing".
+			decoy := driftedTable(t)
+			if bytes.Equal(decoy, f.configBytes) {
+				t.Fatal("INSTRUMENT: the decoy table is byte-identical to the bait — it could not be told apart")
 			}
-			judgeStdout(t, mappingCell{name: "CONTROL", stdout: shapeV1}, f, ctl.art.Stdout)
+			ctl := d.run(t, "CONTROL", dir, "2", true, primeDecoyCertificate(f.configPath, decoy))
+			if ctl.art.ExitCode != exitOK {
+				t.Fatalf("CONTROL: contract \"2\" against the bait exited %d, want %d\n%s\n%s", ctl.art.ExitCode, exitOK, ctl.art.Stdout, ctl.art.Stderr)
+			}
+			// judgeWrapper holds computed_config_sha256 to sha256 of the
+			// BAIT's bytes and the verdict to critical/gate on — both of which
+			// the decoy would fail.
+			judgeStdout(t, mappingCell{name: "CONTROL", stdout: shapeWrapper}, f, ctl.art.Stdout)
 			judgeConsumed(t, "CONTROL", ctl, true, true)
-			if ctl.art.RunState.State != ArtifactWritten {
-				t.Errorf("CONTROL: a run that classified left the run-state %s, want written", ctl.art.RunState.State)
+			if ctl.searchCertified() {
+				t.Error("INSTRUMENT: after a successful classify the slot still holds a certificate — the run's load did not TAKE what its search certified (or a decoy nobody overwrote is still there), so the certifying read and the consuming read are not the same read")
+			}
+			if ctl.art.RunState.State != ArtifactWritten || ctl.art.V2Sidecar.State != ArtifactWritten {
+				t.Errorf("CONTROL: a v2 run that classified left the run-state %s and the sidecar %s, want written/written", ctl.art.RunState.State, ctl.art.V2Sidecar.State)
 			}
 
 			for _, raw := range rejected {
@@ -1322,6 +1423,14 @@ func (c *certifiedConfigRead) holds() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.held
+}
+
+// primeDecoyCertificate is the prime step for a driver: it certifies decoy
+// bytes for path into the fresh slot before the run, through the slot's own
+// production method. A run whose search certifies through the slot replaces
+// it; a run whose load takes without a search consumes it.
+func primeDecoyCertificate(path string, decoy []byte) func(*certifiedConfigRead) {
+	return func(slot *certifiedConfigRead) { slot.certify(path, decoy) }
 }
 
 // baitedWorktree puts a searchable rule table and a wallet diff in dir, so
@@ -1361,6 +1470,182 @@ func problemLines(stdout string) []string {
 		}
 	}
 	return out
+}
+
+// ─── Invocation.Stdin: the channel the diff arrives on ───────────────────
+
+// readDiff's two answers to "no file argument", in its own words and
+// validateInput's. Pinned here because they are the two facts Invocation.Stdin
+// distinguishes, and a row must name which one it expects.
+const (
+	saysNoDiff    = "no diff: pass a file argument or pipe"
+	saysDiffEmpty = "diff is empty"
+)
+
+// Invocation.Stdin is the channel an operator's `git diff BASE...HEAD |
+// classify` arrives on — the datum financial_paths_touched and human_pr_gate
+// are computed from — and every other row in this file hands the diff over as
+// a file argument. A GO-1-3 body that wires Args and Dir correctly and keeps
+// today's direct os.Stdin reads would pass all of them. This row drives the
+// stdin arm, for the three facts Invocation states:
+//
+//   - PIPED: Stdin carries a diff, no file argument. The run classifies THAT
+//     diff: the v2 wrapper's computed_diff_sha256 is sha256 of the bytes
+//     handed to Invocation.Stdin and the verdict is the wallet's. The piped
+//     bytes are NOT the fixture's on-disk diff, so a body that found the file
+//     some other way is red on the digest too.
+//   - NIL: Stdin nil, no file argument — "no diff on stdin", the operator who
+//     passed nothing. The answer is readDiff's no-diff error: exit
+//     exitInternal — today's log.Fatalf number, which run()'s contract keeps
+//     when the fatal becomes a return — with saysNoDiff on stderr, nothing on
+//     stdout, the diff channel NOT consumed and -out untouched.
+//   - EMPTY: Stdin an empty reader — a diff was piped and it was empty. A
+//     different fact with a different answer: the diff channel IS consumed
+//     (zero bytes), and the run reports INVALID_INPUT naming saysDiffEmpty,
+//     exit 3, -out untouched.
+//
+// THE PROCESS'S OWN FD 0 IS A DECOY throughout: every driver puts
+// wiringDecoyDiff — a README change, no money rule, no gate — on the test
+// process's os.Stdin (in-process drivers) or on the child's descriptor 0
+// (driveChild). A body that reads the descriptor instead of inv.Stdin
+// classifies the decoy: on PIPED the digest and gate are wrong, on NIL it
+// classifies a diff nobody piped and exits 0, on EMPTY it reports a change
+// where the operator piped none. The child driver is the one that can see a
+// body reading fd 0 through a *os.File bound before any swap.
+//
+// Through the spine, PIPED and EMPTY are GREEN today (os.Stdin swapped for
+// the content, which is the only stdin the spine has) — the first rows in
+// the package to reach readDiff's stdin arm at all. NIL has no spine leg:
+// today's answer is a log.Fatalf that would end the test binary. Through
+// RunWiring and through the child, all three are RED by the stub.
+func TestSeal_Wiring_StdinArm_NilEmptyAndPiped(t *testing.T) {
+	defer red(t)
+	cell, ok := cellNamed("contract=2/out=fresh/json=on")
+	if !ok {
+		t.Fatal("mappingCells has no contract=2/out=fresh/json=on cell")
+	}
+	piped := []byte(diffFor(walletPath, "docs/stdin-arm.md"))
+	if bytes.Equal(piped, []byte(diffFor(walletPath))) || bytes.Equal(piped, []byte(wiringDecoyDiff)) {
+		t.Fatal("fixture: the piped diff must differ from the on-disk diff and from the decoy, or the digest cannot say which was classified")
+	}
+	// The decoy must classify differently from the wallet, or reading it
+	// would be invisible on the verdict.
+	if strings.Contains(wiringDecoyDiff, walletPath) {
+		t.Fatal("fixture: the decoy diff touches the wallet path")
+	}
+
+	judgeNoDiff := func(t *testing.T, name string, r wiringRun) {
+		t.Helper()
+		if r.art.ExitCode != exitInternal {
+			t.Errorf("%s: exit %d, want %d — nil Stdin with no file argument is \"no diff\", readDiff's error at the number run()'s contract keeps\nstdout:\n%s\nstderr:\n%s", name, r.art.ExitCode, exitInternal, r.art.Stdout, r.art.Stderr)
+		}
+		if !strings.Contains(string(r.art.Stderr), saysNoDiff) {
+			t.Errorf("%s: stderr does not say %q:\n%s", name, saysNoDiff, r.art.Stderr)
+		}
+		if len(r.art.Stdout) != 0 {
+			t.Errorf("%s: nothing was piped and stdout is not empty — something was classified, and the only diff in reach was the decoy on fd 0:\n%s", name, r.art.Stdout)
+		}
+		if r.art.RunState.State != ArtifactStale || r.art.V2Sidecar.State != ArtifactStale {
+			t.Errorf("%s: a run with no diff touched -out (run-state %s, sidecar %s), want stale/stale", name, r.art.RunState.State, r.art.V2Sidecar.State)
+		}
+		if r.digests != nil {
+			if _, diff := r.consumed(); diff {
+				t.Errorf("%s: the diff channel was consumed — Stdin was nil, so the only thing to consume was the decoy on fd 0", name)
+			}
+		}
+	}
+	judgeEmptyDiff := func(t *testing.T, name string, r wiringRun) {
+		t.Helper()
+		if r.art.ExitCode != exitInvalid {
+			t.Errorf("%s: exit %d, want %d\nstdout:\n%s\nstderr:\n%s", name, r.art.ExitCode, exitInvalid, r.art.Stdout, r.art.Stderr)
+		}
+		out := string(r.art.Stdout)
+		if !strings.HasPrefix(out, "=== CLASSIFY: INVALID_INPUT ===") || !strings.Contains(out, saysDiffEmpty) {
+			t.Errorf("%s: stdout is not the INVALID_INPUT block naming %q — an empty pipe is an empty diff, a fact distinct from no diff:\n%s", name, saysDiffEmpty, out)
+		}
+		if strings.Contains(out, `"computed_diff_sha256"`) || strings.Contains(out, reportOpens) {
+			t.Errorf("%s: an empty stdin was classified — the bytes came from the decoy on fd 0:\n%s", name, out)
+		}
+		if r.art.RunState.State != ArtifactStale || r.art.V2Sidecar.State != ArtifactStale {
+			t.Errorf("%s: a run with an empty diff touched -out (run-state %s, sidecar %s), want stale/stale", name, r.art.RunState.State, r.art.V2Sidecar.State)
+		}
+		if r.digests != nil {
+			if _, diff := r.consumed(); !diff {
+				t.Errorf("%s: the diff channel was not consumed — an empty reader was piped, and reading it to its end is consuming it", name)
+			}
+		}
+	}
+
+	// Through the spine: GREEN today.
+	t.Run("spine/piped", func(t *testing.T) {
+		defer red(t)
+		f := newWiringFixture(t)
+		f.diffBytes = piped
+		runState := prepareOut(t, f.dir, cell.out)
+		opts := spineOptions(f, cell, runState)
+		opts.args = nil
+		var r wiringRun
+		withProcessStdin(t, string(piped), func() { r = driveSpine(t, "spine/piped", opts) })
+		judgeCell(t, cell, f, runState, r.art)
+		judgeConsumed(t, "spine/piped", r, true, true)
+	})
+	t.Run("spine/empty", func(t *testing.T) {
+		defer red(t)
+		f := newWiringFixture(t)
+		runState := prepareOut(t, f.dir, outSeeded)
+		opts := spineOptions(f, mappingCell{contract: "1", json: true, out: outSeeded}, runState)
+		opts.args = nil
+		var r wiringRun
+		withProcessStdin(t, "", func() { r = driveSpine(t, "spine/empty", opts) })
+		judgeEmptyDiff(t, "spine/empty", r)
+	})
+
+	// Through RunWiring, in process and in the child: RED today by the stub.
+	type driver struct {
+		name string
+		run  func(t *testing.T, name string, inv Invocation) wiringRun
+	}
+	for _, d := range []driver{
+		{"RunWiring", func(t *testing.T, name string, inv Invocation) wiringRun { return driveRunWiring(t, name, inv) }},
+		{"child", func(t *testing.T, name string, inv Invocation) wiringRun { return driveChild(t, name, inv) }},
+	} {
+		d := d
+		t.Run(d.name+"/piped", func(t *testing.T) {
+			defer red(t)
+			name := d.name + "/piped"
+			f := newWiringFixture(t)
+			f.diffBytes = piped
+			runState := prepareOut(t, f.dir, cell.out)
+			r := d.run(t, name, Invocation{Args: cellArgs(cell), Stdin: bytes.NewReader(piped), Dir: f.dir})
+			requireRunWiringBody(t, r.err)
+			judgeNoLeak(t, name, r)
+			// judgeCell → judgeWrapper: computed_diff_sha256 == sha256(piped).
+			judgeCell(t, cell, f, runState, r.art)
+			if r.digests != nil {
+				judgeConsumed(t, name, r, true, true)
+			}
+		})
+		t.Run(d.name+"/nil", func(t *testing.T) {
+			defer red(t)
+			name := d.name + "/nil"
+			f := newWiringFixture(t)
+			prepareOut(t, f.dir, outSeeded)
+			r := d.run(t, name, Invocation{Args: cellArgs(mappingCell{contract: "1", json: true, out: outSeeded}), Dir: f.dir})
+			requireRunWiringBody(t, r.err)
+			judgeNoLeak(t, name, r)
+			judgeNoDiff(t, name, r)
+		})
+		t.Run(d.name+"/empty", func(t *testing.T) {
+			defer red(t)
+			name := d.name + "/empty"
+			f := newWiringFixture(t)
+			prepareOut(t, f.dir, outSeeded)
+			r := d.run(t, name, Invocation{Args: cellArgs(mappingCell{contract: "1", json: true, out: outSeeded}), Stdin: strings.NewReader(""), Dir: f.dir})
+			requireRunWiringBody(t, r.err)
+			judgeNoLeak(t, name, r)
+			judgeEmptyDiff(t, name, r)
+		})
+	}
 }
 
 // parseInvocationFlags — D2.1 and its own four clauses. RED TODAY by the stub.
@@ -1722,32 +2007,52 @@ func cellNamed(name string) (mappingCell, bool) {
 // from every stream check on its authority. This row is what makes that
 // exemption honest. It builds the current tree (liveClassify, with its
 // freshness guards) and, for each invocation below, runs RunWiring in process
-// AND the binary with the same argv, and requires the process's exit status,
-// stdout and stderr to be the ExitCode, Stdout and Stderr RunWiring returned
-// — byte for byte. A main() that forwards neither stream, exits 0 whatever
-// RunWiring answered, or adds a line of its own is red here and nowhere else:
-// `_, _ = RunWiring(inv); os.Exit(0)` satisfies every structural check and
-// ships a silent classifier, which a consumer reads as "nothing to gate".
+// AND the binary with the same argv, the same stdin and the same starting
+// tree, and requires:
+//
+//   - THE STREAMS AND THE EXIT: the process's exit status, stdout and stderr
+//     are the ExitCode, Stdout and Stderr RunWiring returned — byte for byte.
+//     A main() that forwards neither stream, exits 0 whatever RunWiring
+//     answered, or adds a line of its own is red here and nowhere else:
+//     `_, _ = RunWiring(inv); os.Exit(0)` satisfies every structural check
+//     and ships a silent classifier, which a consumer reads as "nothing to
+//     gate".
+//   - THE TREE: every live run is bracketed by snapshots of the fixture tree,
+//     of the binary's own directory and of the test process's cwd. Under the
+//     fixture, the set of paths that appeared, changed or vanished must be
+//     EXACTLY the artifacts RunWiring reported written or removed, at the
+//     paths it named, with the same bytes (timestamps masked) — and nothing
+//     else anywhere (judgeLiveTree). A main() that forwards the streams and
+//     then deletes, rewrites or adds a file is red here.
+//   - RELATIVE PATHS resolve against the directory the binary runs in.
+//     Operators type `classify -config config.json change.diff` and `classify
+//     init -worktree .`; the legs marked "relative" name no absolute path at
+//     all, run with cwd = the fixture, and their artifacts must land under
+//     the fixture. A main() that supplies the binary's directory, or a temp
+//     dir, as Invocation.Dir mis-resolves every one of them and is red on the
+//     streams and on the tree. An EMPTY Dir is not one of those: Invocation
+//     defines it as the directory the process started in, and no observation
+//     can tell it from the cwd, so the row does not pretend to.
+//   - STDIN is threaded: the piped legs hand the diff to the binary's fd 0
+//     and to Invocation.Stdin, with no file argument, and the live stdout
+//     must carry sha256 of exactly those bytes. A main() that passes nil, or
+//     a body that reads the descriptor rather than the reader, is red on the
+//     exit code or the digest.
 //
 // RED TODAY by the stub, on the in-process side, like every other RunWiring
 // row.
 //
-// Every path in the argv is ABSOLUTE, so the bytes cannot depend on which Dir
-// main() passes (clause 7: absolute paths are used unchanged), and -worktree
-// is named for the same reason — the report and the INVALID_INPUT block both
-// print it. Legs that write -out are compared with timestamps masked (the
-// payload carries classified_at, and the two runs are moments apart); every
-// other leg is compared raw.
+// Legs that write -out are compared with timestamps masked (the payload
+// carries classified_at, and the two runs are moments apart); every other
+// leg is compared raw. Each leg also pins the exit code the mapping rows owe,
+// and the live stream must SAY something the leg names outright — an
+// instrument that agreed on two empty streams would have agreed on nothing.
 //
 // The in-process side is held to the same rules as every other RunWiring
-// row: nothing on the process's stdout, stderr or logger (clause 3), and the
-// returned artifacts judged against the tree by judgeDisk (clause 4) — for
-// the legs that name -out, at that path; for the rest, NotApplicable and
-// nothing at the conventional path.
-//
-// Each leg also pins the exit code the mapping rows already owe, and the live
-// stream must SAY something the leg names outright — an instrument that agreed
-// on two empty streams would have agreed on nothing.
+// row: nothing on the process's stdout, stderr or logger (clause 3), the
+// process's own fd 0 a decoy, and the returned artifacts judged against the
+// tree by judgeDisk (clause 4) — for the legs that name -out, at that path;
+// for the rest, NotApplicable and nothing at the conventional path.
 //
 // THE NON-NIL-ERROR ARM is its own leg, below the table, and it is
 // deterministic: -out names a DIRECTORY. Clause 4 says RunWiring snapshots
@@ -1765,48 +2070,58 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 	bin := liveClassify(t)
 	f := newWiringFixture(t)
 	runState := filepath.Join(f.dir, fixtureRunState)
-	classifyArgs := func(extra ...string) []string {
-		args := []string{"-no-git", "-worktree", f.dir, "-config", f.configPath}
-		args = append(args, extra...)
-		return append(args, f.diffPath)
+	pipedDiff := diffFor(walletPath, "docs/stdin-arm.md")
+	empty := ""
+	absArgs := func(extra ...string) []string {
+		return append([]string{"-no-git", "-worktree", f.dir, "-config", f.configPath}, extra...)
+	}
+	relArgs := func(extra ...string) []string {
+		return append([]string{"-no-git", "-config", fixtureConfigName}, extra...)
 	}
 	type says struct{ stream, substr string }
 	legs := []struct {
-		name     string
-		args     []string
-		exit     ExitCode
-		out      bool // -out names runState: judge the artifacts there, mask timestamps
-		liveSays says
+		name  string
+		args  []string
+		stdin *string // Invocation.Stdin AND the binary's fd 0; nil = a file argument carries the diff
+		exit  ExitCode
+		out   bool // -out names runState: judge the artifacts there, mask timestamps
+		seed  bool // -out and its sidecar exist from a previous run, before each of the two runs
+		live  says
 	}{
-		{"classify report, no -out", classifyArgs("-contract-version", "1"), exitOK, false, says{"stdout", "=== CLASSIFICATION ==="}},
-		{"classify -json -out, contract 2", classifyArgs("-contract-version", "2", "-json", "-out", runState), exitOK, true, says{"stderr", saysSidecarWritten}},
-		{"rejected -contract-version 3", classifyArgs("-contract-version", "3", "-json", "-out", runState), exitInvalid, true, says{"stdout", "accepted values are 1 and 2"}},
-		{"capabilities", []string{probeSubcommand}, exitCapabilityIncomplete, false, says{"stdout", `"cmd/classify"`}},
-		{"help", []string{"help"}, exitOK, false, says{"stderr", "classify init"}},
-		{"unknown flag", []string{"-no-such-flag"}, exitFlagError, false, says{"stderr", "no-such-flag"}},
-	}
-	resetOut := func() {
-		t.Helper()
-		for _, p := range []string{runState, V2SidecarPath(runState)} {
-			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-				t.Fatal(err)
-			}
-		}
+		{"classify report, no -out", absArgs("-contract-version", "1", f.diffPath), nil, exitOK, false, false, says{"stdout", "=== CLASSIFICATION ==="}},
+		{"classify -json -out, contract 2", absArgs("-contract-version", "2", "-json", "-out", runState, f.diffPath), nil, exitOK, true, false, says{"stderr", saysSidecarWritten}},
+		{"classify -json -out, contract 1, seeded", absArgs("-contract-version", "1", "-json", "-out", runState, f.diffPath), nil, exitOK, true, true, says{"stderr", saysSidecarRemoved}},
+		{"rejected -contract-version 3", absArgs("-contract-version", "3", "-json", "-out", runState, f.diffPath), nil, exitInvalid, true, true, says{"stdout", "accepted values are 1 and 2"}},
+		{"relative: classify -json -out, contract 2", relArgs("-contract-version", "2", "-json", "-out", fixtureRunState, fixtureDiffName), nil, exitOK, true, false, says{"stderr", saysSidecarWritten}},
+		{"relative: classify report, no -out", relArgs("-contract-version", "1", fixtureDiffName), nil, exitOK, false, false, says{"stdout", "=== CLASSIFICATION ==="}},
+		{"piped diff on stdin, -json -out, contract 2", absArgs("-contract-version", "2", "-json", "-out", runState), &pipedDiff, exitOK, true, false, says{"stdout", `"computed_diff_sha256": "` + hexSHA256([]byte(pipedDiff)) + `"`}},
+		{"empty stdin, no file argument", absArgs("-contract-version", "1", "-json", "-out", runState), &empty, exitInvalid, true, true, says{"stdout", saysDiffEmpty}},
+		{"capabilities", []string{probeSubcommand}, nil, exitCapabilityIncomplete, false, false, says{"stdout", `"cmd/classify"`}},
+		{"help", []string{"help"}, nil, exitOK, false, false, says{"stderr", "classify init"}},
+		{"unknown flag", []string{"-no-such-flag"}, nil, exitFlagError, false, false, says{"stderr", "no-such-flag"}},
 	}
 	for _, leg := range legs {
 		leg := leg
 		t.Run(leg.name, func(t *testing.T) {
 			defer red(t)
 			isolateProcessState(t)
-			resetOut()
 			wantRS, wantSC := "", ""
 			if leg.out {
 				wantRS, wantSC = runState, V2SidecarPath(runState)
 			}
+
+			// In process.
+			seedOut(t, runState, leg.seed)
 			rsBefore, scBefore := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
 			cwd := snapPair(t, cwdRunState(t))
+			inv := Invocation{Args: leg.args, Dir: f.dir}
+			if leg.stdin != nil {
+				inv.Stdin = strings.NewReader(*leg.stdin)
+			}
 			var r wiringRun
-			r.leakedStdout, r.leakedStderr, r.logged = processStreamsOf(t, func() { r.art, r.err = RunWiring(Invocation{Args: leg.args, Dir: f.dir}) })
+			withProcessStdin(t, wiringDecoyDiff, func() {
+				r.leakedStdout, r.leakedStderr, r.logged = processStreamsOf(t, func() { r.art, r.err = RunWiring(inv) })
+			})
 			requireRunWiringBody(t, r.err)
 			judgeNoLeak(t, leg.name, r)
 			rsAfter, scAfter := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
@@ -1814,24 +2129,79 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 			judgeDisk(t, leg.name+": v2 sidecar", r.art.V2Sidecar, wantSC, scBefore, scAfter)
 			judgeUntouched(t, leg.name, cwd)
 			art := r.art
-
-			resetOut()
-			live := runLive(t, bin, f.dir, nil, leg.args...)
-
 			if art.ExitCode != leg.exit {
 				t.Errorf("%s: RunWiring answered exit %d, want %d", leg.name, art.ExitCode, leg.exit)
 			}
+
+			// The binary, on the same argv, the same stdin, the same starting
+			// tree.
+			seedOut(t, runState, leg.seed)
+			live := runLiveObserved(t, leg.name, bin, f.dir, leg.stdin, leg.args)
 			if live.exit != int(art.ExitCode) {
 				t.Errorf("%s: the binary exited %d, RunWiring answered %d — main() does not exit with ExitCode (clause 8)\nbinary stderr:\n%s", leg.name, live.exit, art.ExitCode, live.stderr)
 			}
 			judgeForwarded(t, leg.name, "stdout", live.stdout, art.Stdout, leg.out)
 			judgeForwarded(t, leg.name, "stderr", live.stderr, art.Stderr, leg.out)
-			got := map[string]string{"stdout": live.stdout, "stderr": live.stderr}[leg.liveSays.stream]
-			if !strings.Contains(got, leg.liveSays.substr) {
-				t.Errorf("%s: the binary's %s does not say %q:\n%s", leg.name, leg.liveSays.stream, leg.liveSays.substr, got)
+			got := map[string]string{"stdout": live.stdout, "stderr": live.stderr}[leg.live.stream]
+			if !strings.Contains(got, leg.live.substr) {
+				t.Errorf("%s: the binary's %s does not say %q:\n%s", leg.name, leg.live.stream, leg.live.substr, got)
 			}
+			judgeLiveTree(t, leg.name, f.dir, live, art)
 		})
 	}
+
+	// init, with a relative worktree, from the directory it should scaffold.
+	// Artifacts has no field for the config file (its doc says so), so the
+	// tree is the oracle on both sides: RunWiring's effect on Dir and the
+	// binary's effect on its cwd must both be exactly the scaffold, and the
+	// same bytes. The scaffold is cleared between the two runs — init
+	// refuses to overwrite — so both see the same starting tree.
+	t.Run("relative: init -worktree .", func(t *testing.T) {
+		defer red(t)
+		const name = "init -worktree ."
+		initDir := t.TempDir()
+		args := []string{"init", "-worktree", "."}
+		scaffoldRel := filepath.Join(agentConfigDirs[0], "risk-paths.json")
+		wantDiff := "created: " + agentConfigDirs[0] + "/\ncreated: " + scaffoldRel
+
+		isolateProcessState(t)
+		before := treeSnap(t, initDir)
+		cwd := snapPair(t, cwdRunState(t))
+		var r wiringRun
+		withProcessStdin(t, wiringDecoyDiff, func() {
+			r.leakedStdout, r.leakedStderr, r.logged = processStreamsOf(t, func() { r.art, r.err = RunWiring(Invocation{Args: args, Dir: initDir}) })
+		})
+		requireRunWiringBody(t, r.err)
+		judgeNoLeak(t, name, r)
+		judgeUntouched(t, name, cwd)
+		if r.art.ExitCode != exitOK {
+			t.Errorf("%s: RunWiring answered exit %d, want %d\nstdout:\n%s\nstderr:\n%s", name, r.art.ExitCode, exitOK, r.art.Stdout, r.art.Stderr)
+		}
+		inProc := treeSnap(t, initDir)
+		if diff := treeDiff(before, inProc); diff != wantDiff {
+			t.Errorf("%s: RunWiring's effect on Dir:\n%s\nwant exactly:\n%s", name, diff, wantDiff)
+		}
+		scaffold := inProc[scaffoldRel]
+		if err := os.RemoveAll(filepath.Join(initDir, agentConfigDirs[0])); err != nil {
+			t.Fatal(err)
+		}
+
+		live := runLiveObserved(t, name, bin, initDir, nil, args)
+		if live.exit != int(r.art.ExitCode) {
+			t.Errorf("%s: the binary exited %d, RunWiring answered %d (clause 8)\nbinary stderr:\n%s", name, live.exit, r.art.ExitCode, live.stderr)
+		}
+		judgeForwarded(t, name, "stdout", live.stdout, r.art.Stdout, false)
+		judgeForwarded(t, name, "stderr", live.stderr, r.art.Stderr, false)
+		if !strings.Contains(live.stdout, "Wrote ") {
+			t.Errorf("%s: the binary's stdout does not say \"Wrote \":\n%s", name, live.stdout)
+		}
+		if diff := treeDiff(live.before, live.after); diff != wantDiff {
+			t.Errorf("%s: the binary's effect on its working directory:\n%s\nwant exactly (\"-worktree .\" is the cwd, clause 7):\n%s", name, diff, wantDiff)
+		}
+		if got, ok := live.after[scaffoldRel]; ok && got != scaffold {
+			t.Errorf("%s: the binary's scaffold is not RunWiring's, byte for byte\nbinary:\n%s\nRunWiring:\n%s", name, got, scaffold)
+		}
+	})
 
 	t.Run("-out names a directory (non-nil error)", func(t *testing.T) {
 		defer red(t)
@@ -1840,8 +2210,8 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 		if err := os.Mkdir(outDir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		args := classifyArgs("-contract-version", "1", "-out", outDir)
-		resetOut()
+		args := absArgs("-contract-version", "1", "-out", outDir, f.diffPath)
+		seedOut(t, runState, false)
 
 		// In process — in a CHILD process. What the parent sees on the child's
 		// fds 1 and 2 is every byte the run emitted, the logger's included.
@@ -1863,8 +2233,7 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 		// stderr is the error — rendered once, on one line, ending in the
 		// error's own text, with nothing after it. A duplicated error, or a
 		// stray line of main()'s own, is "adding something" (clause 8).
-		treeBefore = treeSnap(t, f.dir)
-		live := runLive(t, bin, f.dir, nil, args...)
+		live := runLiveObserved(t, name, bin, f.dir, nil, args)
 		if live.exit != exitInternal {
 			t.Errorf("%s: RunWiring returned an error and the binary exited %d, want %d (clause 8)", name, live.exit, exitInternal)
 		}
@@ -1872,10 +2241,131 @@ func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
 			t.Errorf("%s: RunWiring returned an error — Artifacts asserts nothing — and the binary still wrote to stdout:\n%s", name, live.stdout)
 		}
 		judgeErrorRendering(t, name, live.stderr, reply.Err)
-		if diff := treeDiff(treeBefore, treeSnap(t, f.dir)); diff != "" {
+		if diff := treeDiff(live.before, live.after); diff != "" {
 			t.Errorf("%s: the binary changed the tree under Dir on a run RunWiring could not observe:\n%s", name, diff)
 		}
 	})
+}
+
+// seedOut resets -out and its sidecar to the leg's starting state: absent,
+// or the seeds a previous run left.
+func seedOut(t *testing.T, runState string, seed bool) {
+	t.Helper()
+	for _, p := range []string{runState, V2SidecarPath(runState)} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	if seed {
+		prepareOut(t, filepath.Dir(runState), outSeeded)
+	}
+}
+
+// observedLive is one live run with the fixture tree as it was immediately
+// before and after it.
+type observedLive struct {
+	liveRun
+	before, after map[string]string
+}
+
+// runLiveIn is runLive with the binary's stdin supplied. nil is what exec
+// gives a child with no stdin — the null device — not the test's own fd 0.
+func runLiveIn(t *testing.T, bin, cwd string, stdin io.Reader, args ...string) liveRun {
+	t.Helper()
+	cmd := exec.Command(bin, args...) // #nosec G204 -- bin is this test's own scratch build
+	cmd.Dir = cwd
+	cmd.Stdin = stdin
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if err != nil && cmd.ProcessState == nil {
+		t.Fatalf("could not run the live producer: %v", err)
+	}
+	return liveRun{exit: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
+}
+
+// runLiveObserved runs the binary with cwd as its working directory and
+// brackets it with snapshots: the fixture tree (returned, for judgeLiveTree),
+// the binary's own directory and the test process's cwd (judged here — a
+// file appearing in either is a path resolved against the wrong root).
+func runLiveObserved(t *testing.T, name, bin, cwd string, stdin *string, args []string) observedLive {
+	t.Helper()
+	binDir := filepath.Dir(bin)
+	binBefore := treeSnap(t, binDir)
+	testCwd := snapPair(t, cwdRunState(t))
+	before := treeSnap(t, cwd)
+	var in io.Reader
+	if stdin != nil {
+		in = strings.NewReader(*stdin)
+	}
+	run := runLiveIn(t, bin, cwd, in, args...)
+	after := treeSnap(t, cwd)
+	if diff := treeDiff(binBefore, treeSnap(t, binDir)); diff != "" {
+		t.Errorf("%s: the binary changed its OWN directory — a path resolved against the executable's location, not the operator's working directory (clause 7):\n%s", name, diff)
+	}
+	judgeUntouched(t, name+" (the binary)", testCwd)
+	return observedLive{liveRun: run, before: before, after: after}
+}
+
+// judgeLiveTree holds what the binary did to the fixture tree to what
+// RunWiring reported for the same invocation: the paths that appeared,
+// changed or vanished are exactly the artifacts reported written or removed,
+// under Dir, and the bytes left there are the reported Bytes (timestamps
+// masked). Nothing else may differ — an extra file is main() adding
+// something, a missing one is main() taking something away.
+func judgeLiveTree(t *testing.T, name, dir string, live observedLive, art Artifacts) {
+	t.Helper()
+	want := map[string]bool{}
+	for _, a := range []struct {
+		what string
+		fa   FileArtifact
+	}{{"run-state", art.RunState}, {"v2 sidecar", art.V2Sidecar}} {
+		if a.fa.State == ArtifactNotApplicable {
+			continue
+		}
+		rel, err := filepath.Rel(dir, a.fa.Path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+			t.Errorf("%s: RunWiring reported the %s at %q, which is not under Dir %q", name, a.what, a.fa.Path, dir)
+			continue
+		}
+		_, existed := live.before[rel]
+		switch a.fa.State {
+		case ArtifactWritten:
+			if existed {
+				want["changed: "+rel] = true
+			} else {
+				want["created: "+rel] = true
+			}
+		case ArtifactRemoved:
+			want["removed: "+rel] = true
+		}
+		if a.fa.State == ArtifactWritten || a.fa.State == ArtifactStale {
+			got, ok := live.after[rel]
+			if !ok {
+				t.Errorf("%s: RunWiring reported the %s %s, and the binary left no file at %s", name, a.what, a.fa.State, rel)
+				continue
+			}
+			if wiringTimestamps.ReplaceAllString(got, "<timestamp>") != wiringTimestamps.ReplaceAllString(string(a.fa.Bytes), "<timestamp>") {
+				t.Errorf("%s: the %s the binary left at %s is not the Bytes RunWiring reported (clause 8)\nbinary:\n%s\nRunWiring:\n%s", name, a.what, rel, got, a.fa.Bytes)
+			}
+		}
+	}
+	got := map[string]bool{}
+	if diff := treeDiff(live.before, live.after); diff != "" {
+		for _, line := range strings.Split(diff, "\n") {
+			got[line] = true
+		}
+	}
+	for line := range want {
+		if !got[line] {
+			t.Errorf("%s: RunWiring reported %q, and the binary's run did not do it — main() forwarded a result whose effect the tree does not show (clause 8)", name, line)
+		}
+	}
+	for line := range got {
+		if !want[line] {
+			t.Errorf("%s: the binary's run %s under Dir, which RunWiring reported no such thing for — main() added something (clause 8)", name, line)
+		}
+	}
 }
 
 // judgeErrorRendering is clause 8's error arm on stderr: the error, once,
@@ -2041,7 +2531,7 @@ func judgeForwarded(t *testing.T, name, stream, live string, want []byte, mask b
 	}
 }
 
-// D1's structural obligation, RunWiring clauses 1, 2 and 3. RED TODAY on five
+// D1's structural obligation, RunWiring clauses 1, 2 and 3. RED TODAY on six
 // counts, each of which is one line of GO-1-3's checklist:
 //
 //   - main() calls RunWiring;
@@ -2065,18 +2555,30 @@ func judgeForwarded(t *testing.T, name, stream, live string, want []byte, mask b
 //     same defect, and the last one is invisible to every in-process stream
 //     capture because it bound the descriptor before the swap. Sites are
 //     reported per function (or per package-level declaration) with a count,
-//     so the checklist reads as things to fix, not lines.
+//     so the checklist reads as things to fix, not lines;
+//   - outside main(), nothing reads os.Stdin: the diff channel is
+//     Invocation.Stdin — nil, empty, or the piped bytes — and a body that
+//     reads the descriptor has bound the channel a row cannot redirect. The
+//     behavioural half is TestSeal_Wiring_StdinArm_NilEmptyAndPiped; main()
+//     is exempt because it is where os.Stdin becomes inv.Stdin.
 //
 // main() is exempt from the stream rule because clause 8 makes it the one
 // place that forwards to those streams — and that exemption rests on the live
 // binary row, which holds main() to clause 8 byte for byte, not on the clause.
 //
 // Read from the AST, not by substring, so a comment that MENTIONS os.Exit —
-// wiring.go's contract does — is not a hit. CONTROLS: the scan must find at
-// least one os.Exit inside main(), which is how main exits and always will
-// be; and at least one reference to os.Stdout or os.Stderr somewhere in the
-// package, which main() will always carry (clause 8). A scan that finds
-// neither is blind and says nothing about the rest.
+// wiring.go's contract does — is not a hit. And read THROUGH THE IMPORT
+// TABLE, not by source spelling: every selector's package is resolved to its
+// import path first, so `stdos "os"` followed by stdos.Chdir is os.Chdir, and
+// a dot import of a watched package — after which the call is a bare Chdir
+// the scan cannot attribute — is rejected as such. Pinned by
+// TestSeal_Wiring_StructuralScan_SeesThroughImportAliases.
+//
+// CONTROLS: the scan must find at least one os.Exit inside main(), which is
+// how main exits and always will be; and at least one reference to os.Stdout,
+// os.Stderr or os.Stdin somewhere in the package, which main() will always
+// carry (clause 8). A scan that finds neither is blind and says nothing about
+// the rest.
 func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 	defer red(t)
 
@@ -2085,18 +2587,7 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	type site struct{ file, fn, call string }
-	var (
-		exits, fatals []site
-		chdirs        []site
-		globals       = map[site]int{}
-		streamRefs    int
-		mainCallsRun  bool
-		mainFound     bool
-		mainExitLits  int
-		parseFlagsIn  string
-		parsed        int
-	)
+	scan := newWiringScan()
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -2106,109 +2597,15 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
-		parsed++
-		// inspect applies the rules to one declaration's expressions: a
-		// function body, or a package-level initialiser, which is where a
-		// stream gets cached before anything can swap it.
-		inspect := func(where string, isMain bool, node ast.Node) {
-			ast.Inspect(node, func(n ast.Node) bool {
-				switch x := n.(type) {
-				case *ast.CallExpr:
-					switch f := x.Fun.(type) {
-					case *ast.Ident:
-						if isMain && f.Name == "RunWiring" {
-							mainCallsRun = true
-						}
-					case *ast.SelectorExpr:
-						pkg, ok := f.X.(*ast.Ident)
-						if !ok {
-							return true
-						}
-						s := site{name, where, pkg.Name + "." + f.Sel.Name}
-						switch {
-						case pkg.Name == "os" && f.Sel.Name == "Exit":
-							exits = append(exits, s)
-							if isMain && len(x.Args) == 1 {
-								if _, lit := x.Args[0].(*ast.BasicLit); lit {
-									mainExitLits++
-								}
-							}
-						case pkg.Name == "log" && (strings.HasPrefix(f.Sel.Name, "Fatal") || strings.HasPrefix(f.Sel.Name, "Panic")):
-							fatals = append(fatals, s)
-						case (pkg.Name == "os" || pkg.Name == "syscall") && f.Sel.Name == "Chdir":
-							// Anywhere in the package, main() included:
-							// clause 7 grants no exemption, and a Chdir that
-							// restores the cwd before returning passes every
-							// behavioural row while still being the race.
-							chdirs = append(chdirs, s)
-						case pkg.Name == "log" && f.Sel.Name != "New" && !isMain:
-							// Print*, SetOutput, SetFlags, Default, Writer ...:
-							// the standard logger. log.New over a supplied
-							// writer is fine; over os.Stderr it is caught below.
-							globals[s]++
-						case pkg.Name == "fmt" && strings.HasPrefix(f.Sel.Name, "Print") && !isMain:
-							globals[s]++
-						case pkg.Name == "os" && f.Sel.Name == "NewFile" && !isMain:
-							// os.NewFile(1, ...) is os.Stdout under another name.
-							globals[s]++
-						}
-					}
-				case *ast.SelectorExpr:
-					// Any mention of the stream, in any position: as a
-					// fmt.Fprint* argument, as an argument to EmitV1, as a
-					// receiver, as a var initialiser. The CallExpr case above
-					// sees only call targets.
-					if pkg, ok := x.X.(*ast.Ident); ok && pkg.Name == "os" && (x.Sel.Name == "Stdout" || x.Sel.Name == "Stderr") {
-						streamRefs++
-						if !isMain {
-							globals[site{name, where, "os." + x.Sel.Name}]++
-						}
-					}
-				}
-				return true
-			})
-		}
-		for _, d := range file.Decls {
-			switch d := d.(type) {
-			case *ast.FuncDecl:
-				if d.Body == nil {
-					continue
-				}
-				if d.Name.Name == "parseFlags" && d.Recv == nil {
-					parseFlagsIn = name
-				}
-				isMain := d.Name.Name == "main" && d.Recv == nil && name == "main.go"
-				if isMain {
-					mainFound = true
-				}
-				inspect(d.Name.Name, isMain, d.Body)
-			case *ast.GenDecl:
-				// Package-level var and const initialisers. A body that
-				// caches `var out = os.Stdout` here has bound the descriptor
-				// before any test could swap it; the binding is the defect.
-				for _, spec := range d.Specs {
-					vs, ok := spec.(*ast.ValueSpec)
-					if !ok {
-						continue
-					}
-					names := make([]string, 0, len(vs.Names))
-					for _, n := range vs.Names {
-						names = append(names, n.Name)
-					}
-					for _, v := range vs.Values {
-						inspect("var "+strings.Join(names, ","), false, v)
-					}
-				}
-			}
-		}
+		scan.scanFile(name, file)
 	}
-	if parsed == 0 || !mainFound {
-		t.Fatalf("scanned %d files and found main() = %v — the scan is broken, not the source", parsed, mainFound)
+	if scan.parsed == 0 || !scan.mainFound {
+		t.Fatalf("scanned %d files and found main() = %v — the scan is broken, not the source", scan.parsed, scan.mainFound)
 	}
 
 	// CONTROLS.
 	inMain := 0
-	for _, s := range exits {
+	for _, s := range scan.exits {
 		if s.fn == "main" && s.file == "main.go" {
 			inMain++
 		}
@@ -2216,33 +2613,227 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 	if inMain == 0 {
 		t.Fatal("CONTROL: the scan found no os.Exit inside main() — main exits, so the scan is not reading call sites")
 	}
-	if streamRefs == 0 {
-		t.Fatal("CONTROL: the scan found no reference to os.Stdout or os.Stderr anywhere — main() forwards both (clause 8), so the scan is not reading selectors")
+	if scan.streamRefs == 0 {
+		t.Fatal("CONTROL: the scan found no reference to os.Stdout, os.Stderr or os.Stdin anywhere — main() forwards the streams (clause 8), so the scan is not reading selectors")
 	}
 
-	if !mainCallsRun {
-		t.Error("clause 1: main() does not call RunWiring — the spine every row drives is not the spine the binary runs")
+	for _, f := range scan.findings() {
+		t.Error(f)
 	}
-	if mainExitLits > 0 {
-		t.Errorf("clause 8: main() calls os.Exit with a literal ×%d — an exit code nobody returned; main exits with the ExitCode RunWiring answered, or exitInternal beside its error", mainExitLits)
+}
+
+// scanSite is one place a rule fired: the file, the enclosing function (or
+// package-level declaration) and the call or selector, spelled by IMPORT
+// PATH — os.Chdir whether the source wrote os.Chdir or stdos.Chdir.
+type scanSite struct{ file, fn, call string }
+
+// wiringScan is what the structural row reads out of the package's non-test
+// sources, as a value, so the same reader can be pinned on sources the tree
+// does not contain.
+type wiringScan struct {
+	exits, fatals, chdirs []scanSite
+	dotImports            []scanSite       // a dot import of a watched package
+	globals               map[scanSite]int // process-global stream use outside main()
+	stdinReads            map[scanSite]int // os.Stdin outside main()
+	streamRefs            int
+	mainCallsRun          bool
+	mainFound             bool
+	mainExitLits          int
+	parseFlagsIn          string
+	parsed                int
+}
+
+// watchedImports are the packages the rules name, by import path.
+var watchedImports = map[string]bool{"os": true, "syscall": true, "log": true, "fmt": true}
+
+func newWiringScan() *wiringScan {
+	return &wiringScan{globals: map[scanSite]int{}, stdinReads: map[scanSite]int{}}
+}
+
+// scanFile applies the rules to one parsed file. A top-level func main is
+// THE main only in main.go.
+func (s *wiringScan) scanFile(name string, file *ast.File) {
+	s.parsed++
+
+	// The import table: local name → import path. A watched package under
+	// a dot import cannot be followed — its symbols are bare identifiers —
+	// so the import itself is the finding.
+	imports := map[string]string{}
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		local := path[strings.LastIndex(path, "/")+1:]
+		if imp.Name != nil {
+			local = imp.Name.Name
+		}
+		switch local {
+		case "_":
+			continue
+		case ".":
+			if watchedImports[path] {
+				s.dotImports = append(s.dotImports, scanSite{name, "import", `. "` + path + `"`})
+			}
+			continue
+		}
+		imports[local] = path
 	}
-	if parseFlagsIn != "" {
-		t.Errorf("clause 1: parseFlags still exists in %s — it is to cease to exist, not become a second caller of parseInvocationFlags", parseFlagsIn)
+	// pkgOf resolves the X of a selector to an import path, or "" when X is
+	// not a name this file imported — a local variable, a field, a package
+	// that merely calls itself os.
+	pkgOf := func(x ast.Expr) string {
+		id, ok := x.(*ast.Ident)
+		if !ok {
+			return ""
+		}
+		return imports[id.Name]
 	}
-	for _, s := range exits {
-		if s.fn != "main" || s.file != "main.go" {
-			t.Errorf("clause 2: %s called from %s.%s — os.Exit survives in main() and nowhere else", s.call, s.file, s.fn)
+
+	// inspect applies the rules to one declaration's expressions: a
+	// function body, or a package-level initialiser, which is where a
+	// stream gets cached before anything can swap it.
+	inspect := func(where string, isMain bool, node ast.Node) {
+		ast.Inspect(node, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.CallExpr:
+				switch f := x.Fun.(type) {
+				case *ast.Ident:
+					if isMain && f.Name == "RunWiring" {
+						s.mainCallsRun = true
+					}
+				case *ast.SelectorExpr:
+					pkg := pkgOf(f.X)
+					if pkg == "" {
+						return true
+					}
+					site := scanSite{name, where, pkg + "." + f.Sel.Name}
+					switch {
+					case pkg == "os" && f.Sel.Name == "Exit":
+						s.exits = append(s.exits, site)
+						if isMain && len(x.Args) == 1 {
+							if _, lit := x.Args[0].(*ast.BasicLit); lit {
+								s.mainExitLits++
+							}
+						}
+					case pkg == "log" && (strings.HasPrefix(f.Sel.Name, "Fatal") || strings.HasPrefix(f.Sel.Name, "Panic")):
+						s.fatals = append(s.fatals, site)
+					case (pkg == "os" || pkg == "syscall") && f.Sel.Name == "Chdir":
+						// Anywhere in the package, main() included:
+						// clause 7 grants no exemption, and a Chdir that
+						// restores the cwd before returning passes every
+						// behavioural row while still being the race.
+						s.chdirs = append(s.chdirs, site)
+					case pkg == "log" && f.Sel.Name != "New" && !isMain:
+						// Print*, SetOutput, SetFlags, Default, Writer ...:
+						// the standard logger. log.New over a supplied
+						// writer is fine; over os.Stderr it is caught below.
+						s.globals[site]++
+					case pkg == "fmt" && strings.HasPrefix(f.Sel.Name, "Print") && !isMain:
+						s.globals[site]++
+					case pkg == "os" && f.Sel.Name == "NewFile" && !isMain:
+						// os.NewFile(1, ...) is os.Stdout under another name.
+						s.globals[site]++
+					}
+				}
+			case *ast.SelectorExpr:
+				// Any mention of a stream, in any position: as a fmt.Fprint*
+				// argument, as an argument to EmitV1, as a receiver, as a
+				// var initialiser. The CallExpr case above sees only call
+				// targets.
+				if pkgOf(x.X) != "os" {
+					return true
+				}
+				switch x.Sel.Name {
+				case "Stdout", "Stderr":
+					s.streamRefs++
+					if !isMain {
+						s.globals[scanSite{name, where, "os." + x.Sel.Name}]++
+					}
+				case "Stdin":
+					s.streamRefs++
+					if !isMain {
+						s.stdinReads[scanSite{name, where, "os.Stdin"}]++
+					}
+				}
+			}
+			return true
+		})
+	}
+	for _, d := range file.Decls {
+		switch d := d.(type) {
+		case *ast.FuncDecl:
+			if d.Body == nil {
+				continue
+			}
+			if d.Name.Name == "parseFlags" && d.Recv == nil {
+				s.parseFlagsIn = name
+			}
+			isMain := d.Name.Name == "main" && d.Recv == nil && name == "main.go"
+			if isMain {
+				s.mainFound = true
+			}
+			inspect(d.Name.Name, isMain, d.Body)
+		case *ast.GenDecl:
+			// Package-level var and const initialisers. A body that
+			// caches `var out = os.Stdout` here has bound the descriptor
+			// before any test could swap it; the binding is the defect.
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				names := make([]string, 0, len(vs.Names))
+				for _, n := range vs.Names {
+					names = append(names, n.Name)
+				}
+				for _, v := range vs.Values {
+					inspect("var "+strings.Join(names, ","), false, v)
+				}
+			}
 		}
 	}
-	for _, s := range fatals {
-		t.Errorf("clause 2: %s called from %s.%s — every log.Fatalf on this path becomes a returned ExitCode", s.call, s.file, s.fn)
+}
+
+// findings is the checklist: one line per rule violation, in a fixed order.
+func (s *wiringScan) findings() []string {
+	var out []string
+	if !s.mainCallsRun {
+		out = append(out, "clause 1: main() does not call RunWiring — the spine every row drives is not the spine the binary runs")
 	}
-	for _, s := range chdirs {
-		t.Errorf("clause 7: %s called from %s.%s — RunWiring never calls os.Chdir; paths resolve against Invocation.Dir, and the working directory is shared by every goroutine in the process", s.call, s.file, s.fn)
+	if s.mainExitLits > 0 {
+		out = append(out, fmt.Sprintf("clause 8: main() calls os.Exit with a literal ×%d — an exit code nobody returned; main exits with the ExitCode RunWiring answered, or exitInternal beside its error", s.mainExitLits))
 	}
-	sites := make([]site, 0, len(globals))
-	for s := range globals {
-		sites = append(sites, s)
+	if s.parseFlagsIn != "" {
+		out = append(out, fmt.Sprintf("clause 1: parseFlags still exists in %s — it is to cease to exist, not become a second caller of parseInvocationFlags", s.parseFlagsIn))
+	}
+	for _, x := range s.exits {
+		if x.fn != "main" || x.file != "main.go" {
+			out = append(out, fmt.Sprintf("clause 2: %s called from %s.%s — os.Exit survives in main() and nowhere else", x.call, x.file, x.fn))
+		}
+	}
+	for _, x := range s.fatals {
+		out = append(out, fmt.Sprintf("clause 2: %s called from %s.%s — every log.Fatalf on this path becomes a returned ExitCode", x.call, x.file, x.fn))
+	}
+	for _, x := range s.chdirs {
+		out = append(out, fmt.Sprintf("clause 7: %s called from %s.%s — RunWiring never calls os.Chdir; paths resolve against Invocation.Dir, and the working directory is shared by every goroutine in the process", x.call, x.file, x.fn))
+	}
+	for _, x := range s.dotImports {
+		out = append(out, fmt.Sprintf("dot import: %s has %s — its symbols are bare identifiers the scan cannot attribute, so the binding hides every call this row looks for", x.file, x.call))
+	}
+	for _, x := range sortedSites(s.globals) {
+		out = append(out, fmt.Sprintf("clause 3: %s.%s uses %s ×%d — a process-global stream; every byte must pass through a writer RunWiring supplied", x.file, x.fn, x.call, s.globals[x]))
+	}
+	for _, x := range sortedSites(s.stdinReads) {
+		out = append(out, fmt.Sprintf("Invocation.Stdin: %s.%s reads %s ×%d — the diff channel is inv.Stdin (nil, empty, or the piped bytes), not the process's descriptor", x.file, x.fn, x.call, s.stdinReads[x]))
+	}
+	return out
+}
+
+func sortedSites(m map[scanSite]int) []scanSite {
+	sites := make([]scanSite, 0, len(m))
+	for x := range m {
+		sites = append(sites, x)
 	}
 	sort.Slice(sites, func(i, j int) bool {
 		a, b := sites[i], sites[j]
@@ -2254,7 +2845,128 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 		}
 		return a.call < b.call
 	})
-	for _, s := range sites {
-		t.Errorf("clause 3: %s.%s uses %s ×%d — a process-global stream; every byte must pass through a writer RunWiring supplied", s.file, s.fn, s.call, globals[s])
+	return sites
+}
+
+// The scan is test code that clauses 2, 3 and 7 rest on, and a scan matching
+// the SPELLING "os" would find no os.Chdir, no os.Exit and no cached stream in
+// a body that imports os as stdos — an aliased Chdir with a deferred restore
+// would pass every behavioural row and this one too. So the reader resolves
+// through the import table, and this pins that it does, on sources the tree
+// does not contain:
+//
+//   - ALIASED: every rejected form under an alias — stdos.Chdir and
+//     sc.Chdir (with the deferred restore), stdos.Exit outside main,
+//     lg.Fatalf, lg.Printf, f.Println, stdos.NewFile, stdos.Stdin, and
+//     stdos.Stdout / stdos.Stderr cached at package level.
+//   - LITERAL: the same body under the literal names. The two must yield
+//     the SAME findings, line for line — the control that the aliased
+//     findings are the rules firing and not a different rule.
+//   - DOT: `import . "os"` followed by a bare Chdir — rejected as the
+//     import, since the call cannot be attributed.
+//   - NOT-OS: a package that merely calls itself os (`os "example.com/notos"`)
+//     with os.Chdir, os.Exit and os.Stdout — the negative control: NO
+//     findings, or the scan is matching spelling after all.
+func TestSeal_Wiring_StructuralScan_SeesThroughImportAliases(t *testing.T) {
+	defer red(t)
+	body := func(os_, sc, lg, f string) string {
+		return `package main
+
+import (
+	` + os_ + ` "os"
+	` + sc + ` "syscall"
+	` + lg + ` "log"
+	` + f + ` "fmt"
+)
+
+var cachedOut = ` + os_ + `.Stdout
+var quiet = ` + lg + `.New(` + os_ + `.Stderr, "", 0)
+
+func run(inv Invocation) int {
+	old, _ := ` + os_ + `.Getwd()
+	_ = ` + sc + `.Chdir(inv.Dir)
+	defer func() { _ = ` + os_ + `.Chdir(old) }()
+	` + lg + `.Printf("x")
+	` + f + `.Println("y")
+	_, _ = ` + os_ + `.NewFile(1, "stdout").Write(nil)
+	data, _ := readAll(` + os_ + `.Stdin)
+	_ = data
+	` + lg + `.Fatalf("z")
+	` + os_ + `.Exit(1)
+	return 0
+}
+
+func main() { ` + os_ + `.Exit(run(Invocation{})) }
+`
 	}
+	const dot = `package main
+
+import . "os"
+
+func run() { _ = Chdir("x") }
+
+func main() { _, _ = RunWiring(Invocation{}) }
+`
+	const notOS = `package main
+
+import os "example.com/notos"
+
+func run() int { _ = os.Chdir("x"); os.Exit(1); _ = os.Stdout; _ = os.Stdin; return 0 }
+
+func main() { _, _ = RunWiring(Invocation{}) }
+`
+	scanOf := func(src string) *wiringScan {
+		t.Helper()
+		file, err := parser.ParseFile(token.NewFileSet(), "main.go", src, 0)
+		if err != nil {
+			t.Fatalf("parse: %v\n%s", err, src)
+		}
+		s := newWiringScan()
+		s.scanFile("main.go", file)
+		return s
+	}
+
+	aliased := scanOf(body("stdos", "sc", "lg", "f")).findings()
+	literal := scanOf(body("os", "syscall", "log", "fmt")).findings()
+	for _, want := range []string{
+		"clause 7: syscall.Chdir called from main.go.run",
+		"clause 7: os.Chdir called from main.go.run",
+		"clause 2: os.Exit called from main.go.run",
+		"clause 2: log.Fatalf called from main.go.run",
+		"clause 3: main.go.run uses log.Printf ×1",
+		"clause 3: main.go.run uses fmt.Println ×1",
+		"clause 3: main.go.run uses os.NewFile ×1",
+		"clause 3: main.go.var cachedOut uses os.Stdout ×1",
+		"clause 3: main.go.var quiet uses os.Stderr ×1",
+		"Invocation.Stdin: main.go.run reads os.Stdin ×1",
+	} {
+		if !containsPrefix(aliased, want) {
+			t.Errorf("ALIASED: no finding %q — the scan is matching source spelling, not the import\nfindings:\n%s", want, strings.Join(aliased, "\n"))
+		}
+		if !containsPrefix(literal, want) {
+			t.Errorf("LITERAL (control): no finding %q\nfindings:\n%s", want, strings.Join(literal, "\n"))
+		}
+	}
+	if !sameStrings(aliased, literal) {
+		t.Errorf("the aliased and literal bodies yield different findings\naliased:\n%s\nliteral:\n%s", strings.Join(aliased, "\n"), strings.Join(literal, "\n"))
+	}
+	if n := len(scanOf(body("stdos", "sc", "lg", "f")).chdirs); n != 2 {
+		t.Errorf("ALIASED: %d Chdir sites, want 2 (the call and the deferred restore)", n)
+	}
+
+	if got := scanOf(dot).findings(); !containsPrefix(got, `dot import: main.go has . "os"`) {
+		t.Errorf("DOT: a dot import of os was not rejected\nfindings:\n%s", strings.Join(got, "\n"))
+	}
+	if got := scanOf(notOS).findings(); len(got) != 0 {
+		t.Errorf("NOT-OS (negative control): a package that merely calls itself os was flagged — the scan matches spelling\nfindings:\n%s", strings.Join(got, "\n"))
+	}
+}
+
+func containsPrefix(lines []string, prefix string) bool {
+	for _, l := range lines {
+		if strings.HasPrefix(l, prefix) {
+			return true
+		}
+	}
+	return false
 }
