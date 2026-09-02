@@ -1,0 +1,77 @@
+project: claude-workflow
+epic: Seals bakeoff — four implementers, one contract
+target_repo: claude-workflow
+tasks:
+  - key: BK-SCAFFOLD
+    summary: scaffold — GO-1-1s wiring contract, already landed and panel-approved
+    description: "ALREADY DONE. This row exists so each bakeoff arm can name a scaffold in\nblockedBy, which PO-1 requires and which is right: a seals task with no\nscaffold edge has nothing to seal against.\n\nThe scaffold itself is GO-1-1 in features/dogfood-go/tasks.yaml, landed on\nfeat/GO-1-1-scaffold-the-wiring-that-decides at b0313fa. Its\ncmd/classify/wiring.go is 315 lines and holds unanimous panel approval\n(claude/codex/grok, zero findings). Every arm forks from that branch, so\nthe contract is identical for all four and is not a variable.\n"
+    type: Task
+    estimate: 0h
+    labels:
+      - size:XS
+      - bakeoff
+    agent: claude
+    role: scaffold
+    status: Done
+  - key: BK-CLAUDE
+    summary: seals bakeoff — claude/claude-opus-5
+    description: "CONTROLLED BAKEOFF. Four implementers, one task, one contract.\n\nEvery arm receives the IDENTICAL brief below and forks from the same base\n(feat/GO-1-1-scaffold-the-wiring-that-decides, whose cmd/classify/wiring.go\ncontract is 315 lines and has unanimous panel approval). The contract is\ntherefore a CONSTANT and the implementer is the only variable.\n\nScored on criteria the work grades itself against, not on taste:\n  * the mechanical gate is green on the committed tree\n  * every seal is RED before GO-1-3's bodies exist — a seal that passes now\n    is testing the library, not the wiring\n  * each seal is mutation-verified: the measured mutation (emit()'s ContractV2\n    arm rewritten to EmitV1) must redden the file\n  * it asserts only what the contract says\n  * cost and turns\n\nThe panel runs on every arm. When comparing, the implementer's OWN family seat\nis discounted — codex reviewing codex is one biased seat against two\nindependent ones, which inflates that arm rather than invalidating the panel.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call.\n"
+    type: Task
+    estimate: 3h
+    labels:
+      - size:L
+      - area:go-tools
+      - bakeoff
+    agent: claude
+    model: claude-opus-5
+    role: seals
+    status: To Do
+    blockedBy:
+      - BK-SCAFFOLD
+  - key: BK-CODEX
+    summary: seals bakeoff — codex/gpt-5.6-sol
+    description: "CONTROLLED BAKEOFF. Four implementers, one task, one contract.\n\nEvery arm receives the IDENTICAL brief below and forks from the same base\n(feat/GO-1-1-scaffold-the-wiring-that-decides, whose cmd/classify/wiring.go\ncontract is 315 lines and has unanimous panel approval). The contract is\ntherefore a CONSTANT and the implementer is the only variable.\n\nScored on criteria the work grades itself against, not on taste:\n  * the mechanical gate is green on the committed tree\n  * every seal is RED before GO-1-3's bodies exist — a seal that passes now\n    is testing the library, not the wiring\n  * each seal is mutation-verified: the measured mutation (emit()'s ContractV2\n    arm rewritten to EmitV1) must redden the file\n  * it asserts only what the contract says\n  * cost and turns\n\nThe panel runs on every arm. When comparing, the implementer's OWN family seat\nis discounted — codex reviewing codex is one biased seat against two\nindependent ones, which inflates that arm rather than invalidating the panel.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call.\n"
+    type: Task
+    estimate: 3h
+    labels:
+      - size:L
+      - area:go-tools
+      - bakeoff
+    agent: codex
+    model: gpt-5.6-sol
+    role: seals
+    status: To Do
+    effort: high
+    blockedBy:
+      - BK-SCAFFOLD
+  - key: BK-GROK
+    summary: seals bakeoff — grok/grok-build
+    description: "CONTROLLED BAKEOFF. Four implementers, one task, one contract.\n\nEvery arm receives the IDENTICAL brief below and forks from the same base\n(feat/GO-1-1-scaffold-the-wiring-that-decides, whose cmd/classify/wiring.go\ncontract is 315 lines and has unanimous panel approval). The contract is\ntherefore a CONSTANT and the implementer is the only variable.\n\nScored on criteria the work grades itself against, not on taste:\n  * the mechanical gate is green on the committed tree\n  * every seal is RED before GO-1-3's bodies exist — a seal that passes now\n    is testing the library, not the wiring\n  * each seal is mutation-verified: the measured mutation (emit()'s ContractV2\n    arm rewritten to EmitV1) must redden the file\n  * it asserts only what the contract says\n  * cost and turns\n\nThe panel runs on every arm. When comparing, the implementer's OWN family seat\nis discounted — codex reviewing codex is one biased seat against two\nindependent ones, which inflates that arm rather than invalidating the panel.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call.\n"
+    type: Task
+    estimate: 3h
+    labels:
+      - size:L
+      - area:go-tools
+      - bakeoff
+    agent: grok
+    model: grok-build
+    role: seals
+    status: To Do
+    effort: high
+    blockedBy:
+      - BK-SCAFFOLD
+  - key: BK-DEEPSEEK
+    summary: seals bakeoff — deepseek/deepseek-v4-pro
+    description: "CONTROLLED BAKEOFF. Four implementers, one task, one contract.\n\nEvery arm receives the IDENTICAL brief below and forks from the same base\n(feat/GO-1-1-scaffold-the-wiring-that-decides, whose cmd/classify/wiring.go\ncontract is 315 lines and has unanimous panel approval). The contract is\ntherefore a CONSTANT and the implementer is the only variable.\n\nScored on criteria the work grades itself against, not on taste:\n  * the mechanical gate is green on the committed tree\n  * every seal is RED before GO-1-3's bodies exist — a seal that passes now\n    is testing the library, not the wiring\n  * each seal is mutation-verified: the measured mutation (emit()'s ContractV2\n    arm rewritten to EmitV1) must redden the file\n  * it asserts only what the contract says\n  * cost and turns\n\nThe panel runs on every arm. When comparing, the implementer's OWN family seat\nis discounted — codex reviewing codex is one biased seat against two\nindependent ones, which inflates that arm rather than invalidating the panel.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call.\n"
+    type: Task
+    estimate: 3h
+    labels:
+      - size:L
+      - area:go-tools
+      - bakeoff
+    agent: deepseek
+    model: deepseek-v4-pro
+    role: seals
+    status: To Do
+    blockedBy:
+      - BK-SCAFFOLD
