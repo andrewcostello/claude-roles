@@ -13,8 +13,11 @@ package main
 // whatever emit() does, and detect nothing. The live table therefore drives
 // run(), which is the classify path the shipped binary runs today. RunWiring
 // rows judge the same answers independently (exit, stdout SHAPE, artifact
-// state) on the bed they own. They do not byte-compare stdout to a second
-// invocation: classified_at and Worktree make that unsatisfiable.
+// state) on the bed they own. The body's own Artifacts.RunState / V2Sidecar
+// are the answers; a filesystem snapshot is a second check that a reported
+// state matches the bed, not a stand-in for ArtifactStateUnset. They do not
+// byte-compare stdout to a second invocation: classified_at and Worktree make
+// that unsatisfiable.
 //
 // No row here execs a tracked binary. No row re-seals the digest swap; that
 // already reddens TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes.
@@ -756,7 +759,9 @@ func TestSeal_Wiring_TwoBedsAreNotByteIdentical(t *testing.T) {
 //
 // RED TODAY, BY NAME: RunWiring is GO-1-1's stub. When the body lands, each
 // row is judged on the bed it owns — exit, stdout shape, artifact state —
-// never by byte-comparing stdout to a second invocation.
+// never by byte-comparing stdout to a second invocation. ArtifactStateUnset
+// is illegal beside a nil error and is not rewritten from the filesystem:
+// the body must return every applicable artifact's state, path, and bytes.
 func TestSeal_Wiring_RunWiringHonoursTheMapping(t *testing.T) {
 	for _, row := range wiringRows() {
 		row := row
@@ -780,13 +785,14 @@ func TestSeal_Wiring_RunWiringHonoursTheMapping(t *testing.T) {
 				t.Fatalf("RunWiring could not run the invocation: %v. Clause 5 reserves the error return for RunWiring's own failure; a classify run that fails is a non-zero ExitCode with a NIL error.", err)
 			}
 
-			if got.RunState.State == ArtifactStateUnset && row.withOut {
-				got.RunState = classifyArtifact(bed.outPath, true, beforeRun, snap(t, bed.outPath))
-			}
-			if got.V2Sidecar.State == ArtifactStateUnset && row.withOut {
-				got.V2Sidecar = classifyArtifact(sidecarPath, true, beforeSidecar, snap(t, sidecarPath))
-			}
+			afterRun := snap(t, bed.outPath)
+			afterSidecar := snap(t, sidecarPath)
+			observedRun := classifyArtifact(bed.outPath, row.withOut, beforeRun, afterRun)
+			observedSidecar := classifyArtifact(sidecarPath, row.withOut, beforeSidecar, afterSidecar)
+
 			assertMapping(t, row, bed, got)
+			assertReportedMatchesBed(t, row.name+" run-state", got.RunState, observedRun)
+			assertReportedMatchesBed(t, row.name+" v2 sidecar", got.V2Sidecar, observedSidecar)
 
 			if row.withOut && row.wantExit == exitOK {
 				if len(got.Stderr) == 0 {
@@ -888,8 +894,11 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if got.ExitCode != exitOK {
 			t.Errorf("init exited %d, want 0", got.ExitCode)
 		}
-		if got.RunState.State != ArtifactNotApplicable && got.RunState.State != ArtifactStateUnset {
-			t.Errorf("init asserted a run-state artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams", got.RunState.State)
+		if got.RunState.State != ArtifactNotApplicable {
+			t.Errorf("init asserted a run-state artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams — ArtifactNotApplicable exactly, not Unset", got.RunState.State)
+		}
+		if got.V2Sidecar.State != ArtifactNotApplicable {
+			t.Errorf("init asserted a v2 sidecar artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams — ArtifactNotApplicable exactly, not Unset", got.V2Sidecar.State)
 		}
 		if _, err := os.Stat(out); err != nil {
 			t.Errorf("init did not write the scaffold at %s: %v", out, err)
@@ -911,6 +920,74 @@ func stubRED(t *testing.T, err error, format string, args ...any) bool {
 	}
 	t.Fatalf("RunWiring could not run the invocation: %v", err)
 	return true
+}
+
+// TestSeal_Wiring_RunWiringMapsFlagParseErrors seals parseInvocationFlags
+// clause 3's assignment: "RunWiring maps that error to exitFlagError — the
+// mapping is decided here, by the skeleton, and GO-1-2 seals it."
+//
+// The three argv shapes are the ones the flag table already measured against
+// the reference FlagSet. RED today on the stub. A body that returns
+// exitInternal (or any other DeclaredExitCodes member) for fs.Parse failure
+// must redden here — membership in the closed set is not the mapping.
+func TestSeal_Wiring_RunWiringMapsFlagParseErrors(t *testing.T) {
+	bed := newClassifyBed(t)
+	diff := bed.diffPath
+	base := []string{"-no-git", "-worktree", bed.dir, "-config", bed.cfgPath}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "undefined-flag",
+			args: append(append([]string{}, base...), "-not-a-real-flag", diff),
+		},
+		{
+			name: "missing-flag-value",
+			args: append(append([]string{}, base...), "-"+flagContractVersion),
+		},
+		{
+			name: "malformed-bool",
+			args: append(append([]string{}, base...), "-json=maybe", diff),
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			defer red(t)
+
+			ref := referenceFlagSet()
+			refErr := ref.Parse(c.args)
+			if refErr == nil {
+				t.Fatalf("CONTROL: the reference FlagSet parsed argv %q cleanly; this row is mis-measured", c.args)
+			}
+
+			got, err := RunWiring(Invocation{Args: c.args, Dir: bed.dir})
+			if stubRED(t, err, "RunWiring must map argv %q to exit %d with the parse error on Stderr and no classification on Stdout. Reference FlagSet.Parse: %v", c.args, exitFlagError, refErr) {
+				return
+			}
+			if got.ExitCode != ExitCode(exitFlagError) {
+				t.Errorf("exit = %d, want %d (exitFlagError). argv-does-not-parse is this mapping, not exitInternal — a caller that distinguishes a bad argv from classify breaking would silently get the wrong code.", got.ExitCode, exitFlagError)
+			}
+			if !inDeclaredExitCodes(int(got.ExitCode)) {
+				t.Errorf("exit %d is not in DeclaredExitCodes %v", got.ExitCode, DeclaredExitCodes)
+			}
+			if !bytes.Contains(got.Stderr, []byte(refErr.Error())) {
+				t.Errorf("Stderr does not carry the FlagSet.Parse message %q:\n%s", refErr.Error(), got.Stderr)
+			}
+			if bytes.Contains(got.Stdout, []byte("=== CLASSIFICATION ===")) {
+				t.Errorf("a flag-parse failure printed the human classification on stdout:\n%s", got.Stdout)
+			}
+			if bytes.Contains(got.Stdout, []byte("=== CLASSIFY: INVALID_INPUT ===")) {
+				t.Errorf("a flag-parse failure reported INVALID_INPUT on stdout (that is exit %d, not exit %d):\n%s", exitInvalid, exitFlagError, got.Stdout)
+			}
+			if len(bytes.TrimSpace(got.Stdout)) > 0 && json.Valid(bytes.TrimSpace(got.Stdout)) {
+				t.Errorf("a flag-parse failure emitted JSON classification on stdout:\n%s", got.Stdout)
+			}
+		})
+	}
 }
 
 // TestSeal_Wiring_InitStillScaffolds is the live control for the init
@@ -1149,6 +1226,15 @@ func TestSeal_Wiring_ParseInvocationFlagsMapsArgvToOptions(t *testing.T) {
 					t.Fatalf("argv %q parsed without error. MEASURED: %s. Clause 3 says the caller's fs.Parse error comes back and RunWiring maps it to exit %d.",
 						c.args, c.measured, exitFlagError)
 				}
+				ref := referenceFlagSet()
+				refErr := ref.Parse(c.args)
+				if refErr == nil {
+					t.Fatalf("CONTROL: the reference FlagSet parsed argv %q cleanly; this row is mis-measured", c.args)
+				}
+				if !flagParseErrorHonoursReference(err, refErr) {
+					t.Errorf("argv %q returned %v; want the caller's fs.Parse error (reference: %v). An arbitrary internal error, or an unrelated wrapped error, is not a flag-parse failure.",
+						c.args, err, refErr)
+				}
 				return
 			}
 			if err != nil {
@@ -1255,8 +1341,11 @@ func TestSeal_Wiring_NilRegistrarIsANamedState(t *testing.T) {
 //
 // Clause 8, not merely "and nothing else": main writes Artifacts.Stdout to
 // os.Stdout and Artifacts.Stderr to os.Stderr, os.Exit takes ExitCode, and a
-// non-nil error becomes exitInternal. A body of `art, _ := RunWiring(inv);
-// os.Exit(0)` fails every one of those.
+// non-nil error becomes exitInternal. Identifier presence is not enough —
+// a body that mentions os.Stdout in a dead assignment, writes unrelated
+// bytes, and exits through an unrelated nonliteral still fails the data-flow
+// walk. A body of `art, _ := RunWiring(inv); os.Exit(0)` fails every one of
+// those.
 //
 // Subcommand dispatch is required to leave main (clause 6), detected as the
 // string cases "init" / "capabilities" / "help" / "-h" / "--help" — not as
@@ -1331,6 +1420,10 @@ func TestSeal_Wiring_MainForwardsTheResult(t *testing.T) {
 	}
 	if n := countCalls(mainFn, osExitLiteral); n != 0 {
 		t.Errorf("main() calls os.Exit with a literal (%d time(s)). Clause 8: the argument is Artifacts.ExitCode or exitInternal, never a constant that would let a silent binary exit 0.", n)
+	}
+
+	for _, p := range mainForwardingProblems(mainFn) {
+		t.Errorf("clause 8 data flow: %s", p)
 	}
 
 	if cases := subcommandCases(mainFn); len(cases) != 0 {
@@ -1481,4 +1574,573 @@ func countNodes(fn *ast.FuncDecl, match func(ast.Node) bool) int {
 		return true
 	})
 	return n
+}
+
+// ─── independent artifact observation (findings 1, 4, 6) ─────────────────────
+
+func assertReportedMatchesBed(t *testing.T, label string, reported, observed FileArtifact) {
+	t.Helper()
+	for _, p := range reportedArtifactMismatches(reported, observed) {
+		t.Errorf("%s: %s", label, p)
+	}
+}
+
+// reportedArtifactMismatches is the second, independent assertion: the body's
+// returned FileArtifact is compared against a filesystem snapshot. It never
+// rewrites the return value. A zero-value report against a written bed is a
+// mismatch, which is the defect the Unset backfill used to hide.
+func reportedArtifactMismatches(reported, observed FileArtifact) []string {
+	var out []string
+	if reported.State == ArtifactStateUnset {
+		out = append(out, "RunWiring left State at ArtifactStateUnset; Unset beside a nil error is illegal and this seal does not fill it in from the filesystem")
+	}
+	if reported.State != observed.State {
+		out = append(out, fmt.Sprintf("RunWiring reported %s, but the bed observed %s (path %q). Clause 4: the snapshot checks a reported state against the bed; it is not a stand-in for the return value", reported.State, observed.State, observed.Path))
+	}
+	if reported.Path != observed.Path {
+		out = append(out, fmt.Sprintf("reported path %q, bed observed %q", reported.Path, observed.Path))
+	}
+	if reported.State == ArtifactWritten || reported.State == ArtifactStale ||
+		observed.State == ArtifactWritten || observed.State == ArtifactStale {
+		if !bytes.Equal(reported.Bytes, observed.Bytes) {
+			out = append(out, fmt.Sprintf("reported Bytes (len %d) do not equal the bytes on disk (len %d)", len(reported.Bytes), len(observed.Bytes)))
+		}
+	}
+	return out
+}
+
+// TestSeal_Wiring_ReportedArtifactIsNotAFilesystemBackfill is GREEN today: it
+// judges the matcher, not RunWiring. The defect the panel measured — a body
+// that returns only ExitCode and Stdout, leaving RunState/V2Sidecar at Unset
+// while the files on disk happen to match — must not satisfy the matcher.
+func TestSeal_Wiring_ReportedArtifactIsNotAFilesystemBackfill(t *testing.T) {
+	defer red(t)
+
+	onDisk := []byte(`{"schema_version":1,"status":"written"}` + "\n")
+	observed := FileArtifact{Path: "/tmp/run-state.json", State: ArtifactWritten, Bytes: onDisk}
+
+	if problems := reportedArtifactMismatches(FileArtifact{}, observed); len(problems) == 0 {
+		t.Fatal("CONTROL: a zero-value FileArtifact (ArtifactStateUnset) against a written bed must not match — that is the backfill this seal used to do")
+	}
+	if problems := reportedArtifactMismatches(observed, observed); len(problems) != 0 {
+		t.Fatalf("CONTROL: an honest report of the bed must match, got %v", problems)
+	}
+
+	lyingWritten := FileArtifact{Path: observed.Path, State: ArtifactWritten, Bytes: []byte("nope")}
+	if problems := reportedArtifactMismatches(lyingWritten, observed); len(problems) == 0 {
+		t.Fatal("CONTROL: reporting written with bytes that are not on disk must not match")
+	}
+
+	wroteNothing := FileArtifact{Path: observed.Path, State: ArtifactWritten, Bytes: onDisk}
+	absent := FileArtifact{Path: observed.Path, State: ArtifactAbsent}
+	if problems := reportedArtifactMismatches(wroteNothing, absent); len(problems) == 0 {
+		t.Fatal("CONTROL: reporting written while the bed observed absent must not match")
+	}
+
+	staleOnDisk := FileArtifact{Path: observed.Path, State: ArtifactStale, Bytes: onDisk}
+	if problems := reportedArtifactMismatches(FileArtifact{Path: observed.Path, State: ArtifactStale, Bytes: onDisk}, staleOnDisk); len(problems) != 0 {
+		t.Fatalf("CONTROL: an honest stale report must match, got %v", problems)
+	}
+	if problems := reportedArtifactMismatches(FileArtifact{Path: observed.Path, State: ArtifactStale, Bytes: []byte("{}")}, staleOnDisk); len(problems) == 0 {
+		t.Fatal("CONTROL: stale with the wrong bytes must not match the disk")
+	}
+
+	na := FileArtifact{State: ArtifactNotApplicable}
+	if problems := reportedArtifactMismatches(na, na); len(problems) != 0 {
+		t.Fatalf("CONTROL: not-applicable against not-applicable must match, got %v", problems)
+	}
+	if problems := reportedArtifactMismatches(FileArtifact{}, na); len(problems) == 0 {
+		t.Fatal("CONTROL: Unset is not NotApplicable")
+	}
+}
+
+// ─── flag-parse error identity (finding 5) ───────────────────────────────────
+
+// flagParseErrorHonoursReference requires the subject's error to be the
+// caller's FlagSet.Parse error: same identity, or a wrap / copy that still
+// carries the reference message. An arbitrary internal error does not qualify.
+func flagParseErrorHonoursReference(got, want error) bool {
+	if want == nil {
+		return got == nil
+	}
+	if got == nil {
+		return false
+	}
+	if errors.Is(got, ErrWiringNotImplemented) {
+		return false
+	}
+	if errors.Is(got, want) {
+		return true
+	}
+	if errors.Is(want, flag.ErrHelp) {
+		return errors.Is(got, flag.ErrHelp)
+	}
+	msg := want.Error()
+	if msg == "" {
+		return false
+	}
+	return strings.Contains(got.Error(), msg)
+}
+
+// TestSeal_Wiring_FlagParseErrorMatcherRejectsUnrelatedErrors is GREEN today:
+// it is the in-test control for the malformed-argv rows. Those rows used to
+// accept every non-nil error except ErrWiringNotImplemented.
+func TestSeal_Wiring_FlagParseErrorMatcherRejectsUnrelatedErrors(t *testing.T) {
+	defer red(t)
+
+	ref := referenceFlagSet()
+	refErr := ref.Parse([]string{"-not-a-real-flag"})
+	if refErr == nil {
+		t.Fatal("CONTROL: the reference FlagSet accepted -not-a-real-flag")
+	}
+
+	if flagParseErrorHonoursReference(nil, refErr) {
+		t.Error("a nil subject must not honour a parse error")
+	}
+	if flagParseErrorHonoursReference(errors.New("internal: classify broke"), refErr) {
+		t.Error("an unrelated internal error must not honour the FlagSet.Parse error")
+	}
+	if flagParseErrorHonoursReference(fmt.Errorf("internal: %w", errors.New("boom")), refErr) {
+		t.Error("an unrelated wrapped error must not honour the FlagSet.Parse error")
+	}
+	if flagParseErrorHonoursReference(ErrWiringNotImplemented, refErr) {
+		t.Error("the stub sentinel must not honour a parse error")
+	}
+	if !flagParseErrorHonoursReference(refErr, refErr) {
+		t.Error("the reference error must honour itself")
+	}
+	if !flagParseErrorHonoursReference(fmt.Errorf("parse: %w", refErr), refErr) {
+		t.Error("wrapping the parse error must be accepted")
+	}
+	if !flagParseErrorHonoursReference(errors.New(refErr.Error()), refErr) {
+		t.Error("a new error carrying the stable parse message must be accepted")
+	}
+}
+
+// ─── main() data-flow (finding 3) ────────────────────────────────────────────
+
+type identOrigin struct {
+	fromExitCode bool
+	fromInternal bool
+}
+
+func isIdentNamed(e ast.Expr, name string) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == name
+}
+
+func isOsStream(e ast.Expr, name string) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != name {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "os"
+}
+
+func exprUsesField(e ast.Expr, obj, field string) bool {
+	if e == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name != field {
+			return true
+		}
+		if id, ok := sel.X.(*ast.Ident); ok && id.Name == obj {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+func exprUsesIdent(e ast.Expr, name string) bool {
+	if e == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if ok && id.Name == name {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+func peelConv(e ast.Expr) ast.Expr {
+	for e != nil {
+		switch x := e.(type) {
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.CallExpr:
+			id, ok := x.Fun.(*ast.Ident)
+			if !ok || len(x.Args) != 1 {
+				return e
+			}
+			switch id.Name {
+			case "int", "ExitCode":
+				e = x.Args[0]
+			default:
+				return e
+			}
+		default:
+			return e
+		}
+	}
+	return e
+}
+
+func isWriteMethod(name string) bool {
+	switch name {
+	case "Write", "WriteString", "WriteByte", "WriteRune", "ReadFrom":
+		return true
+	default:
+		return false
+	}
+}
+
+func streamWriteTarget(call *ast.CallExpr) string {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	if isWriteMethod(sel.Sel.Name) {
+		if isOsStream(sel.X, "Stdout") {
+			return "Stdout"
+		}
+		if isOsStream(sel.X, "Stderr") {
+			return "Stderr"
+		}
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	switch {
+	case pkg.Name == "fmt" && (sel.Sel.Name == "Fprint" || sel.Sel.Name == "Fprintln" || sel.Sel.Name == "Fprintf"):
+	case pkg.Name == "io" && (sel.Sel.Name == "Copy" || sel.Sel.Name == "CopyBuffer" || sel.Sel.Name == "WriteString"):
+	default:
+		return ""
+	}
+	if len(call.Args) == 0 {
+		return ""
+	}
+	if isOsStream(call.Args[0], "Stdout") {
+		return "Stdout"
+	}
+	if isOsStream(call.Args[0], "Stderr") {
+		return "Stderr"
+	}
+	return ""
+}
+
+func callPayloadUsesField(call *ast.CallExpr, obj, field string) bool {
+	for _, a := range call.Args {
+		if exprUsesField(a, obj, field) {
+			return true
+		}
+	}
+	return false
+}
+
+func callPayloadUsesIdent(call *ast.CallExpr, name string) bool {
+	for _, a := range call.Args {
+		if exprUsesIdent(a, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func runWiringResultBinding(fn *ast.FuncDecl) (artIdent, errIdent string, ok bool) {
+	if fn == nil || fn.Body == nil {
+		return "", "", false
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		as, isAs := n.(*ast.AssignStmt)
+		if !isAs || len(as.Rhs) != 1 || !isIdentCall("RunWiring")(as.Rhs[0]) {
+			return true
+		}
+		if len(as.Lhs) != 2 {
+			return true
+		}
+		a, aOK := as.Lhs[0].(*ast.Ident)
+		e, eOK := as.Lhs[1].(*ast.Ident)
+		if !aOK || !eOK || a.Name == "_" || e.Name == "_" {
+			return true
+		}
+		artIdent, errIdent = a.Name, e.Name
+		return false
+	})
+	return artIdent, errIdent, artIdent != "" && errIdent != ""
+}
+
+func collectIdentOrigins(fn *ast.FuncDecl, artIdent string) map[string]identOrigin {
+	origins := map[string]identOrigin{}
+	add := func(name string, rhs ast.Expr) {
+		if name == "" || name == "_" || rhs == nil {
+			return
+		}
+		o := origins[name]
+		if exprUsesField(rhs, artIdent, "ExitCode") {
+			o.fromExitCode = true
+		}
+		if exprUsesIdent(rhs, "exitInternal") {
+			o.fromInternal = true
+		}
+		if id, ok := peelConv(rhs).(*ast.Ident); ok {
+			inner := origins[id.Name]
+			o.fromExitCode = o.fromExitCode || inner.fromExitCode
+			o.fromInternal = o.fromInternal || inner.fromInternal
+		}
+		origins[name] = o
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				var rhs ast.Expr
+				switch {
+				case len(s.Rhs) == len(s.Lhs):
+					rhs = s.Rhs[i]
+				case len(s.Rhs) == 1:
+					rhs = s.Rhs[0]
+				default:
+					continue
+				}
+				add(id.Name, rhs)
+			}
+		case *ast.ValueSpec:
+			for i, name := range s.Names {
+				if i < len(s.Values) {
+					add(name.Name, s.Values[i])
+				}
+			}
+		}
+		return true
+	})
+	return origins
+}
+
+func exitArgOrigins(arg ast.Expr, artIdent string, origins map[string]identOrigin) (fromCode, fromInternal bool) {
+	if exprUsesField(arg, artIdent, "ExitCode") {
+		fromCode = true
+	}
+	if exprUsesIdent(arg, "exitInternal") {
+		fromInternal = true
+	}
+	if id, ok := peelConv(arg).(*ast.Ident); ok {
+		o := origins[id.Name]
+		fromCode = fromCode || o.fromExitCode
+		fromInternal = fromInternal || o.fromInternal
+	}
+	return fromCode, fromInternal
+}
+
+func nilCheckErrorBody(ifs *ast.IfStmt, errIdent string) *ast.BlockStmt {
+	bin, ok := ifs.Cond.(*ast.BinaryExpr)
+	if !ok || (bin.Op != token.NEQ && bin.Op != token.EQL) {
+		return nil
+	}
+	mentions := (isIdentNamed(bin.X, errIdent) && isIdentNamed(bin.Y, "nil")) ||
+		(isIdentNamed(bin.Y, errIdent) && isIdentNamed(bin.X, "nil"))
+	if !mentions {
+		return nil
+	}
+	if bin.Op == token.NEQ {
+		return ifs.Body
+	}
+	elseBlk, ok := ifs.Else.(*ast.BlockStmt)
+	if !ok {
+		return nil
+	}
+	return elseBlk
+}
+
+func errorBranchReportsErr(fn *ast.FuncDecl, errIdent string) bool {
+	if fn == nil || fn.Body == nil || errIdent == "" {
+		return false
+	}
+	reported := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		ifs, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		body := nilCheckErrorBody(ifs, errIdent)
+		if body == nil {
+			return true
+		}
+		ast.Inspect(body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if streamWriteTarget(call) == "Stderr" && callPayloadUsesIdent(call, errIdent) {
+				reported = true
+			}
+			return true
+		})
+		return true
+	})
+	return reported
+}
+
+// mainForwardingProblems walks main's body for clause 8 data flow from the
+// single RunWiring result. Identifier presence is not enough: Stdout/Stderr
+// fields must be the values written to the corresponding streams, ExitCode
+// must feed os.Exit, and the non-nil error branch must report that error on
+// os.Stderr and select exitInternal.
+func mainForwardingProblems(fn *ast.FuncDecl) []string {
+	if fn == nil || fn.Body == nil {
+		return []string{"main has no body"}
+	}
+	artIdent, errIdent, ok := runWiringResultBinding(fn)
+	if !ok {
+		return []string{"RunWiring's Artifacts and error results are not both bound to names. Clause 8 forwards that result; discarding either answer cannot forward it"}
+	}
+	origins := collectIdentOrigins(fn, artIdent)
+
+	var (
+		stdoutFromArt, stderrFromArt   bool
+		exitFromCode, exitFromInternal bool
+		problems                       []string
+	)
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch streamWriteTarget(call) {
+		case "Stdout":
+			if callPayloadUsesField(call, artIdent, "Stdout") {
+				stdoutFromArt = true
+			} else {
+				problems = append(problems, "a write to os.Stdout does not take "+artIdent+".Stdout — unrelated bytes are not forwarding")
+			}
+		case "Stderr":
+			if callPayloadUsesField(call, artIdent, "Stderr") {
+				stderrFromArt = true
+			} else if !callPayloadUsesIdent(call, errIdent) {
+				problems = append(problems, "a write to os.Stderr is neither "+artIdent+".Stderr nor the RunWiring error")
+			}
+		}
+		if isSelectorCall("os", "Exit")(call) && len(call.Args) == 1 {
+			fromCode, fromInternal := exitArgOrigins(call.Args[0], artIdent, origins)
+			exitFromCode = exitFromCode || fromCode
+			exitFromInternal = exitFromInternal || fromInternal
+		}
+		return true
+	})
+	if !stdoutFromArt {
+		problems = append(problems, artIdent+".Stdout is never written to os.Stdout")
+	}
+	if !stderrFromArt {
+		problems = append(problems, artIdent+".Stderr is never written to os.Stderr")
+	}
+	if !exitFromCode {
+		problems = append(problems, "os.Exit is not fed "+artIdent+".ExitCode")
+	}
+	if !errorBranchReportsErr(fn, errIdent) {
+		problems = append(problems, "the non-nil error branch does not report the returned error on os.Stderr")
+	}
+	if !exitFromInternal {
+		problems = append(problems, "exitInternal does not feed os.Exit (a dead mention is not selecting it)")
+	}
+	return problems
+}
+
+func parseMainSnippet(t *testing.T, src string) *ast.FuncDecl {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "snippet.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse snippet: %v\n%s", err, src)
+	}
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if ok && fn.Name != nil && fn.Name.Name == "main" {
+			return fn
+		}
+	}
+	t.Fatal("snippet has no func main")
+	return nil
+}
+
+// TestSeal_Wiring_MainForwardingAnalysisJudgesDataFlow is GREEN today: it is
+// the in-test control for TestSeal_Wiring_MainForwardsTheResult. The panel's
+// measured body — mention every identifier, write unrelated bytes, exit
+// through an unrelated nonliteral — must redden the walk. A body that
+// actually forwards the RunWiring result must pass it.
+func TestSeal_Wiring_MainForwardingAnalysisJudgesDataFlow(t *testing.T) {
+	defer red(t)
+
+	honest := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(honest); len(problems) != 0 {
+		t.Fatalf("CONTROL: a body that forwards the RunWiring result must pass the walk, got %v", problems)
+	}
+
+	dead := parseMainSnippet(t, `package main
+func main() {
+	_ = os.Stdout
+	_ = os.Stderr
+	_ = exitInternal
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	_ = art.ExitCode
+	_ = art.Stdout
+	_ = art.Stderr
+	_ = err
+	code := 1
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(dead); len(problems) == 0 {
+		t.Fatal("the panel's measured body (dead assignments, unrelated nonliteral exit) passed the walk — identifier presence is not data flow")
+	}
+
+	unrelated := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	os.Stdout.Write([]byte("nope"))
+	os.Stderr.Write([]byte("nope"))
+	os.Exit(int(art.ExitCode))
+	_ = err
+	_ = exitInternal
+}`)
+	if problems := mainForwardingProblems(unrelated); len(problems) == 0 {
+		t.Fatal("a body that writes unrelated bytes and dead-mentions exitInternal passed the walk")
+	}
+
+	discardedErr := parseMainSnippet(t, `package main
+func main() {
+	art, _ := RunWiring(Invocation{Args: os.Args[1:]})
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := mainForwardingProblems(discardedErr); len(problems) == 0 {
+		t.Fatal("discarding RunWiring's error must not pass the walk")
+	}
 }
