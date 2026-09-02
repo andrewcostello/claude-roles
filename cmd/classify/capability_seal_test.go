@@ -13,6 +13,8 @@ package main
 // state and capture os.Stdout.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"strconv"
@@ -434,6 +436,20 @@ func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 		t.Fatalf("digestSource is installed as %T, not *unframedDigestSource — B1's own hook (capability.go:409) is what this row measures", installed)
 	}
 
+	// Assert the WIRING first, on the objects as B1's init actually left them —
+	// before anything in this test touches either variable. unframedDigests is
+	// the process-wide recorder production's recordConfig/recordDiff calls
+	// write into (capability.go:397, main.go:671/743/759); digestSource is what
+	// ConsumedDigests is read from. If B1's init pointed them at two different
+	// *unframedDigestSource instances, production would record bytes into one
+	// object and this call would consume from an ALWAYS-EMPTY other one — a
+	// defect a test that swaps both variables to a shared new instance before
+	// checking anything can never observe, because doing so repairs the wiring
+	// it was supposed to be testing.
+	if digestSource != unframedDigests {
+		t.Fatalf("digestSource (%p) and unframedDigests (%p) are different instances — production records into one and reads from the other", installed, unframedDigests)
+	}
+
 	// The registry variable and the process-wide recorder are swapped by
 	// POINTER, not by copying the struct: unframedDigestSource carries a
 	// sync.Mutex, and copying a live one is the class of bug go vet's
@@ -454,15 +470,21 @@ func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 		t.Errorf("CONTROL: ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
 	}
 
-	// THE DEFECT LEG, now reachable.
+	// THE DEFECT LEG, now reachable. Fed through the SAME production recording
+	// entry points (recordConfig/recordDiff) production itself calls, on the
+	// package var — not a private local the test alone can see.
 	fed := &unframedDigestSource{}
 	unframedDigests, digestSource = fed, fed
-	fed.recordConfig([]byte("seal config bytes"))
-	fed.recordDiff([]byte("seal diff bytes"))
+	configBytes := []byte("seal config bytes")
+	diffBytes := []byte("seal diff bytes")
+	unframedDigests.recordConfig(configBytes)
+	unframedDigests.recordDiff(diffBytes)
 	cfgSHA, diffSHA, err := digestSource.ConsumedDigests()
 	if err != nil {
 		t.Fatalf("both channels were recorded but ConsumedDigests still errored: %v", err)
 	}
+
+	// Format claim: hex, lowercase, 64 characters.
 	for name, sha := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
 		if len(sha) != 64 {
 			t.Errorf("%s digest %q is not 64 hex characters", name, sha)
@@ -476,6 +498,23 @@ func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 				break
 			}
 		}
+	}
+
+	// Binding claim: each channel's digest is the SHA-256 of the bytes THAT
+	// CHANNEL recorded — not the shape of a digest, and not the other
+	// channel's digest. Computed independently of hexSHA256 so a shared bug
+	// in that helper cannot make the test agree with production. A swap of
+	// the two return values, or a hash of unrelated/constant bytes, reddens
+	// here even though it satisfied every check above.
+	wantCfgSum := sha256.Sum256(configBytes)
+	wantDiffSum := sha256.Sum256(diffBytes)
+	wantCfgSHA := hex.EncodeToString(wantCfgSum[:])
+	wantDiffSHA := hex.EncodeToString(wantDiffSum[:])
+	if cfgSHA != wantCfgSHA {
+		t.Errorf("config digest = %q, want SHA-256(%q) = %q", cfgSHA, configBytes, wantCfgSHA)
+	}
+	if diffSHA != wantDiffSHA {
+		t.Errorf("diff digest = %q, want SHA-256(%q) = %q", diffSHA, diffBytes, wantDiffSHA)
 	}
 }
 

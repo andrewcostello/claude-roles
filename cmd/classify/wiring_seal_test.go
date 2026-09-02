@@ -23,12 +23,44 @@ package main
 // with contract_version 2 — which the mutation would silently replace with the
 // bare V1 Classification.
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
+
+// sortedDirNames lists dir's entries by name, independently of any production
+// helper that names artifacts — so a defect shared between an artifact's
+// producer and a would-be assertion helper (e.g. both deriving the sidecar
+// name the same wrong way) cannot cancel out here.
+func sortedDirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("could not list %s: %v", dir, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+func hexSHA256OfFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("could not read %s: %v", path, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
 
 // TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode drives the mapping
 // across every (contract, -out, -json) combination the producer accepts, and
@@ -143,6 +175,19 @@ func TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode(t *testing.T) {
 				if len(wrapper.ComputedConfigSHA256) != 64 || len(wrapper.ComputedDiffSHA256) != 64 {
 					t.Errorf("contract 2 + json: digests are not 64 hex characters (config %q, diff %q)", wrapper.ComputedConfigSHA256, wrapper.ComputedDiffSHA256)
 				}
+				// Binding claim, end to end: the row owns both input files
+				// (absConfigPath, diffPath), so hash them independently and
+				// demand the wrapper's digests are THOSE bytes' SHA-256, not
+				// merely 64 hex characters. A swapped config/diff channel or a
+				// digest over unrelated bytes reddens here.
+				wantConfigSHA := hexSHA256OfFile(t, absConfigPath)
+				wantDiffSHA := hexSHA256OfFile(t, diffPath)
+				if wrapper.ComputedConfigSHA256 != wantConfigSHA {
+					t.Errorf("contract 2 + json: computed_config_sha256 = %q, want SHA-256(%s) = %q", wrapper.ComputedConfigSHA256, absConfigPath, wantConfigSHA)
+				}
+				if wrapper.ComputedDiffSHA256 != wantDiffSHA {
+					t.Errorf("contract 2 + json: computed_diff_sha256 = %q, want SHA-256(%s) = %q", wrapper.ComputedDiffSHA256, diffPath, wantDiffSHA)
+				}
 				var envelope map[string]any
 				if err := json.Unmarshal(wrapper.Classification, &envelope); err != nil {
 					t.Fatalf("contract 2 + json: wrapper.classification is not valid JSON: %v", err)
@@ -164,12 +209,20 @@ func TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode(t *testing.T) {
 					t.Errorf("run-state %s carries no classification:\n%s", outPath, data)
 				}
 
-				sidecar := V2SidecarPath(outPath)
-				_, statErr := os.Stat(sidecar)
-				sidecarExists := statErr == nil
+				// The complete artifact set, named independently of
+				// V2SidecarPath/v2SidecarSuffix so a coordinated defect in both
+				// the helper and its production caller cannot cancel out here,
+				// and compared as a FULL directory listing so an implementation
+				// that writes extra, unnamed artifacts also reddens.
 				wantSidecar := effectiveContract == "2"
-				if sidecarExists != wantSidecar {
-					t.Errorf("contract %s, -out given: v2 sidecar %s exists=%v, want %v", effectiveContract, sidecar, sidecarExists, wantSidecar)
+				want := []string{"run.json", "wallet.diff"}
+				if wantSidecar {
+					want = append(want, "run.json.v2.json")
+				}
+				sort.Strings(want)
+				got := sortedDirNames(t, dir)
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("contract %s, -out given: working directory %s contains %v, want exactly %v", effectiveContract, dir, got, want)
 				}
 			} else {
 				// THE MUTATION-CATCHING LEG for out=false. The run's cwd is this
@@ -181,16 +234,10 @@ func TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode(t *testing.T) {
 				// to fall through to a relative default path produces, and what
 				// the prior version of this row, asserting nothing at all inside
 				// this block, let through.
-				entries, err := os.ReadDir(dir)
-				if err != nil {
-					t.Fatalf("could not list the run's own working directory %s: %v", dir, err)
-				}
-				var names []string
-				for _, e := range entries {
-					names = append(names, e.Name())
-				}
-				if len(names) != 1 || names[0] != "wallet.diff" {
-					t.Errorf("-out absent: run's working directory %s contains %v, want exactly [wallet.diff] — persist must write nothing without -out", dir, names)
+				want := []string{"wallet.diff"}
+				got := sortedDirNames(t, dir)
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("-out absent: run's working directory %s contains %v, want exactly %v — persist must write nothing without -out", dir, got, want)
 				}
 			}
 		})
@@ -216,6 +263,12 @@ func TestSeal_Mapping_ContractVersion3_ExitsInvalidNamingAcceptedSet(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	absConfigPath := filepath.Join(pkgDir, exampleConfigPath)
+
+	// Its own scratch working directory, exactly like the rows above: the
+	// process's cwd is this test's dir, so a full listing of dir is a
+	// positive claim about the whole artifact set — not just the two
+	// selected filenames the previous version of this row inspected.
 	dir := t.TempDir()
 	diffPath := filepath.Join(dir, "wallet.diff")
 	if err := os.WriteFile(diffPath, []byte(diffFor(walletPath)), 0o600); err != nil {
@@ -223,7 +276,7 @@ func TestSeal_Mapping_ContractVersion3_ExitsInvalidNamingAcceptedSet(t *testing.
 	}
 	outPath := filepath.Join(dir, "run.json")
 
-	run := runLive(t, bin, pkgDir, nil, "-no-git", "-config", exampleConfigPath,
+	run := runLive(t, bin, dir, nil, "-no-git", "-config", absConfigPath,
 		"-contract-version", "3", "-json", "-out", outPath, diffPath)
 
 	if run.exit != exitInvalid {
@@ -235,10 +288,14 @@ func TestSeal_Mapping_ContractVersion3_ExitsInvalidNamingAcceptedSet(t *testing.
 	if strings.Contains(run.stdout, "response_version") {
 		t.Errorf("a machine payload leaked onto stdout for a rejected contract:\n%s", run.stdout)
 	}
-	if _, err := os.Stat(outPath); err == nil {
-		t.Errorf("-contract-version 3 must fail before persist ever runs; the run-state must not exist, but %s was written", outPath)
-	}
-	if _, err := os.Stat(V2SidecarPath(outPath)); err == nil {
-		t.Errorf("-contract-version 3 must fail before persist ever runs; no v2 sidecar may exist at %s", V2SidecarPath(outPath))
+
+	// The full artifact set for a rejected contract is empty: nothing beyond
+	// the diff file this test itself wrote. Named independently of
+	// V2SidecarPath and compared as a complete listing, so neither a stray
+	// run-state, a stray sidecar, nor any other unexpected artifact can pass.
+	want := []string{"wallet.diff"}
+	got := sortedDirNames(t, dir)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("-contract-version 3 must fail before persist ever runs; working directory %s contains %v, want exactly %v", dir, got, want)
 	}
 }
