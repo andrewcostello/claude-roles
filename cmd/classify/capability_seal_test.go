@@ -13,8 +13,12 @@ package main
 // state and capture os.Stdout.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -406,36 +410,159 @@ func TestSeal_InstalledRegistrar_RegistersTheRealFlag(t *testing.T) {
 
 // The installed digest source yields two lowercase-hex SHA-256 strings, or an
 // error. It must never return an empty string for a channel it did not consume.
+//
+// AMENDED, not struck. The previous body returned early on error, so the
+// hex/length/lowercase assertions never ran: ConsumedDigests raises unless
+// both channels were recorded, and this row never fed them. The claim is
+// nobody else's — EmitV2 reads this package variable — so the row stays and
+// both halves of "hex or errors" are now judged in one call.
+//
+// A fresh recorder is installed for the duration so leftover process state
+// cannot satisfy the success arm. Expected digests are computed here with
+// crypto/sha256, not by calling hexSHA256.
 func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 	defer red(t)
 
-	src := digestSource
-	if src == nil {
+	if digestSource == nil {
 		t.Fatal("digestSource is nil — B1's body must install it")
 	}
-	cfgSHA, diffSHA, err := src.ConsumedDigests()
+	if digestSource != DigestSource(unframedDigests) {
+		t.Fatal("digestSource is not the process-wide recorder loadConfig and readDiff write into, so the wrapper would echo bytes nothing consumed")
+	}
+
+	savedRec, savedSrc := unframedDigests, digestSource
+	t.Cleanup(func() { unframedDigests, digestSource = savedRec, savedSrc })
+
+	// starved: error, both values empty, both channels named.
+	fresh := &unframedDigestSource{}
+	unframedDigests, digestSource = fresh, fresh
+	cfgSHA, diffSHA, err := digestSource.ConsumedDigests()
+	if err == nil {
+		t.Fatalf("a recorder that consumed nothing answered %q/%q with no error", cfgSHA, diffSHA)
+	}
+	if cfgSHA != "" || diffSHA != "" {
+		t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
+	}
+	for _, channel := range []string{"config", "diff"} {
+		if !strings.Contains(err.Error(), channel) {
+			t.Errorf("the starvation error %q does not name the %s channel", err, channel)
+		}
+	}
+
+	dir := t.TempDir()
+	cfgBytes, err := os.ReadFile(exampleConfigPath)
 	if err != nil {
-		// Legal: this process consumed no config and no diff. The contract is
-		// that it errors rather than returning empty strings.
-		if cfgSHA != "" || diffSHA != "" {
-			t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
-		}
-		return
+		t.Fatal(err)
 	}
-	for name, sha := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
-		if len(sha) != 64 {
-			t.Errorf("%s digest %q is not 64 hex characters", name, sha)
+	cfgPath := filepath.Join(dir, "risk-paths.json")
+	if err := os.WriteFile(cfgPath, cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diffBytes := []byte(diffFor(walletPath))
+	diffPath := filepath.Join(dir, "change.diff")
+	if err := os.WriteFile(diffPath, diffBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantCfg := sealExpectedHex(cfgBytes)
+	wantDiff := sealExpectedHex(diffBytes)
+	if wantCfg == wantDiff {
+		t.Fatalf("CONTROL: fixture config and diff digest to the same value %s, so the two channels cannot be told apart", wantCfg)
+	}
+
+	// half-fed: config consumed, diff not. Still raises; names diff and NOT
+	// config; both digest strings empty. Without this arm, starved passes on
+	// a source that raises unconditionally.
+	fresh = &unframedDigestSource{}
+	unframedDigests, digestSource = fresh, fresh
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("loadConfig(%s): %v", cfgPath, err)
+	}
+	if cfg == nil || len(cfg.Rules) == 0 {
+		t.Fatalf("CONTROL: %s parsed to an empty table, so the config channel may have recorded nothing", cfgPath)
+	}
+	cfgSHA, diffSHA, err = digestSource.ConsumedDigests()
+	if err == nil {
+		t.Fatalf("with the DIFF channel unread, ConsumedDigests answered %q/%q instead of raising", cfgSHA, diffSHA)
+	}
+	if cfgSHA != "" || diffSHA != "" {
+		t.Errorf("half-fed: an error AND values %q/%q — pick one", cfgSHA, diffSHA)
+	}
+	if strings.Contains(err.Error(), "config") {
+		t.Errorf("the error %q still names the config channel after loadConfig consumed it — the answer is a constant, not an observation", err)
+	}
+	if !strings.Contains(err.Error(), "diff") {
+		t.Errorf("the error %q does not name the diff channel, which is the one still unread", err)
+	}
+
+	// fed: both channels through production's own readers, after which the
+	// hex assertions finally run.
+	fresh = &unframedDigestSource{}
+	unframedDigests, digestSource = fresh, fresh
+	if _, err := loadConfig(cfgPath); err != nil {
+		t.Fatalf("loadConfig(%s): %v", cfgPath, err)
+	}
+	if _, err := readDiff([]string{diffPath}); err != nil {
+		t.Fatalf("readDiff(%s): %v", diffPath, err)
+	}
+	cfgSHA, diffSHA, err = digestSource.ConsumedDigests()
+	if err != nil {
+		t.Fatalf("both channels were fed through production's own readers and ConsumedDigests still raised: %v", err)
+	}
+	for _, ch := range []struct {
+		name, got, want string
+	}{
+		{"config", cfgSHA, wantCfg},
+		{"diff", diffSHA, wantDiff},
+	} {
+		if len(ch.got) != 64 {
+			t.Errorf("%s digest %q is %d characters, want 64", ch.name, ch.got, len(ch.got))
 		}
-		if sha != strings.ToLower(sha) {
-			t.Errorf("%s digest %q is not lowercase hex", name, sha)
+		if ch.got != strings.ToLower(ch.got) {
+			t.Errorf("%s digest %q is not lowercase", ch.name, ch.got)
 		}
-		for _, c := range sha {
-			if !strings.ContainsRune("0123456789abcdef", c) {
-				t.Errorf("%s digest %q is not hex", name, sha)
-				break
-			}
+		if strings.Trim(ch.got, "0123456789abcdef") != "" {
+			t.Errorf("%s digest %q is not hex", ch.name, ch.got)
+		}
+		if ch.got != ch.want {
+			t.Errorf("%s digest = %s, want %s — the digest must describe the bytes this process consumed on that channel", ch.name, ch.got, ch.want)
 		}
 	}
+
+	// content tracking: one extra byte on the config moves only the config
+	// digest. A source hashing the path, or one buffer for both channels, fails.
+	fresh = &unframedDigestSource{}
+	unframedDigests, digestSource = fresh, fresh
+	moved := append(append([]byte(nil), cfgBytes...), '\n')
+	if err := os.WriteFile(cfgPath, moved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(cfgPath); err != nil {
+		t.Fatalf("loadConfig after the one-byte edit: %v", err)
+	}
+	if _, err := readDiff([]string{diffPath}); err != nil {
+		t.Fatalf("readDiff: %v", err)
+	}
+	movedCfg, sameDiff, err := digestSource.ConsumedDigests()
+	if err != nil {
+		t.Fatalf("content-tracking arm: ConsumedDigests: %v", err)
+	}
+	if movedCfg == wantCfg {
+		t.Errorf("changing the config bytes left computed_config_sha256 at %s — the digest is not over the consumed bytes", movedCfg)
+	}
+	if movedCfg != sealExpectedHex(moved) {
+		t.Errorf("config digest after the edit = %s, want %s", movedCfg, sealExpectedHex(moved))
+	}
+	if sameDiff != wantDiff {
+		t.Errorf("editing the config moved the DIFF digest (%s -> %s)", wantDiff, sameDiff)
+	}
+}
+
+// sealExpectedHex is this row's oracle for hexSHA256's encoding. Spelled out
+// rather than delegated so the assertion is not the function judging itself.
+func sealExpectedHex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // ─── small helpers ───────────────────────────────────────────────────────────

@@ -196,3 +196,42 @@ inherits them explicitly rather than by silence.
   digest pin covers `PinnedBaselineV1Path` only. This is GO-2's subject ("nine
   tracked binaries, warned about nowhere") and is recorded here because GO-1-1
   tripped it by accident.
+
+---
+
+## GO-1-2 — the seals for the wiring contract (2026-09-02)
+
+Base: `feat/GO-1-1-scaffold-the-wiring-that-decides @ b0313fa`. Subject:
+`cmd/classify/wiring_seal_test.go`, which seals the mapping
+`(contract × -out × -json) → artifact set + exit code`.
+
+### Two spines, judged independently
+
+`RunWiring` and `parseInvocationFlags` are stubs. A suite made only of rows
+through them would be red on the sentinel and would detect nothing. The live
+table therefore drives `run()` and is green today — rewriting `emit()`'s
+`ContractV2` arm to `EmitV1` reddens `v2/json/{no-out,out}`,
+`TheContractSelectsTheWire`, and `TheSidecarIsThisRunsWrapper`.
+
+The same table is driven through `RunWiring` and judged on the bed it owns
+(exit, stdout **shape**, artifact state). Stdout is not byte-compared to a
+second invocation: `classified_at` and `Worktree` in `reviewer_args` make two
+TempDirs produce different v1 bytes, which `TwoBedsAreNotByteIdentical`
+records as a self-measurement. The v3 cell with `-out` seeds both artifacts
+and requires `ArtifactStale`, so a parallel body cannot clobber the shipped
+path while matching a no-out row.
+
+### Vacuous seal: amended, not struck
+
+`TestSeal_InstalledDigestSource_YieldsHexOrErrors` returned early on error.
+Amended to four arms in one call: starved, half-fed (empty strings required
+beside the error), fed through `loadConfig`/`readDiff` with independently
+computed SHA-256, and a one-byte config edit that must move only the config
+digest. No row re-seals the digest swap.
+
+### Flag table measures itself
+
+`wantErr` is a claim about Go's `flag` package. A sub-test parses every row's
+argv through a reference `FlagSet` and requires the stdlib's verdict. The
+well-formed row asserts every declared flag including `worktree`, `base`,
+`task` and `out`.
