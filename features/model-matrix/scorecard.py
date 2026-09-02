@@ -9,8 +9,10 @@ Seals are unusually measurable, so measure them rather than judging them:
   a panel verdict does not — an arm can be panel-approved and kill nothing, or
   panel-blocked and kill everything.
 
-  VACUITY: with the body absent, a seal that PASSES is asserting something the
-  wiring does not decide. Counted, not judged.
+  Seals passing with no body are RECORDED, NOT SCORED. An arm may log-and-pass
+  deliberately while the body is absent, which this cannot distinguish from a
+  test that asserts nothing. Kill rate already answers it: a vacuous seal kills
+  no mutation.
 
   Complexity, staticcheck, verbosity and normalised findings are secondary and
   reported for completeness; a test file wants LOW complexity, so gocyclo is
@@ -61,6 +63,11 @@ def score_arm(worktree: Path, module: str, muts: dict) -> dict:
     if seal_file.exists():
         added = set(re.findall(r"^func (Test\w+)", seal_file.read_text(), re.M))
     out["seals_added"] = len(added)
+    # NOT a vacuity measure. An arm may deliberately log-and-pass while the body
+    # is absent (BK-CLAUDE's sealRow does exactly that, and correctly), which is
+    # indistinguishable here from a test asserting nothing. Kill rate already
+    # captures vacuity — a vacuous seal kills no mutation — so this is recorded
+    # for context and must not be scored.
     out["seals_passing_with_no_body"] = len(_passing(mod) & added)
 
     killed, survived = [], []
