@@ -382,6 +382,7 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [GO-1-1]
+    model: claude-opus-5
 
   - key: GO-1-3
     summary: bodies — make the wiring executable by a test without rebuilding the fixture
@@ -404,6 +405,7 @@ tasks:
     role: bodies
     status: To Do
     blockedBy: [GO-1-2]
+    model: claude-opus-5
 
   - key: GO-1-4
     summary: adjudicate — rule the vacuous digest seal and GO-1-3's disputes
@@ -425,6 +427,7 @@ tasks:
       - cmd/classify/capability_seal_test.go
     status: To Do
     blockedBy: [GO-1-3]
+    model: claude-opus-5
 
   # ---- GO-2  nine tracked binaries, warned about nowhere ------------------
   - key: GO-2-1
@@ -671,6 +674,7 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [GO-2-1]
+    model: claude-opus-5
 
   - key: GO-2-3
     summary: bodies — close the drift the way GO-2-1 ruled
@@ -690,6 +694,7 @@ tasks:
     role: bodies
     status: To Do
     blockedBy: [GO-2-2]
+    model: claude-opus-5
 
   - key: GO-2-4
     summary: adjudicate — rule which of the nine are deliverables and which are accidents
@@ -708,6 +713,7 @@ tasks:
       - .gitignore
     status: To Do
     blockedBy: [GO-2-3]
+    model: claude-opus-5
 
   # ---- GO-3  the schema does not describe the tool that writes it ---------
   - key: GO-3-1
@@ -856,6 +862,7 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [GO-3-1]
+    model: claude-opus-5
 
   - key: GO-3-3
     summary: bodies — make the schema and the writer agree, once
@@ -877,6 +884,7 @@ tasks:
     role: bodies
     status: To Do
     blockedBy: [GO-3-2]
+    model: claude-opus-5
 
   - key: GO-3-4
     summary: adjudicate — rule where the gate-key contract lives
@@ -894,6 +902,7 @@ tasks:
       - config/run-state.schema.json
     status: To Do
     blockedBy: [GO-3-3]
+    model: claude-opus-5
 
   # ---- GO-4  VerifyPreservation is dark in both modules -------------------
   - key: GO-4-1
@@ -1114,6 +1123,7 @@ tasks:
     role: seals
     status: To Do
     blockedBy: [GO-4-1]
+    model: claude-opus-5
 
   - key: GO-4-3
     summary: bodies — give the checker a production caller, or declare why it has none
@@ -1141,6 +1151,7 @@ tasks:
     role: bodies
     status: To Do
     blockedBy: [GO-4-2]
+    model: claude-opus-5
 
   - key: GO-4-4
     summary: adjudicate — rule the three abstentions and GO-4-3's disputes
@@ -1166,3 +1177,4 @@ tasks:
       - cmd/gates/preserve_seal_test.go
     status: To Do
     blockedBy: [GO-4-3]
+    model: claude-opus-5
