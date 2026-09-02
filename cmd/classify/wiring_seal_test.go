@@ -30,6 +30,13 @@ package main
 // The table is one value, mappingCells, so the two drivers cannot be judged
 // against different expectations.
 //
+// TWO MORE OBSERVERS, for what no in-process driver can see. driveChild runs
+// RunWiring in a re-executed copy of this test binary whose file descriptors
+// 1 and 2 are pipes, so a writer cached before any stream variable was swapped
+// still lands in the parent's hands. And TestSeal_Wiring_MainForwardsRunWiring_LiveBinary
+// builds the tree and runs the shipped binary beside RunWiring on the same
+// argv — clause 8 is a claim about main(), and main() runs nowhere else.
+//
 // THE STRUCT IS NOT THE EVIDENCE. Both drivers take their own two snapshots of
 // -out and its sidecar. driveSpine has to, because run() reports nothing;
 // driveRunWiring does anyway, and holds the Artifacts RunWiring returned
@@ -38,8 +45,9 @@ package main
 // driveSpine retires it would otherwise be the only thing left looking.
 //
 // None of these tests may call t.Parallel: they capture os.Stdout and
-// os.Stderr, retarget the standard logger's writer, and swap the process-wide
-// digest recorder and certified-config slot.
+// os.Stderr, retarget the standard logger's writer, swap the process-wide
+// digest recorder and certified-config slot, and watch the process's own
+// working directory for files no row asked for.
 
 import (
 	"bytes"
@@ -53,8 +61,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -375,6 +385,12 @@ func isolateProcessState(t *testing.T) (*unframedDigestSource, *certifiedConfigR
 // the swapped pipe, and only the logger's own writer can witness it. It is
 // teed to its previous writer so that a log.Fatalf mid-row still reaches the
 // terminal before it exits the process.
+//
+// WHAT THIS CANNOT SEE: a writer bound to the original descriptor before the
+// swap — `var out = os.Stdout` at package level, a log.New(os.Stderr, ...)
+// held in a global, an os.NewFile(1, ...) — keeps writing to the terminal and
+// is invisible to all three channels here. driveChild observes those, from
+// outside the process; the structural row rejects the bindings themselves.
 func processStreamsOf(t *testing.T, fn func()) (stdout, stderr, logged string) {
 	t.Helper()
 	var logBuf bytes.Buffer
@@ -413,6 +429,67 @@ func judgeDisk(t *testing.T, what string, got FileArtifact, before, after fileSn
 	}
 }
 
+// pairSnap is one run-state path and its v2 sidecar, observed together.
+type pairSnap struct {
+	path   string
+	rs, sc fileSnap
+}
+
+func snapPair(t *testing.T, p string) pairSnap {
+	t.Helper()
+	return pairSnap{path: p, rs: snapFile(t, p), sc: snapFile(t, V2SidecarPath(p))}
+}
+
+// cwdRunState is the conventional run-state path in the TEST PROCESS's working
+// directory — a place no row names. A file appearing there is a path that
+// resolved against the cwd instead of -worktree or Invocation.Dir, and the
+// operator's tree would carry it. The row fails as a fixture problem if it is
+// already there, so a stale file cannot be misread as this run's.
+func cwdRunState(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(cwd, fixtureRunState)
+	for _, q := range []string{p, V2SidecarPath(p)} {
+		if snapFile(t, q).present {
+			t.Fatalf("fixture: %s exists before the run — the test process's working directory is dirty; remove it and re-run", q)
+		}
+	}
+	return p
+}
+
+// judgeUntouched holds a path THIS ROW DID NOT NAME to judgeDisk's
+// not-applicable rule: the run must have left nothing there, whatever the
+// struct said. Every driver applies it to the process cwd on every call, and
+// to -worktree's conventional run-state path whenever the row names no -out —
+// which is the case the panel measured: a persist() that writes a default
+// run-state when there is no -out is silent on stderr, reports NotApplicable
+// truthfully, and would otherwise pass.
+//
+// A file the run CREATED there — absent before, present after — is removed
+// once reported, so that one defect reads as one failure per cell rather than
+// one failure and then a dirty-cwd fixture complaint from every later cell.
+// Only a file both snapshots prove the run made is touched.
+func judgeUntouched(t *testing.T, name string, before pairSnap) {
+	t.Helper()
+	after := snapPair(t, before.path)
+	notApplicable := FileArtifact{State: ArtifactNotApplicable}
+	judgeDisk(t, name+": run-state at "+before.path+" (a path this row never named)", notApplicable, before.rs, after.rs)
+	judgeDisk(t, name+": v2 sidecar beside "+before.path+" (a path this row never named)", notApplicable, before.sc, after.sc)
+	for _, f := range []struct {
+		p             string
+		before, after fileSnap
+	}{{before.path, before.rs, after.rs}, {V2SidecarPath(before.path), before.sc, after.sc}} {
+		if !f.before.present && f.after.present {
+			if err := os.Remove(f.p); err != nil {
+				t.Errorf("%s: could not remove %s, which this run created: %v", name, f.p, err)
+			}
+		}
+	}
+}
+
 // ─── driver 1: the spine main() runs today ───────────────────────────────────
 
 // spineOptions is the options struct parseFlags would produce for the cell.
@@ -439,7 +516,14 @@ func spineOptions(f wiringFixture, cell mappingCell, runState string) options {
 // driver captures that logger's output for the duration of the call and
 // reports it as Stderr, beside anything written to os.Stderr itself, because
 // that is what an operator's stderr carries today.
-func driveSpine(t *testing.T, opts options) wiringRun {
+//
+// THE DISK IS SNAPSHOTTED ON EVERY CALL, not only when -out is named. With
+// -out the two snapshots ARE the reported state. Without it the driver
+// pre-fills NotApplicable — run() reports nothing — and then holds that claim
+// to the tree: -worktree's conventional run-state path and the process cwd
+// must both be untouched, or the "not applicable" the driver synthesised was
+// a lie the row would have judged as truth.
+func driveSpine(t *testing.T, name string, opts options) wiringRun {
 	t.Helper()
 	var r wiringRun
 	r.digests, r.certified = isolateProcessState(t)
@@ -448,6 +532,10 @@ func driveSpine(t *testing.T, opts options) wiringRun {
 	var rsBefore, scBefore fileSnap
 	if opts.out != "" {
 		rsBefore, scBefore = snapFile(t, opts.out), snapFile(t, V2SidecarPath(opts.out))
+	}
+	untouched := []pairSnap{snapPair(t, cwdRunState(t))}
+	if opts.out == "" {
+		untouched = append(untouched, snapPair(t, filepath.Join(opts.worktree, fixtureRunState)))
 	}
 
 	var code int
@@ -460,6 +548,9 @@ func driveSpine(t *testing.T, opts options) wiringRun {
 		rsAfter, scAfter := snapFile(t, opts.out), snapFile(t, V2SidecarPath(opts.out))
 		r.art.RunState = FileArtifact{Path: opts.out, State: stateOf(rsBefore, rsAfter), Bytes: rsAfter.bytes}
 		r.art.V2Sidecar = FileArtifact{Path: V2SidecarPath(opts.out), State: stateOf(scBefore, scAfter), Bytes: scAfter.bytes}
+	}
+	for _, u := range untouched {
+		judgeUntouched(t, name, u)
 	}
 	return r
 }
@@ -486,7 +577,10 @@ func invocationFor(f wiringFixture, cell mappingCell) Invocation {
 //
 // Every row names -out as fixtureRunState relative to Dir, or not at all, so
 // the driver snapshots that conventional path either way and judgeDisk decides
-// what the reported state may be beside what the tree says.
+// what the reported state may be beside what the tree says. The process cwd is
+// snapshotted too: a body that resolved "run.json" against the cwd instead of
+// Dir would leave the Dir path absent — caught — and the cwd path written,
+// which is the operator's tree polluted and is reported as such.
 func driveRunWiring(t *testing.T, name string, inv Invocation) wiringRun {
 	t.Helper()
 	var r wiringRun
@@ -494,7 +588,177 @@ func driveRunWiring(t *testing.T, name string, inv Invocation) wiringRun {
 
 	runState := filepath.Join(inv.Dir, fixtureRunState)
 	rsBefore, scBefore := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
+	cwd := snapPair(t, cwdRunState(t))
 	r.leakedStdout, r.leakedStderr, r.logged = processStreamsOf(t, func() { r.art, r.err = RunWiring(inv) })
+	if r.err != nil {
+		return r
+	}
+	rsAfter, scAfter := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
+	judgeDisk(t, name+": run-state", r.art.RunState, rsBefore, rsAfter)
+	judgeDisk(t, name+": v2 sidecar", r.art.V2Sidecar, scBefore, scAfter)
+	judgeUntouched(t, name, cwd)
+	return r
+}
+
+// ─── driver 3: RunWiring on the process's REAL descriptors ───────────────────
+
+// processStreamsOf swaps the os.Stdout and os.Stderr VARIABLES and retargets
+// the standard logger. A writer bound before the swap keeps the original
+// descriptor and is invisible to all three. The only observer that sees every
+// byte is the operating system, so this driver runs RunWiring in a CHILD
+// PROCESS — this test binary re-executed — whose file descriptors 1 and 2 are
+// pipes the parent holds, and the Artifacts come back through a file, never a
+// stream. Anything on either pipe is a leak, whatever wrote it.
+//
+// TestWiringSealChild is the child half. It runs only when wiringChildEnv
+// names a request file, and it calls os.Exit before the testing package can
+// print anything of its own, so an empty pipe means the run wrote nothing.
+//
+// The CONTROL is a mode that writes through writers cached at THIS FILE's
+// package init — the exact shape the in-process observer cannot see — and
+// through the standard logger; the parent must receive every byte.
+
+const wiringChildEnv = "CLASSIFY_WIRING_SEAL_CHILD"
+
+const (
+	wiringChildModeRun         = "run"
+	wiringChildModeLeakControl = "leak-control"
+)
+
+// Bound at package init, before any test swaps a stream variable. They live in
+// a _test.go file, which the structural row's scan skips on purpose.
+var wiringCachedStdout, wiringCachedStderr = os.Stdout, os.Stderr
+
+const (
+	wiringControlStdout = "wiring-seal control: a writer cached at package init reached fd 1\n"
+	wiringControlStderr = "wiring-seal control: a writer cached at package init reached fd 2\n"
+	wiringControlLogged = "wiring-seal control: the standard logger reached fd 2"
+)
+
+type wiringChildRequest struct {
+	Mode string
+	Args []string
+	Dir  string
+}
+
+type wiringChildReply struct {
+	Art  Artifacts
+	Stub bool   // the error was ErrWiringNotImplemented
+	Err  string // any other error's text; "" for nil
+}
+
+// TestWiringSealChild is the child half of driveChild. Under a plain `go test`
+// it skips; with wiringChildEnv set it does its work and never returns.
+func TestWiringSealChild(t *testing.T) {
+	reqPath := os.Getenv(wiringChildEnv)
+	if reqPath == "" {
+		t.Skip("harness: runs only as the child of driveChild")
+	}
+	die := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(wiringCachedStderr, "child: "+format+"\n", args...)
+		os.Exit(3)
+	}
+	data, err := os.ReadFile(reqPath) // #nosec G304 -- the parent's own temp file
+	if err != nil {
+		die("read request: %v", err)
+	}
+	var req wiringChildRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		die("decode request: %v", err)
+	}
+	var reply wiringChildReply
+	switch req.Mode {
+	case wiringChildModeLeakControl:
+		_, _ = fmt.Fprint(wiringCachedStdout, wiringControlStdout)
+		_, _ = fmt.Fprint(wiringCachedStderr, wiringControlStderr)
+		log.Print(wiringControlLogged)
+	case wiringChildModeRun:
+		art, err := RunWiring(Invocation{Args: req.Args, Dir: req.Dir})
+		reply.Art = art
+		switch {
+		case errors.Is(err, ErrWiringNotImplemented):
+			reply.Stub = true
+		case err != nil:
+			reply.Err = err.Error()
+		}
+	default:
+		die("unknown mode %q", req.Mode)
+	}
+	out, err := json.Marshal(reply)
+	if err != nil {
+		die("encode reply: %v", err)
+	}
+	if err := os.WriteFile(reqPath+".reply", out, 0o600); err != nil {
+		die("write reply: %v", err)
+	}
+	os.Exit(0)
+}
+
+// runWiringChild re-executes this test binary in an EMPTY working directory
+// with fds 1 and 2 on pipes, and returns the bytes from each pipe and the
+// reply the child wrote. The working directory must still be empty afterwards.
+func runWiringChild(t *testing.T, req wiringChildRequest) (stdout, stderr string, reply wiringChildReply) {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	reqPath := filepath.Join(scratch, "request.json")
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reqPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(scratch, "cwd")
+	if err := os.Mkdir(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(self, "-test.run=^TestWiringSealChild$") // #nosec G204 -- this test binary
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), wiringChildEnv+"="+reqPath)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
+	runErr := cmd.Run()
+	stdout, stderr = outBuf.String(), errBuf.String()
+	if runErr != nil {
+		t.Fatalf("the child process failed (%v) — a crash, not a leak\nstdout:\n%s\nstderr:\n%s", runErr, stdout, stderr)
+	}
+	replyData, err := os.ReadFile(reqPath + ".reply") // #nosec G304 -- this test's own temp file
+	if err != nil {
+		t.Fatalf("the child wrote no reply: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if err := json.Unmarshal(replyData, &reply); err != nil {
+		t.Fatalf("the child's reply does not decode: %v\n%s", err, replyData)
+	}
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		t.Errorf("%s: the child left %q in its working directory — a path resolved against the cwd, not Invocation.Dir (clause 7)", req.Mode, e.Name())
+	}
+	return stdout, stderr, reply
+}
+
+// driveChild is driveRunWiring with the process's real descriptors as the
+// leak observer. There is no recorder to ask — the child has its own — so
+// rows through it do not call judgeConsumed; the disk oracle is the same.
+func driveChild(t *testing.T, name string, inv Invocation) wiringRun {
+	t.Helper()
+	runState := filepath.Join(inv.Dir, fixtureRunState)
+	rsBefore, scBefore := snapFile(t, runState), snapFile(t, V2SidecarPath(runState))
+	stdout, stderr, reply := runWiringChild(t, wiringChildRequest{Mode: wiringChildModeRun, Args: inv.Args, Dir: inv.Dir})
+	r := wiringRun{art: reply.Art, leakedStdout: stdout, leakedStderr: stderr}
+	switch {
+	case reply.Stub:
+		r.err = ErrWiringNotImplemented
+	case reply.Err != "":
+		r.err = errors.New(reply.Err)
+	}
 	if r.err != nil {
 		return r
 	}
@@ -709,7 +973,7 @@ func TestSeal_Wiring_Mapping_ContractByOutByJSON(t *testing.T) {
 			defer red(t)
 			f := newWiringFixture(t)
 			runState := prepareOut(t, f.dir, cell.out)
-			r := driveSpine(t, spineOptions(f, cell, runState))
+			r := driveSpine(t, cell.name, spineOptions(f, cell, runState))
 			judgeCell(t, cell, f, runState, r.art)
 			judgeConsumed(t, cell.name, r, true, true)
 		})
@@ -792,12 +1056,12 @@ func TestSeal_Wiring_RejectedContractExits3BeforeAnyInputIsRead(t *testing.T) {
 		run  func(t *testing.T, name, dir, raw string, withDiff bool) wiringRun
 	}
 	drivers := []driver{
-		{"spine", func(t *testing.T, _, dir, raw string, withDiff bool) wiringRun {
+		{"spine", func(t *testing.T, name, dir, raw string, withDiff bool) wiringRun {
 			opts := options{worktree: dir, base: "origin/main", out: filepath.Join(dir, fixtureRunState), json: true, noGit: true, contractVersion: raw}
 			if withDiff {
 				opts.args = []string{filepath.Join(dir, fixtureDiffName)}
 			}
-			return driveSpine(t, opts)
+			return driveSpine(t, name, opts)
 		}},
 		{"RunWiring", func(t *testing.T, name, dir, raw string, withDiff bool) wiringRun {
 			args := []string{"-no-git", "-json", "-out", fixtureRunState, "-contract-version", raw}
@@ -1225,7 +1489,242 @@ func TestSeal_Wiring_RunWiring_SubcommandsAndFlagErrors(t *testing.T) {
 	}
 }
 
-// D1's structural obligation, RunWiring clauses 1, 2 and 3. RED TODAY on four
+// RunWiring clause 3 ON THE DESCRIPTORS THEMSELVES. RED TODAY by the stub.
+//
+// TestSeal_Wiring_RunWiring_AnswersTheMapping observes the process's streams
+// by swapping the os.Stdout/os.Stderr variables and the logger's writer. A
+// writer bound BEFORE the swap — a package-level `var out = os.Stdout`, a
+// logger built over os.Stderr at init — writes to the original descriptor and
+// passes every one of those checks. This row runs the same invocations in a
+// child process whose fds 1 and 2 are this test's pipes, where there is no
+// "before the swap": the pipe IS the descriptor. Every byte on either pipe is
+// a leak, whatever wrote it.
+//
+// The INSTRUMENT CONTROL is judged first, in the same call: a child that
+// writes through writers cached at this file's package init, and through the
+// standard logger, must deliver every byte to the parent. Without it "nothing
+// arrived" could mean the pipes see nothing.
+func TestSeal_Wiring_RunWiring_NoLeakOnTheRealDescriptors(t *testing.T) {
+	defer red(t)
+
+	stdout, stderr, _ := runWiringChild(t, wiringChildRequest{Mode: wiringChildModeLeakControl})
+	if stdout != wiringControlStdout {
+		t.Fatalf("INSTRUMENT: the child's fd 1 carried %q, want the cached-writer control %q — the pipe cannot witness a cached writer", stdout, wiringControlStdout)
+	}
+	if !strings.HasPrefix(stderr, wiringControlStderr) || !strings.Contains(stderr, wiringControlLogged) {
+		t.Fatalf("INSTRUMENT: the child's fd 2 carried %q, want the cached-writer control followed by the logger's line", stderr)
+	}
+
+	// Three cells of the mapping, chosen so that each artifact outcome and
+	// each stdout shape is exercised on the real descriptors at least once.
+	for _, want := range []string{"contract=2/out=fresh/json=on", "contract=1/out=seeded/json=off", "contract=2/out=none/json=on"} {
+		cell, ok := cellNamed(want)
+		if !ok {
+			t.Fatalf("mappingCells has no cell %q", want)
+		}
+		t.Run(cell.name, func(t *testing.T) {
+			defer red(t)
+			f := newWiringFixture(t)
+			runState := prepareOut(t, f.dir, cell.out)
+			r := driveChild(t, cell.name, invocationFor(f, cell))
+			requireRunWiringBody(t, r.err)
+			judgeNoLeak(t, cell.name, r)
+			judgeCell(t, cell, f, runState, r.art)
+		})
+	}
+
+	t.Run("rejected contract", func(t *testing.T) {
+		defer red(t)
+		f := newWiringFixture(t)
+		prepareOut(t, f.dir, outSeeded)
+		name := "contract=3"
+		r := driveChild(t, name, Invocation{Args: []string{"-no-git", "-json", "-out", fixtureRunState, "-contract-version", "3", fixtureDiffName}, Dir: f.dir})
+		requireRunWiringBody(t, r.err)
+		judgeNoLeak(t, name, r)
+		if r.art.ExitCode != exitInvalid {
+			t.Errorf("%s: exit %d, want %d", name, r.art.ExitCode, exitInvalid)
+		}
+		if !strings.HasPrefix(string(r.art.Stdout), "=== CLASSIFY: INVALID_INPUT ===") {
+			t.Errorf("%s: stdout is not the INVALID_INPUT block:\n%s", name, r.art.Stdout)
+		}
+	})
+
+	t.Run("subcommands", func(t *testing.T) {
+		defer red(t)
+		dir := t.TempDir()
+		for _, leg := range []struct {
+			name string
+			args []string
+			exit ExitCode
+		}{
+			{"capabilities", []string{probeSubcommand}, exitCapabilityIncomplete},
+			{"help", []string{"help"}, exitOK},
+			{"unknown flag", []string{"-no-such-flag"}, exitFlagError},
+		} {
+			r := driveChild(t, leg.name, Invocation{Args: leg.args, Dir: dir})
+			requireRunWiringBody(t, r.err)
+			judgeNoLeak(t, leg.name, r)
+			if r.art.ExitCode != leg.exit {
+				t.Errorf("%s: exit %d, want %d\nstdout:\n%s\nstderr:\n%s", leg.name, r.art.ExitCode, leg.exit, r.art.Stdout, r.art.Stderr)
+			}
+		}
+	})
+}
+
+// cellNamed finds one cell of the table by its name.
+func cellNamed(name string) (mappingCell, bool) {
+	for _, c := range mappingCells() {
+		if c.name == name {
+			return c, true
+		}
+	}
+	return mappingCell{}, false
+}
+
+// ─── RunWiring clause 8: the shipped binary ──────────────────────────────────
+
+// Clause 8 — "main() FORWARDS THE RESULT AND ADDS NOTHING" — is the one
+// clause no in-process row can reach, and the structural row exempts main()
+// from every stream check on its authority. This row is what makes that
+// exemption honest. It builds the current tree (liveClassify, with its
+// freshness guards) and, for each invocation below, runs RunWiring in process
+// AND the binary with the same argv, and requires the process's exit status,
+// stdout and stderr to be the ExitCode, Stdout and Stderr RunWiring returned
+// — byte for byte. A main() that forwards neither stream, exits 0 whatever
+// RunWiring answered, or adds a line of its own is red here and nowhere else:
+// `_, _ = RunWiring(inv); os.Exit(0)` satisfies every structural check and
+// ships a silent classifier, which a consumer reads as "nothing to gate".
+//
+// RED TODAY by the stub, on the in-process side, like every other RunWiring
+// row.
+//
+// Every path in the argv is ABSOLUTE, so the bytes cannot depend on which Dir
+// main() passes (clause 7: absolute paths are used unchanged), and -worktree
+// is named for the same reason — the report and the INVALID_INPUT block both
+// print it. Legs that write -out are compared with timestamps masked (the
+// payload carries classified_at, and the two runs are moments apart); every
+// other leg is compared raw.
+//
+// Each leg also pins the exit code the mapping rows already owe, and the live
+// stream must SAY something the leg names outright — an instrument that agreed
+// on two empty streams would have agreed on nothing.
+//
+// The non-nil-error arm is provoked with an -out that names a DIRECTORY, which
+// can neither be snapshotted (clause 4) nor written. Whether the body reports
+// that as a returned error or as exitInternal beside a nil error is its call;
+// either way the binary exits exitInternal, and on the error arm its stderr
+// carries the error's text and its stdout nothing (clause 8).
+func TestSeal_Wiring_MainForwardsRunWiring_LiveBinary(t *testing.T) {
+	defer red(t)
+	bin := liveClassify(t)
+	f := newWiringFixture(t)
+	runState := filepath.Join(f.dir, fixtureRunState)
+	outDir := filepath.Join(f.dir, "out-is-a-directory")
+	if err := os.Mkdir(outDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	classifyArgs := func(extra ...string) []string {
+		args := []string{"-no-git", "-worktree", f.dir, "-config", f.configPath}
+		args = append(args, extra...)
+		return append(args, f.diffPath)
+	}
+	type says struct{ stream, substr string }
+	legs := []struct {
+		name     string
+		args     []string
+		exit     ExitCode
+		mask     bool // -out is written: mask timestamps before comparing
+		errArm   bool // RunWiring may answer with a non-nil error here
+		liveSays says
+	}{
+		{"classify report, no -out", classifyArgs("-contract-version", "1"), exitOK, false, false, says{"stdout", "=== CLASSIFICATION ==="}},
+		{"classify -json -out, contract 2", classifyArgs("-contract-version", "2", "-json", "-out", runState), exitOK, true, false, says{"stderr", saysSidecarWritten}},
+		{"rejected -contract-version 3", classifyArgs("-contract-version", "3", "-json", "-out", runState), exitInvalid, false, false, says{"stdout", "accepted values are 1 and 2"}},
+		{"capabilities", []string{probeSubcommand}, exitCapabilityIncomplete, false, false, says{"stdout", `"cmd/classify"`}},
+		{"help", []string{"help"}, exitOK, false, false, says{"stderr", "classify init"}},
+		{"unknown flag", []string{"-no-such-flag"}, exitFlagError, false, false, says{"stderr", "no-such-flag"}},
+		{"-out names a directory", classifyArgs("-contract-version", "1", "-out", outDir), exitInternal, true, true, says{"stderr", ""}},
+	}
+	resetOut := func() {
+		t.Helper()
+		for _, p := range []string{runState, V2SidecarPath(runState)} {
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, leg := range legs {
+		leg := leg
+		t.Run(leg.name, func(t *testing.T) {
+			defer red(t)
+			isolateProcessState(t)
+			resetOut()
+			var (
+				art Artifacts
+				err error
+			)
+			processStreamsOf(t, func() { art, err = RunWiring(Invocation{Args: leg.args, Dir: f.dir}) })
+			if errors.Is(err, ErrWiringNotImplemented) {
+				requireRunWiringBody(t, err)
+			}
+			resetOut()
+			live := runLive(t, bin, f.dir, nil, leg.args...)
+
+			if err != nil {
+				if !leg.errArm {
+					t.Fatalf("RunWiring itself failed (clause 5 — not the run's exit code): %v", err)
+				}
+				if live.exit != exitInternal {
+					t.Errorf("%s: RunWiring returned an error and the binary exited %d, want %d (clause 8)", leg.name, live.exit, exitInternal)
+				}
+				if !strings.Contains(live.stderr, err.Error()) {
+					t.Errorf("%s: RunWiring returned %q and the binary's stderr does not report it (clause 8):\n%s", leg.name, err, live.stderr)
+				}
+				if live.stdout != "" {
+					t.Errorf("%s: RunWiring returned an error — Artifacts asserts nothing — and the binary still wrote to stdout:\n%s", leg.name, live.stdout)
+				}
+				return
+			}
+
+			if art.ExitCode != leg.exit {
+				t.Errorf("%s: RunWiring answered exit %d, want %d", leg.name, art.ExitCode, leg.exit)
+			}
+			if live.exit != int(art.ExitCode) {
+				t.Errorf("%s: the binary exited %d, RunWiring answered %d — main() does not exit with ExitCode (clause 8)\nbinary stderr:\n%s", leg.name, live.exit, art.ExitCode, live.stderr)
+			}
+			judgeForwarded(t, leg.name, "stdout", live.stdout, art.Stdout, leg.mask)
+			judgeForwarded(t, leg.name, "stderr", live.stderr, art.Stderr, leg.mask)
+			if leg.liveSays.substr != "" {
+				got := map[string]string{"stdout": live.stdout, "stderr": live.stderr}[leg.liveSays.stream]
+				if !strings.Contains(got, leg.liveSays.substr) {
+					t.Errorf("%s: the binary's %s does not say %q:\n%s", leg.name, leg.liveSays.stream, leg.liveSays.substr, got)
+				}
+			}
+		})
+	}
+}
+
+// wiringTimestamps matches the two stamps a run can carry: RFC3339 in the
+// payloads (classified_at, created_at, updated_at) and the log package's
+// default prefix, should a body build a logger with the default flags.
+var wiringTimestamps = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z|\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}`)
+
+// judgeForwarded requires the binary's stream to be the Artifacts field byte
+// for byte. With mask, timestamps are replaced on both sides first.
+func judgeForwarded(t *testing.T, name, stream, live string, want []byte, mask bool) {
+	t.Helper()
+	got, exp := live, string(want)
+	if mask {
+		got = wiringTimestamps.ReplaceAllString(got, "<timestamp>")
+		exp = wiringTimestamps.ReplaceAllString(exp, "<timestamp>")
+	}
+	if got != exp {
+		t.Errorf("%s: the binary's %s is not Artifacts.%s byte for byte (clause 8)\nbinary (%d bytes):\n%s\nRunWiring (%d bytes):\n%s",
+			name, stream, strings.ToUpper(stream[:1])+stream[1:], len(live), live, len(want), want)
+	}
+}
+
+// D1's structural obligation, RunWiring clauses 1, 2 and 3. RED TODAY on five
 // counts, each of which is one line of GO-1-3's checklist:
 //
 //   - main() calls RunWiring;
@@ -1233,13 +1732,22 @@ func TestSeal_Wiring_RunWiring_SubcommandsAndFlagErrors(t *testing.T) {
 //     second caller");
 //   - os.Exit is called inside main() and nowhere else, and log.Fatal* and
 //     log.Panic* are called nowhere (clause 2);
+//   - main() never exits with a literal: `os.Exit(0)` is an exit code nobody
+//     returned. This is the syntactic half of clause 8; the whole of it is
+//     TestSeal_Wiring_MainForwardsRunWiring_LiveBinary;
 //   - outside main(), nothing writes to a process-global stream (clause 3):
 //     no log.Print* or other use of the standard logger, no fmt.Print* naming
-//     no writer, and no reference to os.Stdout or os.Stderr at all — a
-//     fmt.Fprintf(os.Stderr, ...) and an EmitV1(os.Stdout, ...) are the same
-//     defect. main() is exempt because clause 8 makes it the one place that
-//     forwards to those streams. Sites are reported per function with a
-//     count, so the checklist reads as functions to fix, not lines.
+//     no writer, no os.NewFile, and no reference to os.Stdout or os.Stderr at
+//     all, IN ANY DECLARATION — a fmt.Fprintf(os.Stderr, ...), an
+//     EmitV1(os.Stdout, ...) and a package-level `var out = os.Stdout` are the
+//     same defect, and the last one is invisible to every in-process stream
+//     capture because it bound the descriptor before the swap. Sites are
+//     reported per function (or per package-level declaration) with a count,
+//     so the checklist reads as things to fix, not lines.
+//
+// main() is exempt from the stream rule because clause 8 makes it the one
+// place that forwards to those streams — and that exemption rests on the live
+// binary row, which holds main() to clause 8 byte for byte, not on the clause.
 //
 // Read from the AST, not by substring, so a comment that MENTIONS os.Exit —
 // wiring.go's contract does — is not a hit. CONTROLS: the scan must find at
@@ -1262,6 +1770,7 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 		streamRefs    int
 		mainCallsRun  bool
 		mainFound     bool
+		mainExitLits  int
 		parseFlagsIn  string
 		parsed        int
 	)
@@ -1275,19 +1784,11 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 			t.Fatalf("parse %s: %v", name, err)
 		}
 		parsed++
-		for _, d := range file.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			if fn.Name.Name == "parseFlags" && fn.Recv == nil {
-				parseFlagsIn = name
-			}
-			isMain := fn.Name.Name == "main" && fn.Recv == nil && name == "main.go"
-			if isMain {
-				mainFound = true
-			}
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
+		// inspect applies the rules to one declaration's expressions: a
+		// function body, or a package-level initialiser, which is where a
+		// stream gets cached before anything can swap it.
+		inspect := func(where string, isMain bool, node ast.Node) {
+			ast.Inspect(node, func(n ast.Node) bool {
 				switch x := n.(type) {
 				case *ast.CallExpr:
 					switch f := x.Fun.(type) {
@@ -1300,33 +1801,76 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 						if !ok {
 							return true
 						}
-						s := site{name, fn.Name.Name, pkg.Name + "." + f.Sel.Name}
+						s := site{name, where, pkg.Name + "." + f.Sel.Name}
 						switch {
 						case pkg.Name == "os" && f.Sel.Name == "Exit":
 							exits = append(exits, s)
+							if isMain && len(x.Args) == 1 {
+								if _, lit := x.Args[0].(*ast.BasicLit); lit {
+									mainExitLits++
+								}
+							}
 						case pkg.Name == "log" && (strings.HasPrefix(f.Sel.Name, "Fatal") || strings.HasPrefix(f.Sel.Name, "Panic")):
 							fatals = append(fatals, s)
 						case pkg.Name == "log" && f.Sel.Name != "New" && !isMain:
-							// Print*, SetOutput, SetFlags, ...: the standard
-							// logger. log.New over a supplied writer is fine.
+							// Print*, SetOutput, SetFlags, Default, Writer ...:
+							// the standard logger. log.New over a supplied
+							// writer is fine; over os.Stderr it is caught below.
 							globals[s]++
 						case pkg.Name == "fmt" && strings.HasPrefix(f.Sel.Name, "Print") && !isMain:
+							globals[s]++
+						case pkg.Name == "os" && f.Sel.Name == "NewFile" && !isMain:
+							// os.NewFile(1, ...) is os.Stdout under another name.
 							globals[s]++
 						}
 					}
 				case *ast.SelectorExpr:
 					// Any mention of the stream, in any position: as a
 					// fmt.Fprint* argument, as an argument to EmitV1, as a
-					// receiver. The CallExpr case above sees only call targets.
+					// receiver, as a var initialiser. The CallExpr case above
+					// sees only call targets.
 					if pkg, ok := x.X.(*ast.Ident); ok && pkg.Name == "os" && (x.Sel.Name == "Stdout" || x.Sel.Name == "Stderr") {
 						streamRefs++
 						if !isMain {
-							globals[site{name, fn.Name.Name, "os." + x.Sel.Name}]++
+							globals[site{name, where, "os." + x.Sel.Name}]++
 						}
 					}
 				}
 				return true
 			})
+		}
+		for _, d := range file.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if d.Body == nil {
+					continue
+				}
+				if d.Name.Name == "parseFlags" && d.Recv == nil {
+					parseFlagsIn = name
+				}
+				isMain := d.Name.Name == "main" && d.Recv == nil && name == "main.go"
+				if isMain {
+					mainFound = true
+				}
+				inspect(d.Name.Name, isMain, d.Body)
+			case *ast.GenDecl:
+				// Package-level var and const initialisers. A body that
+				// caches `var out = os.Stdout` here has bound the descriptor
+				// before any test could swap it; the binding is the defect.
+				for _, spec := range d.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					names := make([]string, 0, len(vs.Names))
+					for _, n := range vs.Names {
+						names = append(names, n.Name)
+					}
+					for _, v := range vs.Values {
+						inspect("var "+strings.Join(names, ","), false, v)
+					}
+				}
+			}
 		}
 	}
 	if parsed == 0 || !mainFound {
@@ -1349,6 +1893,9 @@ func TestSeal_Wiring_MainDelegatesAndNothingElseExits(t *testing.T) {
 
 	if !mainCallsRun {
 		t.Error("clause 1: main() does not call RunWiring — the spine every row drives is not the spine the binary runs")
+	}
+	if mainExitLits > 0 {
+		t.Errorf("clause 8: main() calls os.Exit with a literal ×%d — an exit code nobody returned; main exits with the ExitCode RunWiring answered, or exitInternal beside its error", mainExitLits)
 	}
 	if parseFlagsIn != "" {
 		t.Errorf("clause 1: parseFlags still exists in %s — it is to cease to exist, not become a second caller of parseInvocationFlags", parseFlagsIn)
