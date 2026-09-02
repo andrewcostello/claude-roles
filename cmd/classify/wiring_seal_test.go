@@ -255,6 +255,9 @@ func assertStdoutShape(t *testing.T, label string, want stdoutShape, stdout []by
 			t.Errorf("%s: stdout has the wrapper's keys but does not unmarshal as a ResponseWrapper: %v", label, err)
 			return
 		}
+		if w.ResponseVersion != responseVersion {
+			t.Errorf("%s: response_version = %d, want %d — matching the wrapper's key set is not the wire", label, w.ResponseVersion, responseVersion)
+		}
 		var payload map[string]json.RawMessage
 		if err := json.Unmarshal(w.Classification, &payload); err != nil {
 			t.Errorf("%s: the wrapper's classification member is not a JSON object: %v", label, err)
@@ -461,7 +464,7 @@ func assertMapping(t *testing.T, row wiringRow, bed classifyBed, got Artifacts) 
 	assertArtifact(t, row.name+" run-state", row.wantRunState, got.RunState)
 	assertArtifact(t, row.name+" v2 sidecar", row.wantSidecar, got.V2Sidecar)
 
-	if row.wantStdout == shapeV2Wrapper && sameStrings(topKeys(t, got.Stdout), v2WrapperKeys) {
+	if row.wantStdout == shapeV2Wrapper && json.Valid(bytes.TrimSpace(got.Stdout)) {
 		var w ResponseWrapper
 		if err := json.Unmarshal(got.Stdout, &w); err != nil {
 			t.Errorf("%s: wrapper keys present but unmarshal failed: %v", row.name, err)
@@ -488,6 +491,267 @@ func assertMapping(t *testing.T, row wiringRow, bed classifyBed, got Artifacts) 
 			t.Errorf("%s: a run with no -out changed the directory: %v, want exactly %v", row.name, gotNames, want)
 		}
 	}
+
+	for _, p := range wiringWireProblems(row, bed, got) {
+		t.Errorf("%s: %s", row.name, p)
+	}
+}
+
+// stableVerdict is the consumer-visible classification that must agree
+// between a live run() and RunWiring after timestamps and path-dependent
+// metadata are dropped.
+type stableVerdict struct {
+	Risk                  string
+	FinancialPathsTouched bool
+	ClientOnly            bool
+	ServerSurface         bool
+	Migration             bool
+	HumanPRGate           bool
+	RecheckMinSeverity    string
+	Components            []string
+}
+
+func v1Stable(cls Classification) stableVerdict {
+	return stableVerdict{
+		Risk:                  cls.Risk,
+		FinancialPathsTouched: cls.FinancialPathsTouched,
+		ClientOnly:            cls.ClientOnly,
+		ServerSurface:         cls.ServerSurface,
+		Migration:             cls.Migration,
+		HumanPRGate:           cls.HumanPRGate,
+		RecheckMinSeverity:    cls.RecheckMinSeverity,
+		Components:            append([]string(nil), cls.Components...),
+	}
+}
+
+func v2Stable(cls ClassificationV2) stableVerdict {
+	return stableVerdict{
+		Risk:                  cls.Risk,
+		FinancialPathsTouched: cls.FinancialPathsTouched,
+		ClientOnly:            cls.ClientOnly,
+		ServerSurface:         cls.ServerSurface,
+		Migration:             cls.Migration,
+		HumanPRGate:           cls.HumanPRGate,
+		RecheckMinSeverity:    cls.RecheckMinSeverity,
+		Components:            append([]string(nil), cls.Components...),
+	}
+}
+
+func consumerFieldProblems(prefix string, v stableVerdict, requireRisk bool) []string {
+	var problems []string
+	if requireRisk && v.Risk == "" {
+		problems = append(problems, prefix+" has empty risk — a nested object carrying only contract_version is not a classification")
+	}
+	return problems
+}
+
+func sameVerdict(a, b stableVerdict) bool {
+	return a.Risk == b.Risk &&
+		a.FinancialPathsTouched == b.FinancialPathsTouched &&
+		a.ClientOnly == b.ClientOnly &&
+		a.ServerSurface == b.ServerSurface &&
+		a.Migration == b.Migration &&
+		a.HumanPRGate == b.HumanPRGate &&
+		a.RecheckMinSeverity == b.RecheckMinSeverity &&
+		sameStrings(a.Components, b.Components)
+}
+
+func decodeV1Stdout(stdout []byte) (stableVerdict, []string) {
+	var cls Classification
+	if err := json.Unmarshal(stdout, &cls); err != nil {
+		return stableVerdict{}, []string{fmt.Sprintf("v1 stdout is not a Classification: %v", err)}
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(stdout, &raw); err == nil {
+		if _, ok := raw["contract_version"]; ok {
+			return v1Stable(cls), []string{"v1 payload carries contract_version — that field is BuildV2's"}
+		}
+	}
+	v := v1Stable(cls)
+	return v, consumerFieldProblems("v1 classification", v, true)
+}
+
+func decodeV2Stdout(stdout []byte) (ResponseWrapper, stableVerdict, []string) {
+	var w ResponseWrapper
+	if err := json.Unmarshal(stdout, &w); err != nil {
+		return w, stableVerdict{}, []string{fmt.Sprintf("v2 stdout is not a ResponseWrapper: %v", err)}
+	}
+	var problems []string
+	if w.ResponseVersion != responseVersion {
+		problems = append(problems, fmt.Sprintf("response_version = %d, want %d — the wrapper key set without the version is not the wire", w.ResponseVersion, responseVersion))
+	}
+	var env ClassificationV2
+	if err := json.Unmarshal(w.Classification, &env); err != nil {
+		problems = append(problems, fmt.Sprintf("wrapped classification is not a ClassificationV2: %v", err))
+		return w, stableVerdict{}, problems
+	}
+	if env.ContractVersion != int(ContractV2) {
+		problems = append(problems, fmt.Sprintf("wrapped contract_version = %d, want %d", env.ContractVersion, int(ContractV2)))
+	}
+	v := v2Stable(env)
+	problems = append(problems, consumerFieldProblems("wrapped classification", v, true)...)
+	return w, v, problems
+}
+
+func decodeRunStateBytes(data []byte, requireClassification bool) (RunState, stableVerdict, []string) {
+	var rs RunState
+	if err := json.Unmarshal(data, &rs); err != nil {
+		return rs, stableVerdict{}, []string{fmt.Sprintf("run-state is not a RunState: %v", err)}
+	}
+	var problems []string
+	if rs.SchemaVersion != schemaVersion {
+		problems = append(problems, fmt.Sprintf("run-state schema_version = %d, want %d", rs.SchemaVersion, schemaVersion))
+	}
+	if !requireClassification {
+		return rs, stableVerdict{}, problems
+	}
+	if rs.Classification == nil {
+		problems = append(problems, "run-state has no classification — arbitrary status bytes are not this run's artifact")
+		return rs, stableVerdict{}, problems
+	}
+	v := v1Stable(*rs.Classification)
+	problems = append(problems, consumerFieldProblems("run-state classification", v, true)...)
+	return rs, v, problems
+}
+
+func decodeSidecarBytes(data []byte, requireWrapper bool) (V2Sidecar, stableVerdict, []string) {
+	var sc V2Sidecar
+	if err := json.Unmarshal(data, &sc); err != nil {
+		return sc, stableVerdict{}, []string{fmt.Sprintf("sidecar is not a V2Sidecar: %v", err)}
+	}
+	var problems []string
+	if sc.SchemaVersion != v2SidecarSchemaVersion {
+		problems = append(problems, fmt.Sprintf("sidecar schema_version = %d, want %d", sc.SchemaVersion, v2SidecarSchemaVersion))
+	}
+	if !requireWrapper {
+		return sc, stableVerdict{}, problems
+	}
+	if sc.Response.ResponseVersion != responseVersion {
+		problems = append(problems, fmt.Sprintf("sidecar response_version = %d, want %d", sc.Response.ResponseVersion, responseVersion))
+	}
+	if len(sc.Response.Classification) == 0 {
+		problems = append(problems, "sidecar response has no classification")
+		return sc, stableVerdict{}, problems
+	}
+	var env ClassificationV2
+	if err := json.Unmarshal(sc.Response.Classification, &env); err != nil {
+		problems = append(problems, fmt.Sprintf("sidecar classification is not a ClassificationV2: %v", err))
+		return sc, stableVerdict{}, problems
+	}
+	if env.ContractVersion != int(ContractV2) {
+		problems = append(problems, fmt.Sprintf("sidecar contract_version = %d, want %d", env.ContractVersion, int(ContractV2)))
+	}
+	v := v2Stable(env)
+	problems = append(problems, consumerFieldProblems("sidecar classification", v, true)...)
+	return sc, v, problems
+}
+
+// wiringWireProblems decodes the RunWiring wire and persisted artifacts.
+// Shape plus filesystem agreement is not enough: response_version 0, a
+// nested object carrying only contract_version, and arbitrary run-state
+// bytes that happen to match the disk all fail here.
+func wiringWireProblems(row wiringRow, bed classifyBed, got Artifacts) []string {
+	var problems []string
+	switch row.wantStdout {
+	case shapeV1Payload:
+		_, p := decodeV1Stdout(got.Stdout)
+		problems = append(problems, p...)
+	case shapeV2Wrapper:
+		w, _, p := decodeV2Stdout(got.Stdout)
+		problems = append(problems, p...)
+		if len(p) == 0 || w.ComputedConfigSHA256 != "" {
+			if want := sha256Bytes(mustRead(bed.cfgPath)); w.ComputedConfigSHA256 != "" && w.ComputedConfigSHA256 != want {
+				problems = append(problems, fmt.Sprintf("computed_config_sha256 = %q, want %q", w.ComputedConfigSHA256, want))
+			}
+			if want := sha256Bytes(mustRead(bed.diffPath)); w.ComputedDiffSHA256 != "" && w.ComputedDiffSHA256 != want {
+				problems = append(problems, fmt.Sprintf("computed_diff_sha256 = %q, want %q", w.ComputedDiffSHA256, want))
+			}
+		}
+	}
+
+	requireRunClass := row.wantExit == exitOK && row.wantRunState == ArtifactWritten
+	if row.wantRunState == ArtifactWritten || row.wantRunState == ArtifactStale {
+		if len(got.RunState.Bytes) == 0 {
+			problems = append(problems, "run-state Bytes are empty")
+		} else {
+			_, _, p := decodeRunStateBytes(got.RunState.Bytes, requireRunClass)
+			problems = append(problems, p...)
+		}
+	}
+
+	requireSidecarWrapper := row.wantExit == exitOK && row.wantSidecar == ArtifactWritten
+	if row.wantSidecar == ArtifactWritten {
+		if len(got.V2Sidecar.Bytes) == 0 {
+			problems = append(problems, "sidecar Bytes are empty")
+		} else {
+			sc, _, p := decodeSidecarBytes(got.V2Sidecar.Bytes, requireSidecarWrapper)
+			problems = append(problems, p...)
+			if requireSidecarWrapper && row.wantStdout == shapeV2Wrapper && json.Valid(bytes.TrimSpace(got.Stdout)) {
+				var w ResponseWrapper
+				if json.Unmarshal(got.Stdout, &w) == nil {
+					if sc.Response.ComputedConfigSHA256 != w.ComputedConfigSHA256 || sc.Response.ComputedDiffSHA256 != w.ComputedDiffSHA256 {
+						problems = append(problems, "sidecar digests do not match this run's stdout wrapper")
+					}
+					if compactJSONErr(sc.Response.Classification) != compactJSONErr(w.Classification) {
+						problems = append(problems, "sidecar classification does not match this run's stdout wrapper")
+					}
+				}
+			}
+		}
+	}
+	return problems
+}
+
+func mustRead(path string) []byte {
+	data, err := os.ReadFile(path) // #nosec G304 -- fixture this test staged
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+func compactJSONErr(b []byte) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		return string(b)
+	}
+	return buf.String()
+}
+
+func wiringOracleProblems(row wiringRow, got, live Artifacts) []string {
+	var problems []string
+	if got.ExitCode != live.ExitCode {
+		problems = append(problems, fmt.Sprintf("RunWiring exit %d, live run() exit %d", got.ExitCode, live.ExitCode))
+	}
+	switch row.wantStdout {
+	case shapeV1Payload:
+		gv, gp := decodeV1Stdout(got.Stdout)
+		lv, lp := decodeV1Stdout(live.Stdout)
+		if len(gp) == 0 && len(lp) == 0 && !sameVerdict(gv, lv) {
+			problems = append(problems, fmt.Sprintf("v1 stable verdict %+v does not match live run() %+v", gv, lv))
+		}
+	case shapeV2Wrapper:
+		_, gv, gp := decodeV2Stdout(got.Stdout)
+		_, lv, lp := decodeV2Stdout(live.Stdout)
+		if len(gp) == 0 && len(lp) == 0 && !sameVerdict(gv, lv) {
+			problems = append(problems, fmt.Sprintf("v2 stable verdict %+v does not match live run() %+v", gv, lv))
+		}
+	}
+	if row.wantRunState == ArtifactWritten && row.wantExit == exitOK {
+		_, gv, gp := decodeRunStateBytes(got.RunState.Bytes, true)
+		_, lv, lp := decodeRunStateBytes(live.RunState.Bytes, true)
+		if len(gp) == 0 && len(lp) == 0 && !sameVerdict(gv, lv) {
+			problems = append(problems, fmt.Sprintf("run-state stable verdict %+v does not match live run() %+v", gv, lv))
+		}
+	}
+	if row.wantSidecar == ArtifactWritten && row.wantExit == exitOK {
+		_, gv, gp := decodeSidecarBytes(got.V2Sidecar.Bytes, true)
+		_, lv, lp := decodeSidecarBytes(live.V2Sidecar.Bytes, true)
+		if len(gp) == 0 && len(lp) == 0 && !sameVerdict(gv, lv) {
+			problems = append(problems, fmt.Sprintf("sidecar stable verdict %+v does not match live run() %+v", gv, lv))
+		}
+	}
+	return problems
 }
 
 func (r wiringRow) argv(b classifyBed) []string {
@@ -829,6 +1093,10 @@ func TestSeal_Wiring_RunWiringHonoursTheMapping(t *testing.T) {
 			bed := newClassifyBed(t)
 			bed.applySeeds(t, row)
 
+			liveBed := newClassifyBed(t)
+			liveBed.applySeeds(t, row)
+			live := liveBed.driveLive(t, row.contract, row.asJSON, row.withOut)
+
 			inv := Invocation{Args: row.argv(bed), Dir: bed.dir}
 			sidecarPath := V2SidecarPath(bed.outPath)
 			beforeRun := snap(t, bed.outPath)
@@ -852,6 +1120,9 @@ func TestSeal_Wiring_RunWiringHonoursTheMapping(t *testing.T) {
 			assertMapping(t, row, bed, got)
 			assertReportedMatchesBed(t, row.name+" run-state", got.RunState, observedRun)
 			assertReportedMatchesBed(t, row.name+" v2 sidecar", got.V2Sidecar, observedSidecar)
+			for _, p := range wiringOracleProblems(row, got, live) {
+				t.Errorf("%s: %s", row.name, p)
+			}
 
 			if row.withOut && row.wantExit == exitOK {
 				if len(got.Stderr) == 0 {
@@ -1420,18 +1691,36 @@ func capabilityProbeProblems(stdout []byte, code ExitCode) []string {
 	if rep.Producer != "cmd/classify" {
 		problems = append(problems, fmt.Sprintf("producer = %q, want %q", rep.Producer, "cmd/classify"))
 	}
+	installed := map[string]bool{}
 	var caps map[string]json.RawMessage
 	if err := json.Unmarshal(raw["capabilities"], &caps); err != nil {
 		problems = append(problems, fmt.Sprintf("capabilities is not an object: %v", err))
 	} else {
 		for _, name := range requiredCapabilities {
-			if _, ok := caps[name]; !ok {
+			rawVal, ok := caps[name]
+			if !ok {
 				problems = append(problems, fmt.Sprintf("capability %q is absent from the report", name))
+				continue
 			}
+			var val bool
+			if err := json.Unmarshal(rawVal, &val); err != nil {
+				problems = append(problems, fmt.Sprintf("capability %q is not a boolean: %s", name, rawVal))
+				continue
+			}
+			installed[name] = val
 		}
 	}
 	if bytes.Equal(bytes.TrimSpace(raw["missing"]), []byte("null")) {
 		problems = append(problems, "missing marshaled as null; the contract is an empty slice, never null")
+	}
+	wantMissing := make([]string, 0, len(requiredCapabilities))
+	for _, name := range requiredCapabilities {
+		if !installed[name] {
+			wantMissing = append(wantMissing, name)
+		}
+	}
+	if !sameStrings(rep.Missing, wantMissing) {
+		problems = append(problems, fmt.Sprintf("missing = %v, want exactly the false required capabilities %v (in requiredCapabilities order). A report that declares every capability false with missing: [] is not a truthful probe", rep.Missing, wantMissing))
 	}
 	wantVersions := make([]int, 0, len(contractVersionSet))
 	for _, v := range contractVersionSet {
@@ -1449,6 +1738,11 @@ func capabilityProbeProblems(stdout []byte, code ExitCode) []string {
 	}
 	switch code {
 	case exitOK:
+		for _, name := range requiredCapabilities {
+			if !installed[name] {
+				problems = append(problems, fmt.Sprintf("exit 0 with required capability %q false — exit 0 requires every required capability true", name))
+			}
+		}
 		if len(rep.Missing) != 0 {
 			problems = append(problems, fmt.Sprintf("exit 0 with missing %v — the biconditional is empty missing iff exit 0", rep.Missing))
 		}
@@ -2065,6 +2359,9 @@ func TestSeal_Wiring_MainForwardsTheResult(t *testing.T) {
 	if countNodes(mainFn, isSelectorIdent("os", "Args")) == 0 {
 		t.Errorf("main() does not mention os.Args. Clause 8's forwarding starts from os.Args[1:] into RunWiring.")
 	}
+	if countNodes(mainFn, isSelectorIdent("os", "Stdin")) == 0 {
+		t.Errorf("main() does not mention os.Stdin. Clause 8: Invocation.Stdin is os.Stdin so the shipped binary honours git diff | classify; omitting it leaves Stdin nil, which the in-process nil-Stdin row treats as empty-diff.")
+	}
 	if countNodes(mainFn, isSelectorIdent("os", "Stdout")) == 0 {
 		t.Errorf("main() does not mention os.Stdout. Clause 8: it writes Artifacts.Stdout to os.Stdout.")
 	}
@@ -2427,6 +2724,8 @@ func TestSeal_Wiring_FlagParseErrorMatcherRejectsUnrelatedErrors(t *testing.T) {
 type identOrigin struct {
 	fromExitCode bool
 	fromInternal bool
+	fromStdout   bool
+	fromStderr   bool
 }
 
 func isIdentNamed(e ast.Expr, name string) bool {
@@ -2566,9 +2865,47 @@ func streamWriteTarget(call *ast.CallExpr) string {
 	return ""
 }
 
-func callPayloadUsesField(call *ast.CallExpr, obj, field string) bool {
+// peelPayloadWrapper peels one single-argument selector call (bytes.NewReader,
+// strings.NewReader, …). Builtins such as len are Ident calls and do not peel:
+// Write(len(art.Stdout)) is not forwarding the field.
+func peelPayloadWrapper(e ast.Expr) ast.Expr {
+	e = peelConv(e)
+	call, ok := e.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return e
+	}
+	if _, ok := call.Fun.(*ast.SelectorExpr); !ok {
+		return e
+	}
+	return peelConv(call.Args[0])
+}
+
+func payloadExprForwardsField(e ast.Expr, obj, field string, origins map[string]identOrigin) bool {
+	if e == nil {
+		return false
+	}
+	if exprIsField(e, obj, field) {
+		return true
+	}
+	if id, ok := peelConv(e).(*ast.Ident); ok {
+		o := origins[id.Name]
+		switch field {
+		case "Stdout":
+			return o.fromStdout
+		case "Stderr":
+			return o.fromStderr
+		}
+	}
+	wrapped := peelPayloadWrapper(e)
+	if wrapped != e && payloadExprForwardsField(wrapped, obj, field, origins) {
+		return true
+	}
+	return false
+}
+
+func callPayloadUsesField(call *ast.CallExpr, obj, field string, origins map[string]identOrigin) bool {
 	for _, a := range call.Args {
-		if exprIsField(a, obj, field) {
+		if payloadExprForwardsField(a, obj, field, origins) {
 			return true
 		}
 	}
@@ -2619,11 +2956,21 @@ func originFromRHS(rhs ast.Expr, artIdent string, origins map[string]identOrigin
 	if exprIsField(rhs, artIdent, "ExitCode") {
 		return identOrigin{fromExitCode: true}
 	}
+	if exprIsField(rhs, artIdent, "Stdout") {
+		return identOrigin{fromStdout: true}
+	}
+	if exprIsField(rhs, artIdent, "Stderr") {
+		return identOrigin{fromStderr: true}
+	}
 	if exprIsIdentExact(rhs, "exitInternal") {
 		return identOrigin{fromInternal: true}
 	}
 	if id, ok := peelConv(rhs).(*ast.Ident); ok {
 		return origins[id.Name]
+	}
+	wrapped := peelPayloadWrapper(rhs)
+	if wrapped != rhs {
+		return originFromRHS(wrapped, artIdent, origins)
 	}
 	return identOrigin{}
 }
@@ -2733,13 +3080,13 @@ func errNilBranches(ifs *ast.IfStmt, errIdent string) (errBody, okBody *ast.Bloc
 func applyCall(st *pathState, call *ast.CallExpr, artIdent, errIdent string) {
 	switch streamWriteTarget(call) {
 	case "Stdout":
-		if callPayloadUsesField(call, artIdent, "Stdout") {
+		if callPayloadUsesField(call, artIdent, "Stdout", st.origins) {
 			st.stdoutFromArt = true
 		} else {
 			st.unrelatedStdout = true
 		}
 	case "Stderr":
-		if callPayloadUsesField(call, artIdent, "Stderr") {
+		if callPayloadUsesField(call, artIdent, "Stderr", st.origins) {
 			st.stderrFromArt = true
 		} else if callPayloadUsesIdent(call, errIdent) {
 			st.errReported = true
@@ -2753,16 +3100,28 @@ func applyCall(st *pathState, call *ast.CallExpr, artIdent, errIdent string) {
 	}
 }
 
-func applyExpr(st *pathState, e ast.Expr, artIdent, errIdent string) {
-	if e == nil {
+// inspectInvokedCalls walks calls that actually run. Deferred calls and
+// uninvoked function literals are not evidence: Go does not run defers
+// when os.Exit terminates the process.
+func inspectInvokedCalls(n ast.Node, fn func(*ast.CallExpr)) {
+	if n == nil {
 		return
 	}
-	ast.Inspect(e, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if ok {
-			applyCall(st, call, artIdent, errIdent)
+	ast.Inspect(n, func(x ast.Node) bool {
+		switch x.(type) {
+		case *ast.FuncLit, *ast.DeferStmt:
+			return false
+		}
+		if c, ok := x.(*ast.CallExpr); ok {
+			fn(c)
 		}
 		return true
+	})
+}
+
+func applyExpr(st *pathState, e ast.Expr, artIdent, errIdent string) {
+	inspectInvokedCalls(e, func(call *ast.CallExpr) {
+		applyCall(st, call, artIdent, errIdent)
 	})
 }
 
@@ -2798,14 +3157,73 @@ func applyStmt(st *pathState, s ast.Stmt, artIdent, errIdent string) {
 		if id, ok := x.X.(*ast.Ident); ok {
 			st.origins[id.Name] = identOrigin{}
 		}
+	case *ast.DeferStmt:
+		// Deferred calls are not evidence before os.Exit.
+		return
 	default:
-		ast.Inspect(s, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok {
-				applyCall(st, call, artIdent, errIdent)
-			}
-			return true
+		inspectInvokedCalls(s, func(call *ast.CallExpr) {
+			applyCall(st, call, artIdent, errIdent)
 		})
 	}
+}
+
+func isErrNilCmp(e ast.Expr, errIdent string, op token.Token) bool {
+	bin, ok := e.(*ast.BinaryExpr)
+	if !ok || bin.Op != op {
+		return false
+	}
+	return (isIdentNamed(bin.X, errIdent) && isIdentNamed(bin.Y, "nil")) ||
+		(isIdentNamed(bin.Y, errIdent) && isIdentNamed(bin.X, "nil"))
+}
+
+func switchClauseIsError(cc *ast.CaseClause, siblings []ast.Stmt, errIdent string, tag ast.Expr) bool {
+	if cc == nil {
+		return false
+	}
+	if isIdentNamed(tag, errIdent) {
+		if cc.List == nil {
+			return true
+		}
+		for _, expr := range cc.List {
+			if isIdentNamed(expr, "nil") {
+				return false
+			}
+		}
+		return true
+	}
+	var sawNeq, sawEql bool
+	for _, s := range siblings {
+		other, ok := s.(*ast.CaseClause)
+		if !ok {
+			continue
+		}
+		for _, expr := range other.List {
+			if isErrNilCmp(expr, errIdent, token.NEQ) {
+				sawNeq = true
+			}
+			if isErrNilCmp(expr, errIdent, token.EQL) {
+				sawEql = true
+			}
+		}
+	}
+	if cc.List == nil {
+		if sawNeq && !sawEql {
+			return false
+		}
+		if sawEql && !sawNeq {
+			return true
+		}
+		return false
+	}
+	for _, expr := range cc.List {
+		if isErrNilCmp(expr, errIdent, token.NEQ) {
+			return true
+		}
+		if isErrNilCmp(expr, errIdent, token.EQL) {
+			return false
+		}
+	}
+	return false
 }
 
 func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]pathState) {
@@ -2817,6 +3235,8 @@ func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]p
 	switch x := s.(type) {
 	case *ast.BlockStmt:
 		walkSeq(append(append([]ast.Stmt{}, x.List...), rest...), st, artIdent, errIdent, out)
+	case *ast.DeferStmt:
+		walkSeq(rest, st, artIdent, errIdent, out)
 	case *ast.IfStmt:
 		if x.Init != nil {
 			applyStmt(&st, x.Init, artIdent, errIdent)
@@ -2842,17 +3262,48 @@ func walkSeq(stmts []ast.Stmt, st pathState, artIdent, errIdent string, out *[]p
 			}
 			return
 		}
-		thenSt := clonePathState(st)
-		var thenDone []pathState
-		walkSeq(blockList(x.Body), thenSt, artIdent, errIdent, &thenDone)
-		for _, p := range thenDone {
-			walkSeq(rest, p, artIdent, errIdent, out)
+		// A non-error guard (if len(art.Stdout) > 0 { write }) must not
+		// fork an else-path that looks like a missing write. Union the
+		// invoked calls from both branches into this path.
+		applyStmt(&st, x, artIdent, errIdent)
+		walkSeq(rest, st, artIdent, errIdent, out)
+	case *ast.SwitchStmt:
+		if x.Init != nil {
+			applyStmt(&st, x.Init, artIdent, errIdent)
+			if st.sawExit {
+				*out = append(*out, st)
+				return
+			}
 		}
-		elseSt := clonePathState(st)
-		var elseDone []pathState
-		walkSeq(blockList(elseAsBlock(x.Else)), elseSt, artIdent, errIdent, &elseDone)
-		for _, p := range elseDone {
-			walkSeq(rest, p, artIdent, errIdent, out)
+		if x.Tag != nil {
+			applyExpr(&st, x.Tag, artIdent, errIdent)
+			if st.sawExit {
+				*out = append(*out, st)
+				return
+			}
+		}
+		clauses := []ast.Stmt(nil)
+		if x.Body != nil {
+			clauses = x.Body.List
+		}
+		if len(clauses) == 0 {
+			walkSeq(rest, st, artIdent, errIdent, out)
+			return
+		}
+		for _, stmt := range clauses {
+			cc, ok := stmt.(*ast.CaseClause)
+			if !ok {
+				continue
+			}
+			clauseSt := clonePathState(st)
+			if switchClauseIsError(cc, clauses, errIdent, x.Tag) {
+				clauseSt.tookErrorBranch = true
+			}
+			var done []pathState
+			walkSeq(cc.Body, clauseSt, artIdent, errIdent, &done)
+			for _, p := range done {
+				walkSeq(rest, p, artIdent, errIdent, out)
+			}
 		}
 	case *ast.ReturnStmt:
 		*out = append(*out, st)
@@ -2930,10 +3381,11 @@ func exprIsOsArgsSlice(e ast.Expr, aliases map[string]bool) bool {
 }
 
 type identBinding struct {
-	pos    token.Pos
-	name   string
-	osArgs bool
-	lit    *ast.CompositeLit
+	pos     token.Pos
+	name    string
+	osArgs  bool
+	osStdin bool
+	lit     *ast.CompositeLit
 }
 
 func collectIdentBindings(fn *ast.FuncDecl) []identBinding {
@@ -2945,6 +3397,8 @@ func collectIdentBindings(fn *ast.FuncDecl) []identBinding {
 		b := identBinding{pos: pos, name: name}
 		if isOsArgsSlicedFromOne(rhs) {
 			b.osArgs = true
+		} else if isOsStream(rhs, "Stdin") {
+			b.osStdin = true
 		} else if lit, ok := rhs.(*ast.CompositeLit); ok {
 			b.lit = lit
 		}
@@ -2989,38 +3443,81 @@ func collectIdentBindings(fn *ast.FuncDecl) []identBinding {
 	return out
 }
 
-func aliasesAt(bindings []identBinding, at token.Pos) (map[string]bool, map[string]*ast.CompositeLit) {
-	aliases := map[string]bool{}
-	lits := map[string]*ast.CompositeLit{}
+func aliasesAt(bindings []identBinding, at token.Pos) (argsAliases, stdinAliases map[string]bool, lits map[string]*ast.CompositeLit) {
+	argsAliases = map[string]bool{}
+	stdinAliases = map[string]bool{}
+	lits = map[string]*ast.CompositeLit{}
 	for _, b := range bindings {
 		if b.pos >= at {
 			break
 		}
-		if b.osArgs {
-			aliases[b.name] = true
-			delete(lits, b.name)
-			continue
-		}
-		aliases[b.name] = false
+		argsAliases[b.name] = b.osArgs
+		stdinAliases[b.name] = b.osStdin
 		if b.lit != nil {
 			lits[b.name] = b.lit
 		} else {
 			delete(lits, b.name)
 		}
 	}
-	return aliases, lits
+	return argsAliases, stdinAliases, lits
 }
 
-func exprIsInvocationFromOsArgs(e ast.Expr, aliases map[string]bool, lits map[string]*ast.CompositeLit) bool {
+func exprIsOsStdin(e ast.Expr, aliases map[string]bool) bool {
+	if isOsStream(e, "Stdin") {
+		return true
+	}
+	id, ok := e.(*ast.Ident)
+	return ok && aliases[id.Name]
+}
+
+func invocationLitStdinFromOsStdin(lit *ast.CompositeLit, aliases map[string]bool) bool {
+	if lit == nil {
+		return false
+	}
+	if !compositeHasKeyedElts(lit) {
+		if len(lit.Elts) < 2 {
+			return false
+		}
+		return exprIsOsStdin(lit.Elts[1], aliases)
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Stdin" {
+			continue
+		}
+		return exprIsOsStdin(kv.Value, aliases)
+	}
+	return false
+}
+
+func exprIsInvocationArgsFromOsArgs(e ast.Expr, aliases map[string]bool, lits map[string]*ast.CompositeLit) bool {
 	switch x := e.(type) {
 	case *ast.CompositeLit:
 		return invocationLitArgsFromOsArgsSlice(x, aliases)
 	case *ast.UnaryExpr:
 		if x.Op == token.AND {
-			return exprIsInvocationFromOsArgs(x.X, aliases, lits)
+			return exprIsInvocationArgsFromOsArgs(x.X, aliases, lits)
 		}
 	case *ast.Ident:
 		return invocationLitArgsFromOsArgsSlice(lits[x.Name], aliases)
+	}
+	return false
+}
+
+func exprIsInvocationStdinFromOsStdin(e ast.Expr, aliases map[string]bool, lits map[string]*ast.CompositeLit) bool {
+	switch x := e.(type) {
+	case *ast.CompositeLit:
+		return invocationLitStdinFromOsStdin(x, aliases)
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			return exprIsInvocationStdinFromOsStdin(x.X, aliases, lits)
+		}
+	case *ast.Ident:
+		return invocationLitStdinFromOsStdin(lits[x.Name], aliases)
 	}
 	return false
 }
@@ -3046,11 +3543,15 @@ func runWiringInvocationProblems(fn *ast.FuncDecl) []string {
 	if len(call.Args) != 1 {
 		return []string{"RunWiring is not passed a single Invocation"}
 	}
-	aliases, lits := aliasesAt(collectIdentBindings(fn), call.Pos())
-	if !exprIsInvocationFromOsArgs(call.Args[0], aliases, lits) {
-		return []string{"RunWiring's Invocation.Args does not derive from os.Args[1:]. An empty Invocation, unsliced os.Args, an unrelated slice, or an alias assigned AFTER the call drops the operator's argv"}
+	argsAliases, stdinAliases, lits := aliasesAt(collectIdentBindings(fn), call.Pos())
+	var problems []string
+	if !exprIsInvocationArgsFromOsArgs(call.Args[0], argsAliases, lits) {
+		problems = append(problems, "RunWiring's Invocation.Args does not derive from os.Args[1:]. An empty Invocation, unsliced os.Args, an unrelated slice, or an alias assigned AFTER the call drops the operator's argv")
 	}
-	return nil
+	if !exprIsInvocationStdinFromOsStdin(call.Args[0], stdinAliases, lits) {
+		problems = append(problems, "RunWiring's Invocation.Stdin is not os.Stdin (or an alias assigned before the call). Omitting Stdin leaves it nil, so git diff | classify is the empty-diff case; the in-process nil-Stdin row must stay that case and the body cannot substitute os.Stdin for nil")
+	}
+	return problems
 }
 
 // mainForwardingProblems walks main's body for clause 8 data flow from the
@@ -3162,7 +3663,7 @@ func TestSeal_Wiring_MainForwardingAnalysisJudgesDataFlow(t *testing.T) {
 
 	honest := parseMainSnippet(t, `package main
 func main() {
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	code := int(art.ExitCode)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -3182,7 +3683,7 @@ func main() {
 	_ = os.Stdout
 	_ = os.Stderr
 	_ = exitInternal
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	_ = art.ExitCode
 	_ = art.Stdout
 	_ = art.Stderr
@@ -3196,7 +3697,7 @@ func main() {
 
 	unrelated := parseMainSnippet(t, `package main
 func main() {
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	os.Stdout.Write([]byte("nope"))
 	os.Stderr.Write([]byte("nope"))
 	os.Exit(int(art.ExitCode))
@@ -3209,7 +3710,7 @@ func main() {
 
 	discardedErr := parseMainSnippet(t, `package main
 func main() {
-	art, _ := RunWiring(Invocation{Args: os.Args[1:]})
+	art, _ := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	os.Stdout.Write(art.Stdout)
 	os.Stderr.Write(art.Stderr)
 	os.Exit(int(art.ExitCode))
@@ -3220,7 +3721,7 @@ func main() {
 
 	overwriteWrongBranch := parseMainSnippet(t, `package main
 func main() {
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	code := int(art.ExitCode)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -3237,7 +3738,7 @@ func main() {
 
 	lastWriteClears := parseMainSnippet(t, `package main
 func main() {
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	code := int(art.ExitCode)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -3308,7 +3809,7 @@ func main() {
 
 	slicedAway := parseMainSnippet(t, `package main
 func main() {
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitInternal)
@@ -3323,7 +3824,7 @@ func main() {
 
 	timesZero := parseMainSnippet(t, `package main
 func main() {
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	code := int(art.ExitCode) * 0
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -3341,7 +3842,7 @@ func main() {
 	lateAlias := parseMainSnippet(t, `package main
 func main() {
 	argv := []string{"classify"}
-	art, err := RunWiring(Invocation{Args: argv})
+	art, err := RunWiring(Invocation{Args: argv, Stdin: os.Stdin})
 	argv = os.Args[1:]
 	code := int(art.ExitCode)
 	if err != nil {
@@ -3360,7 +3861,8 @@ func main() {
 	aliasBefore := parseMainSnippet(t, `package main
 func main() {
 	argv := os.Args[1:]
-	art, err := RunWiring(Invocation{Args: argv})
+	in := os.Stdin
+	art, err := RunWiring(Invocation{Args: argv, Stdin: in})
 	code := int(art.ExitCode)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -3372,7 +3874,115 @@ func main() {
 	os.Exit(code)
 }`)
 	if problems := mainForwardingProblems(aliasBefore); len(problems) != 0 {
-		t.Fatalf("CONTROL: argv := os.Args[1:] before the call must still pass, got %v", problems)
+		t.Fatalf("CONTROL: argv := os.Args[1:] and in := os.Stdin before the call must still pass, got %v", problems)
+	}
+
+	omitsStdin := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := runWiringInvocationProblems(omitsStdin); len(problems) == 0 {
+		t.Fatal("CONTROL: RunWiring(Invocation{Args: os.Args[1:]}) omitting Stdin must fail — that body leaves Stdin nil and cannot honour git diff | classify")
+	}
+
+	localAlias := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
+	out := art.Stdout
+	errb := art.Stderr
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(out)
+		os.Stderr.Write(errb)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(localAlias); len(problems) != 0 {
+		t.Fatalf("CONTROL: a value-preserving local binding of art.Stdout/.Stderr must pass, got %v", problems)
+	}
+
+	wrapper := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		io.Copy(os.Stdout, bytes.NewReader(art.Stdout))
+		io.Copy(os.Stderr, bytes.NewReader(art.Stderr))
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(wrapper); len(problems) != 0 {
+		t.Fatalf("CONTROL: io.Copy(os.Stdout, bytes.NewReader(art.Stdout)) must pass — a single-argument wrapper is still forwarding, got %v", problems)
+	}
+
+	guarded := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		if len(art.Stdout) > 0 {
+			os.Stdout.Write(art.Stdout)
+		}
+		if len(art.Stderr) > 0 {
+			os.Stderr.Write(art.Stderr)
+		}
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(guarded); len(problems) != 0 {
+		t.Fatalf("CONTROL: a guarded write of the same field must pass, got %v", problems)
+	}
+
+	switchErr := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
+	code := int(art.ExitCode)
+	switch {
+	case err != nil:
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	default:
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(switchErr); len(problems) != 0 {
+		t.Fatalf("CONTROL: switch { case err != nil: ... default: writes } must pass, got %v", problems)
+	}
+
+	deferred := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
+	code := int(art.ExitCode)
+	if err != nil {
+		code = exitInternal
+	}
+	defer os.Stdout.Write(art.Stdout)
+	defer os.Stderr.Write(art.Stderr)
+	defer fmt.Fprintln(os.Stderr, err)
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(deferred); len(problems) == 0 {
+		t.Fatal("CONTROL: deferred Stdout/Stderr/error writes followed by os.Exit must redden — Go does not run defers when os.Exit terminates the process")
 	}
 
 	helper := snippetFunc(t, `package main
@@ -3402,7 +4012,7 @@ func main() {}
 	}
 	honestMain := parseMainSnippet(t, `package main
 func main() {
-	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitInternal)
@@ -3461,6 +4071,82 @@ func TestSeal_Wiring_CapabilityProbeMatcherRejectsTwoSubstrings(t *testing.T) {
 	}
 	if problems := capabilityProbeProblems(incomplete, exitOK); len(problems) == 0 {
 		t.Fatal("CONTROL: exit 0 with a non-empty missing list must redden")
+	}
+
+	allFalse, err := json.Marshal(CapabilityReport{
+		ProbeVersion:     probeVersion,
+		Producer:         "cmd/classify",
+		Capabilities:     Capabilities{},
+		ContractVersions: []int{int(ContractV1), int(ContractV2)},
+		Missing:          []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if problems := capabilityProbeProblems(allFalse, exitOK); len(problems) == 0 {
+		t.Fatal("CONTROL: all-false capabilities with missing: [] and exit 0 must redden — key presence is not a truthful probe")
+	}
+}
+
+// TestSeal_Wiring_RunWiringWireMatcherRejectsShapeOnly is GREEN today: it
+// judges the wire decoder, not RunWiring. A v2 response with
+// response_version 0, a nested classification carrying only
+// contract_version, and arbitrary run-state/sidecar bytes used to pass
+// because the mapping rows checked outer keys, digests, paths, and
+// filesystem agreement.
+func TestSeal_Wiring_RunWiringWireMatcherRejectsShapeOnly(t *testing.T) {
+	defer red(t)
+
+	var row wiringRow
+	for _, r := range wiringRows() {
+		if r.name == "v2/json/out" {
+			row = r
+			break
+		}
+	}
+	if row.name == "" {
+		t.Fatal("CONTROL: wiringRows has no v2/json/out")
+	}
+
+	bed := newClassifyBed(t)
+	stdout, err := json.Marshal(map[string]any{
+		"classification":         map[string]any{"contract_version": 2},
+		"computed_config_sha256": bed.sha256Of(t, bed.cfgPath),
+		"computed_diff_sha256":   bed.sha256Of(t, bed.diffPath),
+		"response_version":       0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runBytes := []byte(`{"schema_version":1,"status":"seeded-by-the-seal"}` + "\n")
+	sidecarBytes := []byte(`{"schema_version":1,"response":{"seeded":"by the seal"}}` + "\n")
+	fake := Artifacts{
+		ExitCode: exitOK,
+		Stdout:   stdout,
+		RunState: FileArtifact{
+			Path:  bed.outPath,
+			State: ArtifactWritten,
+			Bytes: runBytes,
+		},
+		V2Sidecar: FileArtifact{
+			Path:  V2SidecarPath(bed.outPath),
+			State: ArtifactWritten,
+			Bytes: sidecarBytes,
+		},
+	}
+	if problems := wiringWireProblems(row, bed, fake); len(problems) == 0 {
+		t.Fatal("CONTROL: response_version 0, nested classification only contract_version, and arbitrary run-state/sidecar bytes must redden the wire matcher")
+	}
+
+	live := bed.driveLive(t, "2", true, true)
+	if live.ExitCode != exitOK {
+		t.Fatalf("CONTROL: live v2/json/out exited %d:\n%s", live.ExitCode, live.Stdout)
+	}
+	if problems := wiringWireProblems(row, bed, live); len(problems) != 0 {
+		t.Fatalf("CONTROL: live run() v2/json/out must pass the wire matcher, got %v", problems)
+	}
+	if problems := wiringOracleProblems(row, live, live); len(problems) != 0 {
+		t.Fatalf("CONTROL: live compared with itself must agree, got %v", problems)
 	}
 }
 
