@@ -647,7 +647,7 @@ tasks:
     role_diff_loop: not_enabled
     verified: true
     verification_iterations: 0
-    notes: "Panel APPROVED at rounds 10, 12 and 17 and blocked between them; not settled. 11 rounds by hand after 7 dispatched. Every finding real, most created by the previous round's repair. Root cause measured: 974 lines and 111 absolute claims, so each round samples a few. Recommendation unchanged: split into units the size of GO-1-1's ~300-line contract, which reached unanimous approve and held."
+    notes: "All six contract files have passed their panel. Split from one 974-line file into six on 2026-09-01 after 7 dispatched + ~25 hand rounds failed to converge it; the split made findings local and corroborated, and fixing by DELETION rather than rewriting cut the rate at which repairs manufactured new defects. Awaiting one final simultaneous six-file verification before Done."
   - key: GO-2-2
     summary: seals — a tracked binary that disagrees with its source is red
     description: |

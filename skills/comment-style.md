@@ -105,6 +105,72 @@ compiles, lints, or ships:
 
 A cleanup task leaves every directive byte-identical.
 
+## 5a. Comments inside string literals
+
+Code often embeds another language in a string: SQL DDL, a shell script, a
+config blob. Those bodies have their own comments (`--` in SQL, `#` in
+shell), and they rot the same way.
+
+You may rewrite them under the same rules, but they are **string content,
+not comments**, so the bar is higher:
+
+- Every executable line of the embedded language must stay byte-identical.
+  Only its comment lines may change.
+- First confirm nothing depends on the exact text: no checksum, hash,
+  golden file, migration registry, or equality assertion over the string.
+  If anything does, leave it alone.
+- Say so explicitly in the task summary and the commit message. A reviewer
+  scanning for "comments only" will otherwise see a changed literal and
+  have to re-derive that it is safe.
+
+## 5b. Twinned packages must be edited on both sides
+
+Three package pairs in some repos are maintained as byte-identical Go
+sources, differing only in each system's own import paths. Static tests
+police them (`twinparity_static_test.go`, `TestHostservicesTwinsAreMirrored`
+and friends):
+
+- `systems/{hub,spoke}/lib/components/gateway-plugin-handler/hostservices`
+- `systems/{hub,spoke}/game-work-node/retentionjanitor`
+- `systems/hub/operations-gateway/internal/wellknown/pmadmin`
+  and `systems/spoke/player-gateway/internal/wellknown/pmadmin`
+
+A comment rewritten on one twin only still compiles and still vets clean.
+The parity test is the only thing that catches it, and it is a test, not a
+build error. This shipped as a real breakage in live-gaming-platform on 2026-09-01.
+
+So: if your scope touches one twin, apply the identical edit to the other,
+even when the other side is nominally another task's scope. Take the file
+list and the permitted substitutions from that package's
+`twinparity_static_test.go` (`twinFileNames` and `twinIdentityPairs`) —
+they are the contract. The repo gate runs these parity tests, so a
+one-sided edit fails the task.
+
+## 5c. User-facing text in string literals
+
+Beyond embedded languages (5a), rot also hides in strings a person reads
+at runtime: Prometheus metric `Help` text, log messages, error strings,
+and test assertion failure messages. `spec §5.2` is as useless in a
+Grafana tooltip as it is in a comment.
+
+You may clean these under the same rules as 5a, plus:
+
+- Never change an identifier a machine keys on: metric NAMES and label
+  names, error sentinels compared with `errors.Is`, log field keys,
+  anything parsed by an alert, dashboard query, or log pipeline. Only the
+  human-readable prose changes.
+- Confirm nothing asserts on the text. A test that matches an error string
+  or a metric's Help makes that string a contract; leave it.
+- Split by audience. OBSERVABLE strings -- metric Help, log messages,
+  error text a user or dashboard sees -- change ONLY to remove rot.
+  Restyling them (respacing a list, swapping a slash for 'or') is not in
+  scope: the churn costs a reviewer attention and buys nothing.
+- INTERNAL strings -- test assertion failure messages -- may also be
+  condensed under the section 3 and 4 rules. A six-line assertion message
+  fails the reader exactly the way a six-line comment does.
+- Metric Help is observable output. Cleaning it is in scope, but say so in
+  the summary and commit message so a reviewer sees it deliberately.
+
 ## 6. Tests
 
 - A test gets a comment only when its name cannot carry the intent alone;
