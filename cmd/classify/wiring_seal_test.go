@@ -36,6 +36,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -880,8 +881,15 @@ func TestSeal_Wiring_RunWiringHonoursTheMapping(t *testing.T) {
 // resolve against Invocation.Dir, which is not the process working
 // directory, and the process directory does not change.
 //
-// RED today on the stub. A body that ignores inv.Dir and resolves against
-// cwd would classify the decoy bed and write artifacts there.
+// Judged on WHICH TREE WAS CONSUMED, not only where -out landed: the row
+// runs under -contract-version 2 -json so computed_config_sha256 /
+// computed_diff_sha256 must equal SHA-256 of the files staged in invDir,
+// the reported worktree must resolve under invDir, and the cwd decoys
+// (valid, different contents and digests) must stay byte-identical.
+//
+// RED today on the stub. A body that resolves only -out against inv.Dir
+// and opens -config/-worktree/diff against cwd classifies the decoy bed
+// and writes that answer into the invocation directory.
 func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
 	defer red(t)
 
@@ -904,6 +912,7 @@ func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture config: %v", err)
 	}
+	invDiff := []byte(diffFor(walletPath))
 
 	const (
 		relCfg      = "risk-paths.json"
@@ -914,13 +923,28 @@ func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(invDir, relCfg), cfgBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(invDir, relDiff), []byte(diffFor(walletPath)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(invDir, relDiff), invDiff, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// writeRunState is a bare os.WriteFile with no MkdirAll. The row creates
+	// the parent so a body that correctly resolves -out against inv.Dir is
+	// not killed by log.Fatalf, which would abort the whole test binary.
+	if err := os.MkdirAll(filepath.Join(invDir, "artifacts"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
 	decoyCfg := []byte(`{"schema_version":1,"unmatched_risk":"low","rules":[{"id":"decoy","paths":["never-matches-this"],"risk":"low"}]}` + "\n")
 	decoyDiff := []byte(diffFor("docs/README.md"))
 	decoyOut := []byte(`{"schema_version":1,"status":"decoy-cwd"}` + "\n")
+	if bytes.Equal(decoyCfg, cfgBytes) {
+		t.Fatal("CONTROL: decoy config must differ from the Invocation.Dir config")
+	}
+	if bytes.Equal(decoyDiff, invDiff) {
+		t.Fatal("CONTROL: decoy diff must differ from the Invocation.Dir diff")
+	}
+	if sha256Bytes(decoyCfg) == sha256Bytes(cfgBytes) || sha256Bytes(decoyDiff) == sha256Bytes(invDiff) {
+		t.Fatal("CONTROL: decoy digests must differ from the Invocation.Dir digests")
+	}
 	if err := os.WriteFile(filepath.Join(cwdDir, relCfg), decoyCfg, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -933,6 +957,9 @@ func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwdDir, relOut), decoyOut, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	beforeDecoyCfg := snap(t, filepath.Join(cwdDir, relCfg))
+	beforeDecoyDiff := snap(t, filepath.Join(cwdDir, relDiff))
+	beforeDecoyOut := snap(t, filepath.Join(cwdDir, relOut))
 
 	args := []string{
 		"-no-git",
@@ -940,7 +967,7 @@ func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
 		"-config", relCfg,
 		"-out", relOut,
 		"-json",
-		"-" + flagContractVersion, "1",
+		"-" + flagContractVersion, "2",
 		relDiff,
 	}
 	got, runErr := RunWiring(Invocation{Args: args, Dir: invDir})
@@ -964,16 +991,62 @@ func TestSeal_Wiring_RunWiringResolvesPathsAgainstInvocationDir(t *testing.T) {
 	if !fileExists(wantOut) {
 		t.Errorf("did not write the run-state under Invocation.Dir at %s", wantOut)
 	}
-	afterDecoy := snap(t, filepath.Join(cwdDir, relOut))
-	if !afterDecoy.exists || !bytes.Equal(afterDecoy.bytes, decoyOut) {
-		t.Errorf("resolved -out against the process working directory (decoy run-state was rewritten)")
+	if got.RunState.Path != wantOut {
+		t.Errorf("got.RunState.Path = %q, want exactly the resolved -out path %q", got.RunState.Path, wantOut)
 	}
 	if got.RunState.State != ArtifactWritten {
 		t.Errorf("run-state state = %s, want written (the file under Invocation.Dir)", got.RunState.State)
 	}
-	if got.RunState.Path != "" && !pathUnderDir(got.RunState.Path, invDir) {
-		t.Errorf("reported run-state path %q is not under Invocation.Dir %q", got.RunState.Path, invDir)
+
+	afterDecoyCfg := snap(t, filepath.Join(cwdDir, relCfg))
+	afterDecoyDiff := snap(t, filepath.Join(cwdDir, relDiff))
+	afterDecoyOut := snap(t, filepath.Join(cwdDir, relOut))
+	if !afterDecoyCfg.exists || !bytes.Equal(afterDecoyCfg.bytes, beforeDecoyCfg.bytes) {
+		t.Errorf("cwd decoy config was rewritten — a body that opens -config against the process cwd mutates the decoy bed")
 	}
+	if !afterDecoyDiff.exists || !bytes.Equal(afterDecoyDiff.bytes, beforeDecoyDiff.bytes) {
+		t.Errorf("cwd decoy diff was rewritten — a body that opens the positional diff against the process cwd mutates the decoy bed")
+	}
+	if !afterDecoyOut.exists || !bytes.Equal(afterDecoyOut.bytes, beforeDecoyOut.bytes) {
+		t.Errorf("resolved -out against the process working directory (decoy run-state was rewritten)")
+	}
+
+	assertStdoutShape(t, "clause-7/v2/json", shapeV2Wrapper, got.Stdout)
+	if sameStrings(topKeys(t, got.Stdout), v2WrapperKeys) {
+		var w ResponseWrapper
+		if err := json.Unmarshal(got.Stdout, &w); err != nil {
+			t.Errorf("stdout has the wrapper's keys but does not unmarshal as a ResponseWrapper: %v", err)
+		} else {
+			if want := sha256Bytes(cfgBytes); w.ComputedConfigSHA256 != want {
+				t.Errorf("computed_config_sha256 = %q, want SHA-256 of the config under Invocation.Dir = %q (cwd decoy is %q). A body that resolves only -out against inv.Dir still classifies the decoy table.",
+					w.ComputedConfigSHA256, want, sha256Bytes(decoyCfg))
+			}
+			if want := sha256Bytes(invDiff); w.ComputedDiffSHA256 != want {
+				t.Errorf("computed_diff_sha256 = %q, want SHA-256 of the diff under Invocation.Dir = %q (cwd decoy is %q). A body that resolves only -out against inv.Dir still classifies the decoy diff.",
+					w.ComputedDiffSHA256, want, sha256Bytes(decoyDiff))
+			}
+			var payload ClassificationV2
+			if err := json.Unmarshal(w.Classification, &payload); err != nil {
+				t.Errorf("wrapped classification is not a v2 payload: %v", err)
+			} else if !payload.FinancialPathsTouched {
+				t.Errorf("financial_paths_touched = false; the Invocation.Dir bed is the wallet money path against the example table. The cwd decoy is a docs diff against a never-matches table — classifying that bed reports financial_paths_touched=false.")
+			}
+		}
+	}
+
+	if len(got.RunState.Bytes) > 0 {
+		var rs RunState
+		if err := json.Unmarshal(got.RunState.Bytes, &rs); err != nil {
+			t.Errorf("run-state is not a RunState: %v\n%s", err, got.RunState.Bytes)
+		} else if rs.Repo.Worktree == "" || (!pathUnderDir(rs.Repo.Worktree, invDir) && !sameResolvedPath(rs.Repo.Worktree, invDir)) {
+			t.Errorf("reported worktree %q does not resolve under Invocation.Dir %q — relative -worktree must join against inv.Dir, not the process cwd", rs.Repo.Worktree, invDir)
+		}
+	}
+}
+
+func sha256Bytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func sameResolvedPath(a, b string) bool {
@@ -996,6 +1069,124 @@ func pathUnderDir(p, dir string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+// TestSeal_Wiring_RunWiringHonoursStdin seals Invocation.Stdin through
+// RunWiring. Every other mapping row passes the diff as a file argument, so
+// the shipped default (`git diff | classify`, advertised as "reads stdin
+// when no file given") is otherwise unsealed. nil means no diff on stdin
+// and is a different fact from an empty reader.
+//
+// RED today on the stub. A body that ignores inv.Stdin cannot classify the
+// fixture bytes with no file argument, and cannot tell nil from empty.
+func TestSeal_Wiring_RunWiringHonoursStdin(t *testing.T) {
+	bed := newClassifyBed(t)
+	diffBytes, err := os.ReadFile(bed.diffPath)
+	if err != nil {
+		t.Fatalf("read staged diff: %v", err)
+	}
+	base := []string{
+		"-no-git",
+		"-worktree", bed.dir,
+		"-config", bed.cfgPath,
+		"-json",
+		"-" + flagContractVersion, "1",
+	}
+
+	live := bed.driveLive(t, "1", true, false)
+	if live.ExitCode != exitOK {
+		t.Fatalf("CONTROL: file-argument classify on this bed exited %d, want 0:\n%s", live.ExitCode, live.Stdout)
+	}
+	liveVerdict := v1Verdict(t, live.Stdout)
+	if liveVerdict.Risk == "" {
+		t.Fatal("CONTROL: file-argument v1 JSON on this bed has no risk — the stdin comparison would be vacuous")
+	}
+
+	t.Run("stdin-fixture-no-file", func(t *testing.T) {
+		defer red(t)
+		got, err := RunWiring(Invocation{Args: append([]string{}, base...), Stdin: bytes.NewReader(diffBytes), Dir: bed.dir})
+		if stubRED(t, err, "RunWiring with the fixture on Stdin and no file argument must classify those bytes (same verdict as the file-argument row on this bed)") {
+			return
+		}
+		if got.ExitCode != exitOK {
+			t.Errorf("stdin-fixture exited %d, want 0:\nstdout=%s\nstderr=%s", got.ExitCode, got.Stdout, got.Stderr)
+		}
+		assertStdoutShape(t, "stdin-fixture", shapeV1Payload, got.Stdout)
+		gotVerdict := v1Verdict(t, got.Stdout)
+		if gotVerdict.Risk != liveVerdict.Risk || gotVerdict.Financial != liveVerdict.Financial || !sameStrings(gotVerdict.Files, liveVerdict.Files) {
+			t.Errorf("stdin-fixture verdict (risk=%q financial=%v files=%v) does not match the file-argument row on this bed (risk=%q financial=%v files=%v). Stdin must carry the same bytes the file argument would have.",
+				gotVerdict.Risk, gotVerdict.Financial, gotVerdict.Files, liveVerdict.Risk, liveVerdict.Financial, liveVerdict.Files)
+		}
+	})
+
+	var nilArt Artifacts
+	t.Run("stdin-nil-no-file", func(t *testing.T) {
+		defer red(t)
+		got, err := RunWiring(Invocation{Args: append([]string{}, base...), Stdin: nil, Dir: bed.dir})
+		if stubRED(t, err, "RunWiring with Stdin nil and no file argument must exit %d with the %q problem", exitInvalid, "diff is empty") {
+			return
+		}
+		nilArt = got
+		if got.ExitCode != ExitCode(exitInvalid) {
+			t.Errorf("stdin-nil exited %d, want %d", got.ExitCode, exitInvalid)
+		}
+		report := string(got.Stdout) + string(got.Stderr)
+		if !strings.Contains(report, "diff is empty") {
+			t.Errorf("stdin-nil did not report the %q problem:\nstdout=%s\nstderr=%s", "diff is empty", got.Stdout, got.Stderr)
+		}
+		if got.ExitCode == exitOK {
+			t.Errorf("stdin-nil classified successfully; nil means no diff on stdin")
+		}
+	})
+
+	t.Run("stdin-empty-reader-no-file", func(t *testing.T) {
+		defer red(t)
+		got, err := RunWiring(Invocation{Args: append([]string{}, base...), Stdin: bytes.NewReader(nil), Dir: bed.dir})
+		if stubRED(t, err, "RunWiring with an empty Stdin reader and no file argument must refuse (piped nothing) and must be a different fact from Stdin nil") {
+			return
+		}
+		if got.ExitCode != ExitCode(exitInvalid) {
+			t.Errorf("empty stdin reader exited %d, want %d (piped nothing is an empty diff):\nstdout=%s\nstderr=%s", got.ExitCode, exitInvalid, got.Stdout, got.Stderr)
+		}
+		emptyReport := string(got.Stdout) + string(got.Stderr)
+		if !strings.Contains(emptyReport, "diff is empty") {
+			t.Errorf("empty stdin reader did not report the %q problem:\nstdout=%s\nstderr=%s", "diff is empty", got.Stdout, got.Stderr)
+		}
+		gotVerdict := v1WireVerdict{}
+		if json.Valid(bytes.TrimSpace(got.Stdout)) {
+			var cls Classification
+			if json.Unmarshal(got.Stdout, &cls) == nil {
+				gotVerdict = v1WireVerdict{Risk: cls.Risk, Financial: cls.FinancialPathsTouched}
+			}
+		}
+		if got.ExitCode == exitOK && gotVerdict.Risk == liveVerdict.Risk && gotVerdict.Financial == liveVerdict.Financial {
+			t.Errorf("empty stdin reader reproduced the file-argument verdict; an empty reader is piped nothing, not the fixture")
+		}
+		nilReport := string(nilArt.Stdout) + string(nilArt.Stderr)
+		if got.ExitCode == nilArt.ExitCode && emptyReport == nilReport && got.ExitCode == exitOK {
+			t.Errorf("empty reader and nil stdin both classified successfully — Stdin was not observed, so the two facts collapsed")
+		}
+	})
+}
+
+type v1WireVerdict struct {
+	Risk      string
+	Financial bool
+	Files     []string
+}
+
+func v1Verdict(t *testing.T, stdout []byte) v1WireVerdict {
+	t.Helper()
+	var cls Classification
+	if err := json.Unmarshal(stdout, &cls); err != nil {
+		t.Fatalf("v1 stdout is not a Classification: %v\n%s", err, stdout)
+		return v1WireVerdict{}
+	}
+	files := make([]string, 0, len(cls.ChangedFiles))
+	for _, f := range cls.ChangedFiles {
+		files = append(files, f.Path)
+	}
+	return v1WireVerdict{Risk: cls.Risk, Financial: cls.FinancialPathsTouched, Files: files}
 }
 
 // TestSeal_Wiring_RunWiringDispatchesSubcommands seals RunWiring clause 6:
@@ -1075,16 +1266,14 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if got.ExitCode != exitOK {
 			t.Errorf("init exited %d, want 0", got.ExitCode)
 		}
-		if got.RunState.State != ArtifactNotApplicable {
-			t.Errorf("init asserted a run-state artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams — ArtifactNotApplicable exactly, not Unset", got.RunState.State)
-		}
-		if got.V2Sidecar.State != ArtifactNotApplicable {
-			t.Errorf("init asserted a v2 sidecar artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams — ArtifactNotApplicable exactly, not Unset", got.V2Sidecar.State)
-		}
+		assertInitArtifactsNotApplicable(t, "init", got)
 		first, err := os.ReadFile(out)
 		if err != nil {
 			t.Errorf("init did not write the scaffold at %s: %v", out, err)
 			return
+		}
+		for _, p := range scaffoldConfigProblems(first) {
+			t.Errorf("ordinary init did not write a complete scaffold: %s\n%s", p, first)
 		}
 		if !bytes.Contains(got.Stdout, []byte("=== CLASSIFY INIT ===")) && !bytes.Contains(got.Stderr, []byte("=== CLASSIFY INIT ===")) {
 			t.Errorf("init did not print its report; stdout=%q stderr=%q", got.Stdout, got.Stderr)
@@ -1097,6 +1286,7 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if again.ExitCode != ExitCode(exitInvalid) {
 			t.Errorf("second init without -force exited %d, want %d — the refusal to overwrite is the safety property", again.ExitCode, exitInvalid)
 		}
+		assertInitArtifactsNotApplicable(t, "second init without -force", again)
 		after, err := os.ReadFile(out)
 		if err != nil {
 			t.Errorf("second init removed the scaffold: %v", err)
@@ -1120,6 +1310,7 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if got.ExitCode != ExitCode(exitInvalid) {
 			t.Errorf("init without -force over a seeded table exited %d, want %d", got.ExitCode, exitInvalid)
 		}
+		assertInitArtifactsNotApplicable(t, "init-refuses-existing-without-force", got)
 		after, err := os.ReadFile(out)
 		if err != nil {
 			t.Errorf("init without -force removed the seeded table: %v", err)
@@ -1143,6 +1334,7 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if got.ExitCode != exitOK {
 			t.Errorf("init -force exited %d, want 0", got.ExitCode)
 		}
+		assertInitArtifactsNotApplicable(t, "init-force-overwrites", got)
 		after, err := os.ReadFile(out)
 		if err != nil {
 			t.Errorf("init -force did not leave a file at %s: %v", out, err)
@@ -1151,10 +1343,51 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 		if bytes.Equal(after, seed) {
 			t.Errorf("init -force left the seeded table unchanged — -force is part of the init contract")
 		}
-		if !bytes.Contains(after, []byte(`"scaffold"`)) {
-			t.Errorf("init -force did not write a scaffold:\n%s", after)
+		for _, p := range scaffoldConfigProblems(after) {
+			t.Errorf("init -force did not write a complete scaffold: %s\n%s", p, after)
 		}
 	})
+}
+
+func assertInitArtifactsNotApplicable(t *testing.T, label string, got Artifacts) {
+	t.Helper()
+	if got.RunState.State != ArtifactNotApplicable {
+		t.Errorf("%s asserted a run-state artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams — ArtifactNotApplicable exactly, not Unset", label, got.RunState.State)
+	}
+	if got.V2Sidecar.State != ArtifactNotApplicable {
+		t.Errorf("%s asserted a v2 sidecar artifact (%s); Artifacts about init must confine themselves to ExitCode and the streams — ArtifactNotApplicable exactly, not Unset", label, got.V2Sidecar.State)
+	}
+}
+
+// scaffoldConfigProblems requires a complete, usable scaffold: valid JSON
+// that parseConfig accepts (schema, unmatched_risk, rule table), with the
+// scaffold marker set and the two TODO rules a generated table always
+// carries. A byte substring `"scaffold"` in malformed JSON does not qualify.
+func scaffoldConfigProblems(data []byte) []string {
+	if !json.Valid(bytes.TrimSpace(data)) {
+		return []string{"not valid JSON"}
+	}
+	cfg, err := parseConfig(data)
+	if err != nil {
+		return []string{fmt.Sprintf("not a usable rule table: %v", err)}
+	}
+	var problems []string
+	if !cfg.Scaffold {
+		problems = append(problems, "scaffold marker is not true")
+	}
+	if cfg.SchemaVersion != schemaVersion {
+		problems = append(problems, fmt.Sprintf("schema_version = %d, want %d", cfg.SchemaVersion, schemaVersion))
+	}
+	ids := map[string]bool{}
+	for _, r := range cfg.Rules {
+		ids[r.ID] = true
+	}
+	for _, must := range []string{"TODO-money-paths", "TODO-auth-paths"} {
+		if !ids[must] {
+			problems = append(problems, fmt.Sprintf("missing required scaffold rule %q", must))
+		}
+	}
+	return problems
 }
 
 // capabilityProbeProblems requires stdout to be a CapabilityReport, not two
@@ -1328,8 +1561,8 @@ func TestSeal_Wiring_InitStillScaffolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init did not write %s: %v", out, err)
 	}
-	if !bytes.Contains(data, []byte(`"scaffold"`)) {
-		t.Errorf("the scaffold config does not carry the scaffold marker:\n%s", data)
+	for _, p := range scaffoldConfigProblems(data) {
+		t.Errorf("CONTROL: cmdInit did not write a complete scaffold: %s\n%s", p, data)
 	}
 	if !strings.Contains(stdout, "=== CLASSIFY INIT ===") {
 		t.Errorf("init did not print its report:\n%s", stdout)
@@ -1447,6 +1680,71 @@ func TestSeal_Wiring_ParseInvocationFlagsMapsArgvToOptions(t *testing.T) {
 			},
 		},
 		{
+			name:        "no-flags-are-the-declared-defaults",
+			args:        []string{diff},
+			wantErr:     false,
+			wantResidue: []string{diff},
+			measured:    `err=<nil>; worktree=".", base="origin/main", task="", out="", config="", json=false, no-git=false, contract-version=defaultContractVersion.String(), Args()=["/tmp/seal.diff"]`,
+			check: func(t *testing.T, opts options) {
+				ref := referenceFlagSet()
+				if err := ref.Parse([]string{diff}); err != nil {
+					t.Fatalf("CONTROL: the reference FlagSet failed to parse the no-flags argv: %v", err)
+				}
+				want := map[string]string{
+					"worktree":          ".",
+					"base":              "origin/main",
+					"task":              "",
+					"out":               "",
+					"config":            "",
+					"json":              "false",
+					"no-git":            "false",
+					flagContractVersion: defaultContractVersion.String(),
+				}
+				for name, v := range want {
+					f := ref.Lookup(name)
+					if f == nil {
+						t.Fatalf("CONTROL: reference FlagSet has no -%s", name)
+					}
+					if f.DefValue != v {
+						t.Errorf("CONTROL: reference -%s DefValue = %q, want declared default %q", name, f.DefValue, v)
+					}
+					if f.Value.String() != v {
+						t.Errorf("CONTROL: reference -%s parsed to %q, want declared default %q", name, f.Value.String(), v)
+					}
+				}
+				if !sameStrings(ref.Args(), []string{diff}) {
+					t.Errorf("CONTROL: reference residue = %v, want [%q]", ref.Args(), diff)
+				}
+				if opts.worktree != "." {
+					t.Errorf("options.worktree = %q, want the declared default %q", opts.worktree, ".")
+				}
+				if opts.base != "origin/main" {
+					t.Errorf("options.base = %q, want the declared default %q", opts.base, "origin/main")
+				}
+				if opts.task != "" {
+					t.Errorf("options.task = %q, want the declared default %q", opts.task, "")
+				}
+				if opts.out != "" {
+					t.Errorf("options.out = %q, want the declared default %q", opts.out, "")
+				}
+				if opts.configPath != "" {
+					t.Errorf("options.configPath = %q, want the declared default %q", opts.configPath, "")
+				}
+				if opts.json {
+					t.Error("options.json = true, want the declared default false")
+				}
+				if opts.noGit {
+					t.Error("options.noGit = true, want the declared default false")
+				}
+				if opts.contractVersion != defaultContractVersion.String() {
+					t.Errorf("options.contractVersion = %q, want the registered default %q", opts.contractVersion, defaultContractVersion.String())
+				}
+				if !sameStrings(opts.args, []string{diff}) {
+					t.Errorf("options.args = %v, want %v", opts.args, []string{diff})
+				}
+			},
+		},
+		{
 			name:        "absent-contract-flag-is-the-default",
 			args:        []string{"-no-git", diff},
 			wantErr:     false,
@@ -1534,6 +1832,33 @@ func TestSeal_Wiring_ParseInvocationFlagsMapsArgvToOptions(t *testing.T) {
 				t.Errorf("CONTROL: the reference FlagSet does not carry -%s; it has %v", name, flagNames(ref))
 			}
 		}
+		if err := ref.Parse([]string{diff}); err != nil {
+			t.Fatalf("CONTROL: reference FlagSet failed to parse the no-flags argv: %v", err)
+		}
+		for name, want := range map[string]string{
+			"worktree":          ".",
+			"base":              "origin/main",
+			"task":              "",
+			"out":               "",
+			"config":            "",
+			"json":              "false",
+			"no-git":            "false",
+			flagContractVersion: defaultContractVersion.String(),
+		} {
+			f := ref.Lookup(name)
+			if f == nil {
+				continue
+			}
+			if f.DefValue != want {
+				t.Errorf("CONTROL: reference -%s DefValue = %q, want declared default %q", name, f.DefValue, want)
+			}
+			if f.Value.String() != want {
+				t.Errorf("CONTROL: reference -%s after a no-flags parse = %q, want declared default %q", name, f.Value.String(), want)
+			}
+		}
+		if !sameStrings(ref.Args(), []string{diff}) {
+			t.Errorf("CONTROL: reference no-flags residue = %v, want [%q]", ref.Args(), diff)
+		}
 	})
 
 	for _, c := range cases {
@@ -1592,8 +1917,12 @@ func TestSeal_Wiring_ParseInvocationFlagsMapsArgvToOptions(t *testing.T) {
 
 	t.Run("clause 4/the logger is untouched", func(t *testing.T) {
 		defer red(t)
-		oldFlags, oldPrefix := log.Flags(), log.Prefix()
-		t.Cleanup(func() { log.SetFlags(oldFlags); log.SetPrefix(oldPrefix) })
+		oldFlags, oldPrefix, oldWriter := log.Flags(), log.Prefix(), log.Writer()
+		t.Cleanup(func() {
+			log.SetFlags(oldFlags)
+			log.SetPrefix(oldPrefix)
+			log.SetOutput(oldWriter)
+		})
 		const sentinelPrefix = "seal-sentinel: "
 		log.SetFlags(log.Lshortfile)
 		log.SetPrefix(sentinelPrefix)
@@ -1604,6 +1933,9 @@ func TestSeal_Wiring_ParseInvocationFlagsMapsArgvToOptions(t *testing.T) {
 		}
 		if log.Flags() != log.Lshortfile || log.Prefix() != sentinelPrefix {
 			t.Errorf("parseInvocationFlags changed the process-wide logger (flags %d, prefix %q). Clause 4: logger state belongs to main().", log.Flags(), log.Prefix())
+		}
+		if log.Writer() != oldWriter {
+			t.Errorf("parseInvocationFlags redirected log.Writer(). Clause 4: logger state belongs to main(); clause 3 forbids log.SetOutput for the reason clause 7 gives.")
 		}
 	})
 }
@@ -1776,6 +2108,49 @@ func TestSeal_Wiring_MainForwardsTheResult(t *testing.T) {
 			t.Errorf("%s() calls os.Chdir. Clause 7: paths resolve against inv.Dir.", name)
 		}
 	}
+	for name, fn := range funcs {
+		if name == "main" {
+			continue
+		}
+		if n := countCalls(fn, isSelectorCall("log", "SetOutput")); n != 0 {
+			t.Errorf("%s() calls log.SetOutput. Clause 3 forbids process-wide redirection (and clause 4 puts logger configuration in main only).", name)
+		}
+		if n := countCalls(fn, isSelectorCall("log", "SetFlags")); n != 0 {
+			t.Errorf("%s() calls log.SetFlags. Clause 4: process-wide logger state belongs to main(), not to a function a test calls a hundred times.", name)
+		}
+		if n := countCalls(fn, isSelectorCall("log", "SetPrefix")); n != 0 {
+			t.Errorf("%s() calls log.SetPrefix. Clause 4: process-wide logger state belongs to main(), not to a function a test calls a hundred times.", name)
+		}
+	}
+	for name, fn := range funcs {
+		if assignsOsStream(fn, "Stdout") {
+			t.Errorf("%s() assigns os.Stdout. Clause 3 forbids process-wide stream redirection for the reason clause 7 gives.", name)
+		}
+		if assignsOsStream(fn, "Stderr") {
+			t.Errorf("%s() assigns os.Stderr. Clause 3 forbids process-wide stream redirection for the reason clause 7 gives.", name)
+		}
+	}
+}
+
+func assignsOsStream(fn *ast.FuncDecl, name string) bool {
+	if fn == nil || fn.Body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range as.Lhs {
+			if isOsStream(lhs, name) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 func keysOf[V any](m map[string]V) []string {
@@ -2115,7 +2490,7 @@ func peelConv(e ast.Expr) ast.Expr {
 				return e
 			}
 			switch id.Name {
-			case "int", "ExitCode":
+			case "int", "ExitCode", "string":
 				e = x.Args[0]
 			default:
 				return e
@@ -2125,6 +2500,26 @@ func peelConv(e ast.Expr) ast.Expr {
 		}
 	}
 	return e
+}
+
+// exprIsField reports whether e is obj.field after peeling parentheses and
+// value-preserving conversions (int/ExitCode/string). Slices, index
+// expressions, arithmetic and any other transformation do not qualify:
+// os.Stdout.Write(art.Stdout[:0]) mentions the field and emits nothing.
+func exprIsField(e ast.Expr, obj, field string) bool {
+	e = peelConv(e)
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != field {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == obj
+}
+
+func exprIsIdentExact(e ast.Expr, name string) bool {
+	e = peelConv(e)
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == name
 }
 
 func isWriteMethod(name string) bool {
@@ -2173,7 +2568,7 @@ func streamWriteTarget(call *ast.CallExpr) string {
 
 func callPayloadUsesField(call *ast.CallExpr, obj, field string) bool {
 	for _, a := range call.Args {
-		if exprUsesField(a, obj, field) {
+		if exprIsField(a, obj, field) {
 			return true
 		}
 	}
@@ -2215,20 +2610,17 @@ func runWiringResultBinding(fn *ast.FuncDecl) (artIdent, errIdent string, ok boo
 // originFromRHS is last-write, not a monotonic OR. An assignment whose RHS
 // is neither art.ExitCode nor exitInternal (nor an alias of one) CLEARS
 // both origins. `code := int(art.ExitCode); code = 0` therefore does not
-// still count as fromExitCode.
+// still count as fromExitCode. Arithmetic and slicing are not aliases:
+// `int(art.ExitCode) * 0` and `exitInternal * 0` clear both origins.
 func originFromRHS(rhs ast.Expr, artIdent string, origins map[string]identOrigin) identOrigin {
 	if rhs == nil {
 		return identOrigin{}
 	}
-	var o identOrigin
-	if exprUsesField(rhs, artIdent, "ExitCode") {
-		o.fromExitCode = true
+	if exprIsField(rhs, artIdent, "ExitCode") {
+		return identOrigin{fromExitCode: true}
 	}
-	if exprUsesIdent(rhs, "exitInternal") {
-		o.fromInternal = true
-	}
-	if o.fromExitCode || o.fromInternal {
-		return o
+	if exprIsIdentExact(rhs, "exitInternal") {
+		return identOrigin{fromInternal: true}
 	}
 	if id, ok := peelConv(rhs).(*ast.Ident); ok {
 		return origins[id.Name]
@@ -2277,18 +2669,17 @@ func collectIdentOrigins(fn *ast.FuncDecl, artIdent string) map[string]identOrig
 }
 
 func exitArgOrigins(arg ast.Expr, artIdent string, origins map[string]identOrigin) (fromCode, fromInternal bool) {
-	if exprUsesField(arg, artIdent, "ExitCode") {
-		fromCode = true
+	if exprIsField(arg, artIdent, "ExitCode") {
+		return true, false
 	}
-	if exprUsesIdent(arg, "exitInternal") {
-		fromInternal = true
+	if exprIsIdentExact(arg, "exitInternal") {
+		return false, true
 	}
 	if id, ok := peelConv(arg).(*ast.Ident); ok {
 		o := origins[id.Name]
-		fromCode = fromCode || o.fromExitCode
-		fromInternal = fromInternal || o.fromInternal
+		return o.fromExitCode, o.fromInternal
 	}
-	return fromCode, fromInternal
+	return false, false
 }
 
 type pathState struct {
@@ -2538,68 +2929,86 @@ func exprIsOsArgsSlice(e ast.Expr, aliases map[string]bool) bool {
 	return ok && aliases[id.Name]
 }
 
-func collectOsArgsSliceAliases(fn *ast.FuncDecl) map[string]bool {
-	aliases := map[string]bool{}
-	if fn == nil || fn.Body == nil {
-		return aliases
-	}
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		as, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for i, lhs := range as.Lhs {
-			id, ok := lhs.(*ast.Ident)
-			if !ok {
-				continue
-			}
-			var rhs ast.Expr
-			switch {
-			case len(as.Rhs) == len(as.Lhs):
-				rhs = as.Rhs[i]
-			case len(as.Rhs) == 1:
-				rhs = as.Rhs[0]
-			default:
-				continue
-			}
-			aliases[id.Name] = isOsArgsSlicedFromOne(rhs)
-		}
-		return true
-	})
-	return aliases
+type identBinding struct {
+	pos    token.Pos
+	name   string
+	osArgs bool
+	lit    *ast.CompositeLit
 }
 
-func collectInvocationLits(fn *ast.FuncDecl) map[string]*ast.CompositeLit {
-	lits := map[string]*ast.CompositeLit{}
+func collectIdentBindings(fn *ast.FuncDecl) []identBinding {
 	if fn == nil || fn.Body == nil {
-		return lits
+		return nil
+	}
+	var out []identBinding
+	record := func(pos token.Pos, name string, rhs ast.Expr) {
+		b := identBinding{pos: pos, name: name}
+		if isOsArgsSlicedFromOne(rhs) {
+			b.osArgs = true
+		} else if lit, ok := rhs.(*ast.CompositeLit); ok {
+			b.lit = lit
+		}
+		out = append(out, b)
 	}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		as, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for i, lhs := range as.Lhs {
-			id, ok := lhs.(*ast.Ident)
-			if !ok {
-				continue
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				var rhs ast.Expr
+				switch {
+				case len(s.Rhs) == len(s.Lhs):
+					rhs = s.Rhs[i]
+				case len(s.Rhs) == 1:
+					rhs = s.Rhs[0]
+				default:
+					continue
+				}
+				record(s.Pos(), id.Name, rhs)
 			}
-			var rhs ast.Expr
-			switch {
-			case len(as.Rhs) == len(as.Lhs):
-				rhs = as.Rhs[i]
-			case len(as.Rhs) == 1:
-				rhs = as.Rhs[0]
-			default:
-				continue
-			}
-			if lit, ok := rhs.(*ast.CompositeLit); ok {
-				lits[id.Name] = lit
+		case *ast.ValueSpec:
+			for i, name := range s.Names {
+				if name == nil {
+					continue
+				}
+				var rhs ast.Expr
+				if i < len(s.Values) {
+					rhs = s.Values[i]
+				} else if len(s.Values) == 1 {
+					rhs = s.Values[0]
+				}
+				record(s.Pos(), name.Name, rhs)
 			}
 		}
 		return true
 	})
-	return lits
+	sort.Slice(out, func(i, j int) bool { return out[i].pos < out[j].pos })
+	return out
+}
+
+func aliasesAt(bindings []identBinding, at token.Pos) (map[string]bool, map[string]*ast.CompositeLit) {
+	aliases := map[string]bool{}
+	lits := map[string]*ast.CompositeLit{}
+	for _, b := range bindings {
+		if b.pos >= at {
+			break
+		}
+		if b.osArgs {
+			aliases[b.name] = true
+			delete(lits, b.name)
+			continue
+		}
+		aliases[b.name] = false
+		if b.lit != nil {
+			lits[b.name] = b.lit
+		} else {
+			delete(lits, b.name)
+		}
+	}
+	return aliases, lits
 }
 
 func exprIsInvocationFromOsArgs(e ast.Expr, aliases map[string]bool, lits map[string]*ast.CompositeLit) bool {
@@ -2637,10 +3046,9 @@ func runWiringInvocationProblems(fn *ast.FuncDecl) []string {
 	if len(call.Args) != 1 {
 		return []string{"RunWiring is not passed a single Invocation"}
 	}
-	aliases := collectOsArgsSliceAliases(fn)
-	lits := collectInvocationLits(fn)
+	aliases, lits := aliasesAt(collectIdentBindings(fn), call.Pos())
 	if !exprIsInvocationFromOsArgs(call.Args[0], aliases, lits) {
-		return []string{"RunWiring's Invocation.Args does not derive from os.Args[1:]. An empty Invocation, unsliced os.Args, or an unrelated slice drops the operator's argv"}
+		return []string{"RunWiring's Invocation.Args does not derive from os.Args[1:]. An empty Invocation, unsliced os.Args, an unrelated slice, or an alias assigned AFTER the call drops the operator's argv"}
 	}
 	return nil
 }
@@ -2724,6 +3132,11 @@ func mainForwardingProblems(fn *ast.FuncDecl) []string {
 
 func parseMainSnippet(t *testing.T, src string) *ast.FuncDecl {
 	t.Helper()
+	return snippetFunc(t, src, "main")
+}
+
+func snippetFunc(t *testing.T, src, name string) *ast.FuncDecl {
+	t.Helper()
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "snippet.go", src, 0)
 	if err != nil {
@@ -2731,11 +3144,11 @@ func parseMainSnippet(t *testing.T, src string) *ast.FuncDecl {
 	}
 	for _, d := range f.Decls {
 		fn, ok := d.(*ast.FuncDecl)
-		if ok && fn.Name != nil && fn.Name.Name == "main" {
+		if ok && fn.Name != nil && fn.Name.Name == name {
 			return fn
 		}
 	}
-	t.Fatal("snippet has no func main")
+	t.Fatalf("snippet has no func %s", name)
 	return nil
 }
 
@@ -2892,6 +3305,115 @@ func main() {
 	if problems := runWiringInvocationProblems(unrelatedArgs); len(problems) == 0 {
 		t.Fatal("CONTROL: RunWiring with an unrelated Args slice must fail the argv check")
 	}
+
+	slicedAway := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	os.Stdout.Write(art.Stdout[:0])
+	os.Stderr.Write(art.Stderr[:0])
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := mainForwardingProblems(slicedAway); len(problems) == 0 {
+		t.Fatal("CONTROL: os.Stdout.Write(art.Stdout[:0]) must redden — slicing the field emits nothing and is not forwarding")
+	}
+
+	timesZero := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	code := int(art.ExitCode) * 0
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal * 0
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(timesZero); len(problems) == 0 {
+		t.Fatal("CONTROL: int(art.ExitCode)*0 and exitInternal*0 must redden — arithmetic is not a value-preserving alias")
+	}
+
+	lateAlias := parseMainSnippet(t, `package main
+func main() {
+	argv := []string{"classify"}
+	art, err := RunWiring(Invocation{Args: argv})
+	argv = os.Args[1:]
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := runWiringInvocationProblems(lateAlias); len(problems) == 0 {
+		t.Fatal("CONTROL: assigning argv = os.Args[1:] AFTER RunWiring(Invocation{Args: argv}) must fail — aliases are judged at the call site")
+	}
+
+	aliasBefore := parseMainSnippet(t, `package main
+func main() {
+	argv := os.Args[1:]
+	art, err := RunWiring(Invocation{Args: argv})
+	code := int(art.ExitCode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		code = exitInternal
+	} else {
+		os.Stdout.Write(art.Stdout)
+		os.Stderr.Write(art.Stderr)
+	}
+	os.Exit(code)
+}`)
+	if problems := mainForwardingProblems(aliasBefore); len(problems) != 0 {
+		t.Fatalf("CONTROL: argv := os.Args[1:] before the call must still pass, got %v", problems)
+	}
+
+	helper := snippetFunc(t, `package main
+func helper() {
+	log.SetOutput(os.Stderr)
+	log.SetFlags(0)
+	log.SetPrefix("x")
+	os.Stdout = os.Stderr
+	os.Stderr = os.Stdout
+}
+func main() {}
+`, "helper")
+	if countCalls(helper, isSelectorCall("log", "SetOutput")) == 0 {
+		t.Fatal("CONTROL: the log.SetOutput detector is blind")
+	}
+	if countCalls(helper, isSelectorCall("log", "SetFlags")) == 0 {
+		t.Fatal("CONTROL: the log.SetFlags detector is blind")
+	}
+	if countCalls(helper, isSelectorCall("log", "SetPrefix")) == 0 {
+		t.Fatal("CONTROL: the log.SetPrefix detector is blind")
+	}
+	if !assignsOsStream(helper, "Stdout") {
+		t.Fatal("CONTROL: helper assignment of os.Stdout must be flagged")
+	}
+	if !assignsOsStream(helper, "Stderr") {
+		t.Fatal("CONTROL: helper assignment of os.Stderr must be flagged")
+	}
+	honestMain := parseMainSnippet(t, `package main
+func main() {
+	art, err := RunWiring(Invocation{Args: os.Args[1:]})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if assignsOsStream(honestMain, "Stdout") || assignsOsStream(honestMain, "Stderr") {
+		t.Fatal("CONTROL: an honest forwarding body must not be flagged as assigning os.Stdout/os.Stderr")
+	}
 }
 
 // TestSeal_Wiring_CapabilityProbeMatcherRejectsTwoSubstrings is GREEN today:
@@ -2939,5 +3461,41 @@ func TestSeal_Wiring_CapabilityProbeMatcherRejectsTwoSubstrings(t *testing.T) {
 	}
 	if problems := capabilityProbeProblems(incomplete, exitOK); len(problems) == 0 {
 		t.Fatal("CONTROL: exit 0 with a non-empty missing list must redden")
+	}
+}
+
+// TestSeal_Wiring_ScaffoldConfigMatcherRejectsSubstring is GREEN today: it
+// is the in-test control for the RunWiring init rows. Those rows used to
+// accept any file containing the byte substring `"scaffold"`.
+func TestSeal_Wiring_ScaffoldConfigMatcherRejectsSubstring(t *testing.T) {
+	defer red(t)
+
+	if problems := scaffoldConfigProblems([]byte(`{"scaffold": true}`)); len(problems) == 0 {
+		t.Fatal(`{"scaffold": true} without a schema or rule table passed the scaffold matcher`)
+	}
+	if problems := scaffoldConfigProblems([]byte(`not json but "scaffold"`)); len(problems) == 0 {
+		t.Fatal("a non-JSON document containing the substring \"scaffold\" passed the matcher")
+	}
+	malformed := []byte(`{"schema_version":1,"scaffold":true,"unmatched_risk":"high","rules":[]}` + "\n")
+	if problems := scaffoldConfigProblems(malformed); len(problems) == 0 {
+		t.Fatal("a document with scaffold:true and an empty rule table passed — parseConfig requires a usable table")
+	}
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "risk-paths.json")
+	var code int
+	stdoutOf(t, func() { code = cmdInit([]string{"-worktree", dir, "-out", out}) })
+	if code != exitOK {
+		t.Fatalf("CONTROL: cmdInit exited %d, want 0", code)
+	}
+	honest, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("CONTROL: cmdInit wrote nothing: %v", err)
+	}
+	if problems := scaffoldConfigProblems(honest); len(problems) != 0 {
+		t.Fatalf("CONTROL: cmdInit's own scaffold must pass the matcher, got %v\n%s", problems, honest)
+	}
+	if !bytes.Contains(malformed, []byte(`"scaffold"`)) {
+		t.Fatal("CONTROL: the rejected payload must contain the old substring so this row judges the defect")
 	}
 }
