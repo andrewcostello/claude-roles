@@ -25,7 +25,7 @@ tasks:
     agent: claude
     model: claude-opus-5
     role: seals
-    status: In Progress
+    status: To Do
     blockedBy:
       - MX-SCAFFOLD
     started_at: '2026-09-01T21:35:50-07:00'
@@ -33,6 +33,31 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T04-35-49Z-tasks/MX-OPUS/summary.md
     branch: feat/MX-OPUS-matrix-claude-claude-opus-5
     gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    effort: high
+    completed_at: '2026-09-01T21:55:26-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=5 (0C/5H)'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=5 (0C/5H)
+    panel_blocking_findings: 5
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 76
+    output_tokens: 54510
+    cache_read_input_tokens: 3037448
+    cache_creation_input_tokens: 102822
+    duration_ms: 718321
+    num_turns: 47
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: MX-FABLE
     summary: matrix — claude/claude-fable-5-1
     description: "MODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -45,7 +70,7 @@ tasks:
     agent: claude
     model: claude-fable-5-1
     role: seals
-    status: In Progress
+    status: To Do
     blockedBy:
       - MX-SCAFFOLD
     started_at: '2026-09-01T21:35:50-07:00'
@@ -53,6 +78,31 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T04-35-49Z-tasks/MX-FABLE/summary.md
     branch: feat/MX-FABLE-matrix-claude-claude-fable-5
     gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    effort: high
+    completed_at: '2026-09-01T22:00:15-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=6 (0C/6H)'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=6 (0C/6H)
+    panel_blocking_findings: 6
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 1150
+    output_tokens: 78088
+    cache_read_input_tokens: 1979179
+    cache_creation_input_tokens: 166377
+    duration_ms: 963976
+    num_turns: 40
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: MX-SONNET
     summary: matrix — claude/claude-sonnet-5
     description: "MODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -65,7 +115,7 @@ tasks:
     agent: claude
     model: claude-sonnet-5
     role: seals
-    status: In Progress
+    status: To Do
     blockedBy:
       - MX-SCAFFOLD
     started_at: '2026-09-01T21:35:50-07:00'
@@ -73,6 +123,31 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T04-35-49Z-tasks/MX-SONNET/summary.md
     branch: feat/MX-SONNET-matrix-claude-claude-sonnet-5
     gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    effort: high
+    completed_at: '2026-09-01T21:54:25-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=APPROVE | dissenting=2 (claude,codex) | blocking=7 (0C/7H)'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 0
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=APPROVE | dissenting=2 (claude,codex) | blocking=7 (0C/7H)
+    panel_blocking_findings: 7
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: APPROVE
+    input_tokens: 102
+    output_tokens: 55161
+    cache_read_input_tokens: 5892805
+    cache_creation_input_tokens: 148863
+    duration_ms: 613376
+    num_turns: 63
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: MX-HAIKU
     summary: matrix — claude/claude-haiku-4-5-20251001
     description: "MODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -85,7 +160,7 @@ tasks:
     agent: claude
     model: claude-haiku-4-5-20251001
     role: seals
-    status: In Progress
+    status: To Do
     blockedBy:
       - MX-SCAFFOLD
     started_at: '2026-09-01T21:35:50-07:00'
@@ -93,6 +168,31 @@ tasks:
     summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T04-35-49Z-tasks/MX-HAIKU/summary.md
     branch: feat/MX-HAIKU-matrix-claude-claude-haiku-4
     gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    effort: high
+    completed_at: '2026-09-01T21:51:19-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=6 (0C/6H)'
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: true
+    verification_iterations: 1
+    panel_consensus: block
+    panel_summary: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=6 (0C/6H)
+    panel_blocking_findings: 6
+    panel_verdict_claude: CHANGES_REQUESTED
+    panel_verdict_codex: CHANGES_REQUESTED
+    panel_verdict_grok: CHANGES_REQUESTED
+    input_tokens: 273
+    output_tokens: 9932
+    cache_read_input_tokens: 1815523
+    cache_creation_input_tokens: 60893
+    duration_ms: 164324
+    num_turns: 34
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: MX-CODEX
     summary: matrix — codex/gpt-5.6-sol
     description: "MODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -109,6 +209,30 @@ tasks:
     blockedBy:
       - MX-SCAFFOLD
     effort: high
+    started_at: '2026-09-01T21:51:19-07:00'
+    dispatcher_run_id: 2026-09-02T04-35-49Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T04-35-49Z-tasks/MX-CODEX/summary.md
+    branch: feat/MX-CODEX-matrix-codex-gpt-5-6
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    completed_at: '2026-09-01T22:35:30-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: verification_incomplete
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: false
+    verification_iterations: 1
+    verification_detail: 1. The arm's pinned deliverable is absent. MX-CODEX is a matrix arm pinned to codex/gpt-5.6, and the task states that score.py refuses any arm whose recorded agent/model differs from its pin and that "a cascaded arm is not a data point". The Tasker's own summary states this session is claude-opus-5[1m] and that "the work below is a claude repair of codex's design and must not be scored as codex output", with the only codex-produced commit (433e3b0) "reset out of the branch" and therefore absent from this diff. The seals landed, but no scorable codex data point did.
+    input_tokens: 72
+    output_tokens: 74266
+    cache_read_input_tokens: 3699508
+    cache_creation_input_tokens: 144859
+    duration_ms: 915209
+    num_turns: 50
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: MX-GROK
     summary: matrix — grok/grok-4.6
     description: "MODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -125,6 +249,30 @@ tasks:
     blockedBy:
       - MX-SCAFFOLD
     effort: high
+    started_at: '2026-09-01T21:54:25-07:00'
+    dispatcher_run_id: 2026-09-02T04-35-49Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T04-35-49Z-tasks/MX-GROK/summary.md
+    branch: feat/MX-GROK-matrix-grok-grok-4-6
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    completed_at: '2026-09-01T22:46:10-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: verifier_unavailable
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: false
+    verification_iterations: 0
+    verification_detail: 'claude exit=1: '
+    input_tokens: 92
+    output_tokens: 36359
+    cache_read_input_tokens: 3707378
+    cache_creation_input_tokens: 110531
+    duration_ms: 532012
+    num_turns: 52
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
   - key: MX-DEEPSEEK
     summary: matrix — deepseek/deepseek-v4-pro
     description: "MODEL MATRIX. One task, one contract, seven implementers.\n\nIdentical brief, identical base (feat/GO-1-1-scaffold-the-wiring-that-decides,\nwhose 315-line cmd/classify/wiring.go holds unanimous panel approval). The\ncontract is a CONSTANT; the implementer is the variable.\n\nSCORED BY features/bakeoff-seals/score.py, which REFUSES any arm whose recorded\nagent/model differs from its pin. The previous run compared four arms of which\ntwo had cascaded to claude-opus-5[1m] after their CLI exited 1, and scored the\nsubstitute's work under the original name. A cascaded arm is not a data point.\n\nMX-HAIKU is a CONTROL, not a candidate. Haiku is known unfit for work this\nsize; if the scoring cannot separate it from the frontier tiers then the\nscoring discriminates nothing and no other row in this matrix means anything.\n\nThe measurable criteria, in order of weight:\n  1. Does a seal catch the measured mutation? (emit()'s ContractV2 arm rewritten\n     to EmitV1.) A seal reaching production only through the unimplemented\n     RunWiring stub is red whatever the mutation does, and detects nothing.\n  2. Is any row vacuous — passing while the body is absent?\n  3. Independent panel findings, discounting the arm's own family seat.\n  4. Cost and wall-clock.\n\n--- THE BRIEF, IDENTICAL FOR EVERY ARM ---\n\nSeal GO-1-1's contract. The row that matters FAILS today and its exact\nmutation is already measured: `emit()`'s `ContractV2` arm rewritten to\n`EmitV1` must redden this file, and at `0cfdb57` it reddens nothing.\n\nCover the mapping, not the library: (contract x -out x -json) -> artifact\nset + exit code. Include `-contract-version 3` -> exit 3 with a message\nnaming the accepted set, and `-contract-version 2` producing the wrapper\non stdout.\n\nA LIVE VACUOUS SEAL IS IN SCOPE AND IS MEASURED.\n`TestSeal_InstalledDigestSource_YieldsHexOrErrors`\n(`capability_seal_test.go:409`) returns early on error having asserted\nnothing about the values. Proved rather than argued: running that test\nALONE under coverage gives `ConsumedDigests` 90.0% and `hexSHA256` 0.0% —\nthe hex/length/lowercase assertions below the early return never execute,\nbecause `ConsumedDigests` raises unless BOTH `sawConfig` and `sawDiff`\nare set, and no test in the package calls `readDiff`. Say whether it is\namended or struck.\n\nTWO CORRECTIONS TO THE RECORD, both making the unit SMALLER, both\nmeasured at `0cfdb57` and both to be re-derived rather than trusted:\n\n  1. \"Swapping the digests passes the suite\" NO LONGER REPRODUCES.\n     Rewriting `ConsumedDigests`' return from\n     `hexSHA256(s.config), hexSHA256(s.diff)` to the reverse reddens\n     EXACTLY ONE row —\n     `TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,\n     added by a later repair wave. The swap is caught. Do not write a\n     row for a defect that is already sealed.\n  2. \"The production DigestSource success path never executes in any\n     test\" is CLOSED. Whole-suite coverage at `0cfdb57`: `recordConfig`\n     100.0%, `recordDiff` 100.0%, `ConsumedDigests` 100.0%, `hexSHA256`\n     100.0%. What remains is that ONE seal's own assertions are\n     unreachable — a narrower defect than the one recorded, and it is the\n     one to seal.\n\nNON-VACUITY: this module has already produced four measured vacuous\nseals. Do not seal that a function was CALLED; seal what it ANSWERED.\nProve each row red by the specific defect it names and carry an in-test\ncontrol judged in the same call."
@@ -140,3 +288,28 @@ tasks:
     status: To Do
     blockedBy:
       - MX-SCAFFOLD
+    started_at: '2026-09-01T21:55:26-07:00'
+    dispatcher_run_id: 2026-09-02T04-35-49Z-tasks
+    summary_path: /home/andrew/Project/dispatcher-runs/2026-09-02T04-35-49Z-tasks/MX-DEEPSEEK/summary.md
+    branch: feat/MX-DEEPSEEK-matrix-deepseek-deepseek-v4-pro
+    gate_base_sha: b0313fa6dad1f0cd89395feb95d0bc8689364b0e
+    effort: high
+    completed_at: '2026-09-01T22:46:23-07:00'
+    iteration_count: 0
+    linter_cycles: 0
+    human_gate_fired: false
+    deferred_findings_count: 0
+    blocked_reason: verifier_unavailable
+    mechanical_verification: skipped
+    role_diff_loop: not_enabled
+    verified: false
+    verification_iterations: 0
+    verification_detail: 'claude exit=1: '
+    input_tokens: 64
+    output_tokens: 26723
+    cache_read_input_tokens: 2138851
+    cache_creation_input_tokens: 89120
+    duration_ms: 478730
+    num_turns: 36
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.258 (Claude Code)
