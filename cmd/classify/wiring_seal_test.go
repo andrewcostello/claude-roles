@@ -35,14 +35,20 @@ import (
 // asserts both halves of the contract: the exit code and the STDOUT shape, and
 // the artifact set persist() (main.go:441) leaves on disk — the run-state file
 // and the v2 sidecar. -out absent is included precisely to show the sidecar
-// question does not arise without it; the sidecar leg is skipped for those
-// rows because V2SidecarPath("") is "", not a path to assert about.
+// question does not arise without it: each row runs with its scratch dir as
+// the process's own working directory (-config given as an absolute path, so
+// nothing else needs cwd), then asserts os.ReadDir on that directory
+// POSITIVELY — for out=false rows the only entry may be wallet.diff itself,
+// which catches persist writing a run-state or sidecar to a relative default
+// path when -out is empty, a defect an inside-the-if assertion never observes
+// because it never runs for these rows at all.
 func TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode(t *testing.T) {
 	bin := liveClassify(t)
 	pkgDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
+	absConfigPath := filepath.Join(pkgDir, exampleConfigPath)
 
 	type row struct {
 		name     string
@@ -77,7 +83,7 @@ func TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			args := []string{"-no-git", "-config", exampleConfigPath}
+			args := []string{"-no-git", "-config", absConfigPath}
 			if r.contract != "" {
 				args = append(args, "-contract-version", r.contract)
 			}
@@ -91,7 +97,7 @@ func TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode(t *testing.T) {
 			}
 			args = append(args, diffPath)
 
-			run := runLive(t, bin, pkgDir, nil, args...)
+			run := runLive(t, bin, dir, nil, args...)
 			if run.exit != 0 {
 				t.Fatalf("exit %d, want 0\n%s", run.exit, run.all())
 			}
@@ -164,6 +170,27 @@ func TestSeal_Mapping_ContractOutJSON_ArtifactSetAndExitCode(t *testing.T) {
 				wantSidecar := effectiveContract == "2"
 				if sidecarExists != wantSidecar {
 					t.Errorf("contract %s, -out given: v2 sidecar %s exists=%v, want %v", effectiveContract, sidecar, sidecarExists, wantSidecar)
+				}
+			} else {
+				// THE MUTATION-CATCHING LEG for out=false. The run's cwd is this
+				// row's own scratch dir (runLive above), so a positive listing of
+				// it is a positive claim about persist's artifact set: entries
+				// beyond wallet.diff itself mean persist wrote a run-state and/or
+				// v2 sidecar despite opts.out == "" — exactly what mutating
+				// persist's `if opts.out == "" { return 0 }` guard (main.go:443)
+				// to fall through to a relative default path produces, and what
+				// the prior version of this row, asserting nothing at all inside
+				// this block, let through.
+				entries, err := os.ReadDir(dir)
+				if err != nil {
+					t.Fatalf("could not list the run's own working directory %s: %v", dir, err)
+				}
+				var names []string
+				for _, e := range entries {
+					names = append(names, e.Name())
+				}
+				if len(names) != 1 || names[0] != "wallet.diff" {
+					t.Errorf("-out absent: run's working directory %s contains %v, want exactly [wallet.diff] — persist must write nothing without -out", dir, names)
 				}
 			}
 		})
