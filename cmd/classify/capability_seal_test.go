@@ -13,8 +13,12 @@ package main
 // state and capture os.Stdout.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -406,6 +410,47 @@ func TestSeal_InstalledRegistrar_RegistersTheRealFlag(t *testing.T) {
 
 // The installed digest source yields two lowercase-hex SHA-256 strings, or an
 // error. It must never return an empty string for a channel it did not consume.
+//
+// ─── AMENDED (CV-OPUS), NOT STRUCK ───────────────────────────────────────────
+//
+// IT WAS VACUOUS, AND PROVED SO RATHER THAN ARGUED. As written, the row asked
+// the installed source for its digests and returned early on error, having
+// asserted nothing about any value. The error is the ONLY answer it could ever
+// get: ConsumedDigests raises unless BOTH sawConfig and sawDiff are set
+// (capability.go:373-388), the test process consumed neither, and no test in
+// this package called readDiff. Running the row ALONE under coverage measured
+// ConsumedDigests at 90.0% and hexSHA256 at 0.0% — the hex, length and
+// lowercase assertions below the early return never executed once. A green row
+// over an unexecuted body is the vacuous shape this module has now produced
+// five times.
+//
+// AMENDED RATHER THAN STRUCK because the property is real and unsealed: the
+// wrapper's dual digest echo is the only thing binding a v2 response to the
+// bytes that produced it, and nothing else checks the INSTALLED source's
+// success path. Striking the row would delete the obligation along with the
+// hole. The name is kept so the record is traceable; what changed is that both
+// halves of "hex OR errors" are now reached and judged, in one call:
+//
+//	leg 1  the installed source IS the recorder production writes into
+//	leg 2  a recorder that consumed NOTHING errors, blanks both values, and
+//	       names both channels
+//	leg 3  a recorder that consumed only the config errors naming the DIFF —
+//	       the control that leg 2 is not passing on a constant error
+//	leg 4  a recorder driven through PRODUCTION'S OWN READERS answers the
+//	       SHA-256 of the exact bytes those readers consumed, computed here
+//	leg 5  one byte changed in the config moves the config digest and leaves
+//	       the diff digest alone
+//
+// Leg 4 is what makes this seal what the source ANSWERED rather than that it
+// was called: the expected digests are derived in this test from the staged
+// bytes, so a source returning a plausible 64-character constant fails. It goes
+// through loadConfig and readDiff — the two call sites that record
+// (main.go:671, main.go:743) — rather than calling recordConfig/recordDiff
+// directly, so the row also covers the wiring from the readers to the recorder.
+//
+// The recorder is swapped for a fresh one for the duration, following
+// repair_seal_test.go:593: driving the process-wide unframedDigests would leave
+// consumed state behind for whatever test ran next.
 func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 	defer red(t)
 
@@ -413,29 +458,141 @@ func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 	if src == nil {
 		t.Fatal("digestSource is nil — B1's body must install it")
 	}
-	cfgSHA, diffSHA, err := src.ConsumedDigests()
+
+	// ── LEG 1 — the installed source is the process recorder, not some other
+	// object that happens to satisfy the interface. Everything below drives the
+	// recorder; without this the rest would be about a type production may not
+	// use.
+	installed, ok := src.(*unframedDigestSource)
+	if !ok {
+		t.Fatalf("digestSource is %T, want *unframedDigestSource — B1 installs unframedDigests (capability.go:400-403), and the digests the wrapper echoes are the ones THAT object recorded", src)
+	}
+	if installed != unframedDigests {
+		t.Fatal("digestSource holds an *unframedDigestSource that is NOT unframedDigests. loadConfig and readDiff record into the package variable (main.go:671, main.go:743); a second instance would echo digests over bytes nothing consumed.")
+	}
+
+	// From here the row drives a FRESH recorder installed in both slots, and
+	// restores whatever was there.
+	savedRecorder, savedSource := unframedDigests, digestSource
+	t.Cleanup(func() { unframedDigests, digestSource = savedRecorder, savedSource })
+
+	// ── LEG 2 — consumed nothing: error, both values empty, both channels named.
+	unframedDigests = &unframedDigestSource{}
+	digestSource = unframedDigests
+	cfgSHA, diffSHA, err := digestSource.ConsumedDigests()
+	if err == nil {
+		t.Fatalf("a source that consumed nothing returned %q/%q and no error — an empty digest in the wrapper is indistinguishable from a digest over empty bytes", cfgSHA, diffSHA)
+	}
+	if cfgSHA != "" || diffSHA != "" {
+		t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
+	}
+	for _, channel := range []string{"config", "diff"} {
+		if !strings.Contains(err.Error(), channel) {
+			t.Errorf("the unread-channel error does not name %q: %v", channel, err)
+		}
+	}
+
+	// Stage the bytes. A private copy of the real table, so the path is one no
+	// other test has certified a read for and consumeCertifiedConfigRead does
+	// the ordinary read.
+	dir := t.TempDir()
+	cfgBytes, err := os.ReadFile(exampleConfigPath)
 	if err != nil {
-		// Legal: this process consumed no config and no diff. The contract is
-		// that it errors rather than returning empty strings.
-		if cfgSHA != "" || diffSHA != "" {
-			t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
-		}
-		return
+		t.Fatal(err)
 	}
-	for name, sha := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
-		if len(sha) != 64 {
-			t.Errorf("%s digest %q is not 64 hex characters", name, sha)
+	cfgPath := filepath.Join(dir, "risk-paths.json")
+	if err := os.WriteFile(cfgPath, cfgBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	diffBytes := []byte(diffFor("apps/finance-domain/wallet/service/debit.go"))
+	diffPath := filepath.Join(dir, "fixture.diff")
+	if err := os.WriteFile(diffPath, diffBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantCfg := hex.EncodeToString(sha256Of(cfgBytes))
+	wantDiff := hex.EncodeToString(sha256Of(diffBytes))
+
+	// ── LEG 3 — only the config consumed: still an error, and it names the DIFF
+	// and not the config. The control for leg 2: a source that errored on a
+	// constant would name both channels here too.
+	unframedDigests = &unframedDigestSource{}
+	digestSource = unframedDigests
+	if _, err := loadConfig(cfgPath); err != nil {
+		t.Fatalf("loadConfig(%s): %v", cfgPath, err)
+	}
+	cfgSHA, diffSHA, err = digestSource.ConsumedDigests()
+	if err == nil {
+		t.Fatalf("with the diff channel unconsumed ConsumedDigests answered %q/%q — a half-consumed process has nothing to echo", cfgSHA, diffSHA)
+	}
+	if strings.Contains(err.Error(), "config") || !strings.Contains(err.Error(), "diff") {
+		t.Errorf("the error names the wrong channel: %v. The config WAS consumed; only the diff was not.", err)
+	}
+
+	// ── LEG 4 — both consumed, through production's readers: the answers are
+	// the digests of exactly those bytes.
+	unframedDigests = &unframedDigestSource{}
+	digestSource = unframedDigests
+	if _, err := loadConfig(cfgPath); err != nil {
+		t.Fatalf("loadConfig(%s): %v", cfgPath, err)
+	}
+	if _, err := readDiff([]string{diffPath}); err != nil {
+		t.Fatalf("readDiff(%s): %v", diffPath, err)
+	}
+	cfgSHA, diffSHA, err = digestSource.ConsumedDigests()
+	if err != nil {
+		t.Fatalf("both channels were consumed through loadConfig and readDiff, and ConsumedDigests still errored: %v", err)
+	}
+	for name, got := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
+		if len(got) != 64 {
+			t.Errorf("%s digest %q is not 64 hex characters", name, got)
 		}
-		if sha != strings.ToLower(sha) {
-			t.Errorf("%s digest %q is not lowercase hex", name, sha)
+		if got != strings.ToLower(got) {
+			t.Errorf("%s digest %q is not lowercase hex", name, got)
 		}
-		for _, c := range sha {
-			if !strings.ContainsRune("0123456789abcdef", c) {
-				t.Errorf("%s digest %q is not hex", name, sha)
-				break
-			}
+		if strings.Trim(got, "0123456789abcdef") != "" {
+			t.Errorf("%s digest %q is not hex", name, got)
 		}
 	}
+	if cfgSHA != wantCfg {
+		t.Errorf("the config digest is %q, want SHA-256 of the bytes loadConfig consumed = %q. The wrapper's echo binds the response to what was read; a digest over anything else binds it to nothing.", cfgSHA, wantCfg)
+	}
+	if diffSHA != wantDiff {
+		t.Errorf("the diff digest is %q, want SHA-256 of the bytes readDiff consumed = %q", diffSHA, wantDiff)
+	}
+
+	// ── LEG 5 — the digests track CONTENT, per channel. One byte added to the
+	// config must move the config digest and leave the diff digest where it was.
+	// This is the leg a source digesting the PATH, or digesting one buffer for
+	// both channels, fails.
+	unframedDigests = &unframedDigestSource{}
+	digestSource = unframedDigests
+	if err := os.WriteFile(cfgPath, append(append([]byte(nil), cfgBytes...), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(cfgPath); err != nil {
+		t.Fatalf("loadConfig after the one-byte edit: %v", err)
+	}
+	if _, err := readDiff([]string{diffPath}); err != nil {
+		t.Fatalf("readDiff: %v", err)
+	}
+	movedCfg, sameDiff, err := digestSource.ConsumedDigests()
+	if err != nil {
+		t.Fatalf("ConsumedDigests after the one-byte edit: %v", err)
+	}
+	if movedCfg == wantCfg {
+		t.Errorf("the config digest did not change when the config bytes did (%q both times) — it is not a digest over the consumed bytes", movedCfg)
+	}
+	if sameDiff != wantDiff {
+		t.Errorf("the DIFF digest changed when only the CONFIG bytes changed: %q -> %q. The two channels are not separate.", wantDiff, sameDiff)
+	}
+}
+
+// sha256Of is this file's own digest, deliberately not hexSHA256: the expected
+// value in leg 4 must be derived independently of the function under seal, or
+// the comparison is the implementation agreeing with itself.
+func sha256Of(b []byte) []byte {
+	sum := sha256.Sum256(b)
+	return sum[:]
 }
 
 // ─── small helpers ───────────────────────────────────────────────────────────

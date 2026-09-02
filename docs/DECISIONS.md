@@ -196,3 +196,146 @@ inherits them explicitly rather than by silence.
   digest pin covers `PinnedBaselineV1Path` only. This is GO-2's subject ("nine
   tracked binaries, warned about nowhere") and is recorded here because GO-1-1
   tripped it by accident.
+
+---
+
+## GO-1-2 — sealing the wiring mapping (2026-09-02)
+
+Subject: the rows that judge
+`(contract × -out × -json) → artifact set + exit code`. They landed in
+`cmd/classify/wiring_seal_test.go`. This section records one amendment to a
+GO-1-1 decision and one amendment to a live seal; everything else GO-1-1 wrote
+stands and is what the rows were derived from.
+
+### D4 — The mapping rows exec a build of the current tree. D1 is amended.
+
+D1 ruled: *"In process, through `RunWiring`. No build, no exec, no
+subprocess."* The rows do the opposite, and the reason is that D1's premise
+stopped being true the moment the scaffold landed.
+
+**Why in-process is not available.** `RunWiring` is a stub returning
+`ErrWiringNotImplemented`; GO-1-3 owns its body. A row reaching production only
+through it is RED today for a reason that has nothing to do with the mapping,
+and stays red no matter what anyone does to `emit()`. It cannot distinguish a
+correct wiring from a broken one, which is the entire job. A red row that
+answers no question is worth less than a green row that answers one.
+
+**D1's stated reason for refusing a subprocess is false, and it was measured.**
+D1 says exec *"cannot observe which arm ran — a v2 request answered with v1
+bytes and a v2 request answered by a broken `EmitV2` are the same subprocess."*
+They are not the same subprocess. Both mutations were applied to a scratch
+build of this tree and run as
+`classify -json -no-git -config <table> -contract-version 2 <diff>`:
+
+| mutation | exit | stdout | stderr |
+|---|---|---|---|
+| `emit()`'s `ContractV2` arm → `EmitV1` | **0** | the v1 payload, 1 JSON doc | empty |
+| `EmitV2` returns an error | **1** | **0 bytes** | `classify: v2 emission: …` |
+| unmutated | 0 | the response wrapper | empty |
+
+Three distinct observations from outside the process. The arm that ran is
+recoverable from the bytes it wrote, because the two arms write different
+shapes — which is what the contract says they must do.
+
+**And the suite already exec'd.** `liveClassify` (`repair_seal_test.go`) builds
+the current tree to a scratch path with an explicit `-o` and eight existing
+seals exec it, including every EnvGap row and
+`TestSeal_Repair_LiveResolution_DifferingDualTablesMustNotResolveSilently` —
+which exists *precisely* because the in-process seals over `ResolveConfigDual`
+stayed green while production routed around it. D1 refused the mechanism its
+own module depends on. The new rows reuse `liveClassify`, so they inherit its
+guards: the frozen baseline's digest is checked before and after, the artifact
+must differ from that baseline, and the build never writes to a tracked path.
+
+**What survives from D1, unchanged.** Exec'ing a *tracked* binary is still
+refused — the pinned baseline predates `emit()`'s v2 arm and cannot be asked
+about it, and `./classify` is a build output. Nothing here execs either.
+
+**The cost of this decision, stated rather than discovered later.** A
+subprocess is invisible to the test binary's coverage instrumentation. Measured
+before and after these rows landed, whole-suite: `run`, `emit`, `persist`,
+`printReport`, `printInvalidInput`, `loadInputs`, `validateInput`,
+`resolveConfigPath`, `reportConfigSearch` and `usage` are at **0.0% both
+times** — package total 63.5% → 64.0%. Every statement in that 0.5 point
+belongs to the amended digest row, and the diff is three functions and no
+others: `readDiff` 0.0% → 31.2% (nothing in the package called it before),
+`consumeCertifiedConfigRead` 66.7% → 100.0%, `certifiedConfigRead.take` 85.7% →
+100.0%. The mapping rows moved the profile by nothing at all. The mapping is sealed and the coverage table cannot
+see it. Evidence for these rows is mutation-kill, recorded below, and a
+coverage table is not admissible against them in either direction. See H8.
+
+**The obligation this creates for GO-1-3.** `RunWiring` clause 8 — `main()`
+forwards the streams and the exit code and adds nothing — is what makes the
+subprocess and the in-process seam the same subject. When the body lands, these
+rows keep judging the shipped artifact and GO-1-3 owes the in-process form of
+the same table plus D1's structural delegation row. The two are not
+alternatives: the structural row proves `RunWiring` is the code `main()` runs,
+and these rows prove what that code answers.
+
+### D5 — `TestSeal_InstalledDigestSource_YieldsHexOrErrors` is amended, not struck
+
+It was vacuous, and the vacuity was re-derived here rather than taken from the
+report: run alone under coverage it left `hexSHA256` at **0.0%** and
+`ConsumedDigests` at **90.0%**. It asked the installed source for its digests
+and returned early on the error, having asserted nothing — and the error was
+the only answer available, because `ConsumedDigests` raises unless both
+`sawConfig` and `sawDiff` are set and no test in the package called `readDiff`.
+
+Amended rather than struck: the property is real and nothing else seals it. The
+dual digest echo is the only thing binding a v2 response to the bytes that
+produced it. Striking the row would have deleted the obligation along with the
+hole. The name is kept so the record stays traceable. Both halves of "hex or
+errors" are now reached in one call, and the success half is driven through
+`loadConfig` and `readDiff` — production's own recording call sites — with the
+expected digests computed in the test from the staged bytes. Alone under
+coverage it now leaves `recordConfig`, `recordDiff`, `ConsumedDigests` and
+`hexSHA256` at **100.0%**.
+
+### H8 — the wiring path stays at 0.0% coverage while being sealed
+
+New hole, created by D4 and named so nobody reads it as the absence of a seal.
+The rows exec a subprocess, so every statement they exercise in `run`, `emit`
+and `persist` is counted in another process and lands in no profile. Two
+readings this forbids: "0.0% means unsealed" (false — six mutations in those
+three functions redden these rows), and "raise the number by adding in-process rows
+over the emitters" (that is what the existing library seals already do, and it
+is what left `emit()`'s arm selection unsealed in the first place). Closing H8
+honestly needs either `RunWiring`'s body — which puts the mapping back in
+process, where D1 wanted it — or `go build -cover` plus `GOCOVERDIR` in
+`liveClassify` and a profile merge. Neither is GO-1-2's.
+
+### What the rows do NOT decide
+
+- **H4 stays open.** No row pins the stream `INVALID_INPUT` uses; the message
+  assertions read stdout and stderr together. The one stream fact asserted is
+  weaker and holds under either resolution: after an exit 3 there is no
+  parseable JSON document on stdout, because the run made no verdict.
+- **H2, H3, H5, H6, H7 stay open.** The rows seal that an unknown flag exits 2
+  and an unaccepted contract exits 3 and that the two differ (H3's mapping
+  half, which H3 assigns to GO-1-2); what `usage()` advertises is untouched.
+
+### Measured: which mutation reddens which row
+
+Each row was proved red by the specific defect it names, whole-suite, with the
+tree restored and re-verified by digest after each. The column names the rows
+this section is accountable for; where a mutation also reddens pre-existing
+rows the count is given, because a mutation nothing else notices and a mutation
+half the suite notices are different facts about the new row:
+
+| mutation | row that reddens |
+|---|---|
+| `emit()` `ContractV2` arm → `EmitV1` | `…_JSONEmitterIsChosenByTheContract`, `…_OutAndContractDecideTheArtifactSet` |
+| `emit()` `ContractV1` arm → `EmitV2` | `…_JSONEmitterIsChosenByTheContract` (and eight others) |
+| `emit()` never prints the human report | `…_ReportIsTheSameUnderBothContractsAndWritesNothing` |
+| `persist()`'s `ContractV1` arm writes the sidecar instead of removing it | `…_OutAndContractDecideTheArtifactSet` (and the existing repair row) |
+| `run()` lenient-parses an unaccepted contract to v1 | `…_UnacceptedContractExitsInvalidAndTouchesNothing`, `…_FlagErrorAndContractErrorAreDifferentExits` |
+| `persist()` ignores an empty `-out` | `…_OutAndContractDecideTheArtifactSet` (and three others) |
+| `hexSHA256` returns uppercase | `TestSeal_InstalledDigestSource_YieldsHexOrErrors` |
+| `recordConfig` digests the empty slice | `TestSeal_InstalledDigestSource_YieldsHexOrErrors` |
+
+A ninth mutation is recorded as **already sealed and deliberately not
+re-sealed**: swapping `ConsumedDigests`' return to
+`hexSHA256(s.diff), hexSHA256(s.config)` reddens exactly
+`TestSeal_Repair_ResolveConfigDual_ConsumedBytesMustBeTheCertifiedBytes`,
+added by a later repair wave. Re-derived here, not carried over from the task
+row that said the swap passes the suite — that claim no longer reproduces.
