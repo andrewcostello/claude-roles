@@ -1,0 +1,40 @@
+{
+  "_comment": "Plausible real defects in cmd/classify's wiring, each of which a competent seal for GO-1-1's contract should catch. A mutation nobody kills is a hole in every arm; a mutation everybody kills carries no signal. Both are reported.",
+  "module": "cmd/classify",
+  "mutations": [
+    {"id": "emit-v2-answers-v1", "file": "main.go",
+     "before": "\tcase ContractV2:\n\t\treturn EmitV2(os.Stdout, cls)",
+     "after":  "\tcase ContractV2:\n\t\treturn EmitV1(os.Stdout, cls)",
+     "defect": "a v2 request answered with v1 bytes — the measured defect this unit exists for"},
+
+    {"id": "emit-v1-answers-v2", "file": "main.go",
+     "before": "\tcase ContractV1:\n\t\treturn EmitV1(os.Stdout, cls)",
+     "after":  "\tcase ContractV1:\n\t\treturn EmitV2(os.Stdout, cls)",
+     "defect": "a v1 request answered with the v2 wrapper"},
+
+    {"id": "bad-contract-exits-ok", "file": "main.go",
+     "before": "\t\tprintInvalidInput(Repo{Worktree: opts.worktree}, []string{err.Error()})\n\t\treturn exitInvalid",
+     "after":  "\t\tprintInvalidInput(Repo{Worktree: opts.worktree}, []string{err.Error()})\n\t\treturn exitOK",
+     "defect": "a mistyped -contract-version exits 0 — a gate would read it as a pass"},
+
+    {"id": "contract-three-accepted", "file": "contract.go",
+     "before": "\tfor _, v := range contractVersionSet {\n\t\tif s == strconv.Itoa(int(v)) {",
+     "after":  "\tfor _, v := range contractVersionSet {\n\t\tif s == strconv.Itoa(int(v)) || s == \"3\" {",
+     "defect": "the closed contract set silently admits 3"},
+
+    {"id": "config-failure-exits-ok", "file": "main.go",
+     "before": "\t\treportConfigSearch(opts.worktree, outcome, cfgErr)\n\t\treturn exitInvalid",
+     "after":  "\t\treportConfigSearch(opts.worktree, outcome, cfgErr)\n\t\treturn exitOK",
+     "defect": "an unresolvable rule table exits 0 — classifies nothing and reports success"},
+
+    {"id": "invalid-input-exits-ok", "file": "main.go",
+     "before": "\t\tprintInvalidInput(repo, problems)\n\t\treturn exitInvalid",
+     "after":  "\t\tprintInvalidInput(repo, problems)\n\t\treturn exitOK",
+     "defect": "validation problems exit 0"},
+
+    {"id": "sidecar-never-written", "file": "main.go",
+     "before": "\t\tif err := WriteV2Sidecar(opts.out, cls); err != nil {",
+     "after":  "\t\tif err := error(nil); err != nil { _ = cls;",
+     "defect": "the v2 sidecar is silently not written"}
+  ]
+}
