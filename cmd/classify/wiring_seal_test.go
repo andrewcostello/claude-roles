@@ -2212,9 +2212,11 @@ func v1Verdict(t *testing.T, stdout []byte) v1WireVerdict {
 // mapping: `capabilities -not-a-real-flag` must reach the probe (exit 3,
 // "takes no arguments") rather than flag-parse (exit 2). Init's FlagSet is
 // the other half: argv the init flags reject (`-not-a-real-flag`,
-// `-worktree` without a value, `-h`) must RETURN exitFlagError with the
-// parse message on Stderr — cmdInit today uses ExitOnError, which is
-// os.Exit(2) / os.Exit(0) and writes to process stderr.
+// `-worktree` without a value) must RETURN exitFlagError with the parse
+// message on Stderr — cmdInit today uses ExitOnError, which is os.Exit(2)
+// and writes to process stderr. `init -h` is not that cell: it is ErrHelp,
+// the same operator intent as `classify -h`, and returns exitOK with the
+// init FlagSet usage on Stderr.
 //
 // RED TODAY on the stub. Artifacts about init confine themselves to ExitCode
 // and the streams; the scaffold file is observed directly.
@@ -2377,13 +2379,14 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 	// parse message to process stderr (clause 3). The capabilities row
 	// already hands the probe a stray flag; these rows are the matching
 	// measurement for init, which is where the exiting FlagSet actually is.
+	// `-h` is not in this table: ContinueOnError + -h is flag.ErrHelp, not a
+	// parse failure, and is sealed as its own exit-0 row below.
 	for _, c := range []struct {
 		name string
 		args []string
 	}{
 		{name: "init-undefined-flag", args: []string{"init", "-not-a-real-flag"}},
 		{name: "init-missing-flag-value", args: []string{"init", "-worktree"}},
-		{name: "init-help-flag", args: []string{"init", "-h"}},
 	} {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
@@ -2393,9 +2396,12 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 			if refErr == nil {
 				t.Fatalf("CONTROL: the reference init FlagSet parsed argv %q cleanly; this row is mis-measured", c.args)
 			}
+			if errors.Is(refErr, flag.ErrHelp) {
+				t.Fatalf("CONTROL: argv %q is ErrHelp, not a parse failure; that cell is init-help-flag", c.args)
+			}
 
 			got, err := RunWiring(Invocation{Args: c.args, Dir: dir})
-			if stubRED(t, err, "RunWiring(%q) must RETURN with exit %d and the init FlagSet parse message on Stderr. A verbatim cmdInit still uses ExitOnError: -bogus is os.Exit(2) and -h is os.Exit(0), both killing the caller. Reference FlagSet.Parse: %v", c.args, exitFlagError, refErr) {
+			if stubRED(t, err, "RunWiring(%q) must RETURN with exit %d and the init FlagSet parse message on Stderr. A verbatim cmdInit still uses ExitOnError: this argv is os.Exit(2), killing the caller. Reference FlagSet.Parse: %v", c.args, exitFlagError, refErr) {
 				return
 			}
 			assertNoOutputArtifacts(t, c.name, got)
@@ -2413,6 +2419,148 @@ func TestSeal_Wiring_RunWiringDispatchesSubcommands(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("init-help-flag", func(t *testing.T) {
+		defer red(t)
+		dest := t.TempDir()
+		var usageBuf bytes.Buffer
+		ref := referenceInitFlagSet()
+		ref.SetOutput(&usageBuf)
+		refErr := ref.Parse([]string{"-h"})
+		if !errors.Is(refErr, flag.ErrHelp) {
+			t.Fatalf("CONTROL: the reference init FlagSet did not treat -h as flag.ErrHelp (err=%v); this row is mis-measured as a parse failure", refErr)
+		}
+		if len(usageBuf.Bytes()) == 0 {
+			t.Fatal("CONTROL: reference FlagSet.Parse(-h) wrote no usage block; the stderr claim would be mis-measured")
+		}
+
+		// Child first. cmdInit's FlagSet is ExitOnError: Parse("-h") is
+		// os.Exit(0), which would kill this test binary before the in-process
+		// assertions run and make `go test` report success. The child uses a
+		// sentinel when RunWiring returns so that os.Exit(0) is distinguishable
+		// from both the stub and a body that returns exitOK. Not a
+		// MainForwardsProcessStreams row: today's main still dispatches to
+		// cmdInit and would redden the wrong spine.
+		code, _, _ := execInitHelpChild(t)
+		switch code {
+		case 0:
+			t.Errorf("RunWiring([]string{\"init\",\"-h\"}) killed the process with exit 0 — cmdInit's ExitOnError FlagSet.Parse(-h) is os.Exit(0) and never returns. Clause 2: RunWiring never exits the process. The in-process assertions are skipped because they cannot observe this.")
+			return
+		case initHelpChildExitStub:
+			// today: the stub returned. The in-process call below carries the RED mapping claim.
+		case initHelpChildExitReturned:
+			// body returned rather than os.Exit; in-process assertions judge the mapping.
+		default:
+			t.Errorf("init -h child exited %d, want %d (RunWiring returned) or %d (stub). Any other code is a FlagSet or os.Exit killing the process; in-process RunWiring is skipped because it would kill this test too.", code, initHelpChildExitReturned, initHelpChildExitStub)
+			return
+		}
+
+		got, err := RunWiring(Invocation{Args: []string{"init", "-h"}, Dir: dest})
+		if stubRED(t, err, "RunWiring(init -h) must RETURN exit %d with the init FlagSet usage on Stderr and no scaffold. errors.Is(refErr, flag.ErrHelp) selects the exit-0 arm, matching classify -h — not exitFlagError, and not the sentinel text %q", exitOK, refErr.Error()) {
+			return
+		}
+		assertNoOutputArtifacts(t, "init-help-flag", got)
+		if got.ExitCode != exitOK {
+			t.Errorf("init -h exited %d, want %d. errors.Is(ref, flag.ErrHelp) is the help arm (same operator intent as classify -h), not exitFlagError", got.ExitCode, exitOK)
+		}
+		for _, p := range initHelpUsageProblems(got.Stdout, got.Stderr, refErr) {
+			t.Errorf("init -h %s", p)
+		}
+		if bytes.Contains(got.Stdout, []byte("=== CLASSIFY INIT ===")) || bytes.Contains(got.Stderr, []byte("=== CLASSIFY INIT ===")) {
+			t.Errorf("init -h still printed the init report; a help request must not scaffold:\nstdout=%q stderr=%q", got.Stdout, got.Stderr)
+		}
+		for _, rel := range []string{
+			filepath.Join(".agent", "risk-paths.json"),
+			filepath.Join(".claude", "risk-paths.json"),
+			"risk-paths.json",
+		} {
+			p := filepath.Join(dest, rel)
+			if _, err := os.Stat(p); err == nil {
+				t.Errorf("init -h wrote a scaffold at %s; help must not scaffold", p)
+			}
+		}
+	})
+}
+
+const (
+	envInitHelpChild          = "CLASSIFY_SEAL_INIT_HELP_CHILD"
+	initHelpChildExitStub     = 70
+	initHelpChildExitReturned = 71
+)
+
+func TestMain(m *testing.M) {
+	if os.Getenv(envInitHelpChild) == "1" {
+		os.Exit(runInitHelpChild())
+	}
+	os.Exit(m.Run())
+}
+
+func runInitHelpChild() int {
+	dir, err := os.MkdirTemp("", "classify-init-help-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	art, err := RunWiring(Invocation{Args: []string{"init", "-h"}, Dir: dir})
+	if err != nil {
+		if errors.Is(err, ErrWiringNotImplemented) {
+			return initHelpChildExitStub
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	_, _ = os.Stdout.Write(art.Stdout)
+	_, _ = os.Stderr.Write(art.Stderr)
+	// Distinct from os.Exit(0) (FlagSet killed the process) and from
+	// art.ExitCode (help is exitOK). Observing that RunWiring returned is the
+	// whole claim this child exists to make.
+	return initHelpChildExitReturned
+}
+
+func execInitHelpChild(t *testing.T) (code int, stdout, stderr []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$") // #nosec G204 -- this test binary
+	cmd.Env = append(os.Environ(), envInitHelpChild+"=1")
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
+	err := cmd.Run()
+	stdout, stderr = outBuf.Bytes(), errBuf.Bytes()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Errorf("init -h child hung (exceeded %s) — a constant-true loop inside RunWiring is not a returned help arm", 15*time.Second)
+		return -1, stdout, stderr
+	}
+	if err == nil {
+		return 0, stdout, stderr
+	}
+	if cmd.ProcessState != nil {
+		return cmd.ProcessState.ExitCode(), stdout, stderr
+	}
+	t.Fatalf("could not exec init -h child: %v", err)
+	return -1, stdout, stderr
+}
+
+func initHelpUsageProblems(stdout, stderr []byte, refErr error) []string {
+	var problems []string
+	if len(stdout) != 0 {
+		problems = append(problems, fmt.Sprintf("stdout is not empty (%q); init FlagSet usage belongs on stderr", stdout))
+	}
+	if len(stderr) == 0 {
+		problems = append(problems, "stderr is empty; the init FlagSet usage block belongs on Artifacts.Stderr")
+		return problems
+	}
+	text := string(stderr)
+	if refErr != nil && strings.Contains(text, refErr.Error()) {
+		problems = append(problems, fmt.Sprintf("stderr carries %q — ContinueOnError + -h prints the usage block and returns flag.ErrHelp; that sentinel is never written to any stream", refErr.Error()))
+	}
+	for _, name := range []string{"-worktree", "-out", "-force"} {
+		if !strings.Contains(text, name) {
+			problems = append(problems, fmt.Sprintf("init FlagSet usage on stderr does not name %s", name))
+		}
+	}
+	return problems
 }
 
 func assertInitArtifactsNotApplicable(t *testing.T, label string, got Artifacts) {
@@ -3320,10 +3468,12 @@ func TestSeal_Wiring_NilRegistrarIsANamedState(t *testing.T) {
 
 // TestSeal_Wiring_MainForwardsTheResult is the cheap structural sweep GO-1-3
 // turns green: RunWiring is the code main runs, parseFlags is gone, no leftover
-// subcommand dispatch (switch or if), no os.Exit/log.Fatal* outside main, and
-// the error-arm/nil-error-arm exit mapping. Clause 8's process streams and
-// argv/stdin/Dir forwarding are NOT sealed here — they already match live
-// run() on today's main. See TestSeal_Wiring_MainForwardsProcessStreams.
+// subcommand dispatch (switch or if), no os.Exit/log.Fatal* outside main, the
+// error-arm/nil-error-arm exit mapping, and Invocation.Dir from a successful
+// os.Getwd. Clause 8's process streams and argv/stdin forwarding are NOT
+// sealed here — they already match live run() on today's main. See
+// TestSeal_Wiring_MainForwardsProcessStreams. Dir is sealed here because a
+// process test that sets cmd.Dir cannot observe an omitted Invocation.Dir.
 func TestSeal_Wiring_MainForwardsTheResult(t *testing.T) {
 	defer red(t)
 
@@ -3432,12 +3582,15 @@ func TestSeal_Wiring_MainForwardsTheResult(t *testing.T) {
 // -out also writes V2SidecarPath carrying this process's stdout wrapper.
 // Flag-parse failure must leave stdout empty.
 //
-// Argv / stdin / Dir forwarding is sealed here too, not by walking main's
-// syntax. (a) the file-argument row reddens unsliced os.Args (argv[0] becomes
-// the positional and the wallet verdict is lost); (b) piping the wallet diff
+// Argv / stdin forwarding is sealed here too, not by walking main's syntax.
+// (a) the file-argument row reddens unsliced os.Args (argv[0] becomes the
+// positional and the wallet verdict is lost); (b) piping the wallet diff
 // with no file argument must reproduce the file-argument verdict (Stdin nil
 // is the empty-diff case); (c) relative -out with cmd.Dir set must write
-// under cmd.Dir and name that relative path on stderr.
+// under cmd.Dir and name that relative path on stderr. Dir itself is sealed
+// by the structural scan: this process test cannot see a main that omits
+// Invocation.Dir, because cmd.Dir is the bed and an empty Dir resolves
+// against the process working directory.
 //
 // This test is a currently-green gate. It must be able to fail on its own —
 // it is not bundled with the still-red structural sweep in
@@ -3565,7 +3718,7 @@ func TestSeal_Wiring_MainForwardsProcessStreams(t *testing.T) {
 		}
 		assertForwardedV1Stdout(t, "clause-8/-out", stdout, liveStdout)
 		assertPersistNamedOnStderr(t, "clause-8/-out", stderr, outPath)
-		assertPersistedThisRunState(t, "clause-8/-out", outPath, liveRS, bed)
+		assertPersistedThisRunState(t, "clause-8/-out", outPath, liveRS, stdout, bed)
 	})
 
 	t.Run("out/relative-with-cmd-dir", func(t *testing.T) {
@@ -3611,7 +3764,7 @@ func TestSeal_Wiring_MainForwardsProcessStreams(t *testing.T) {
 		if _, err := os.Stat(wantPath); err != nil {
 			t.Errorf("relative -out did not write %s (cmd.Dir is the resolution root): %v", wantPath, err)
 		} else {
-			assertPersistedThisRunState(t, "clause-8/relative-out", wantPath, liveRS, bed)
+			assertPersistedThisRunState(t, "clause-8/relative-out", wantPath, liveRS, stdout, bed)
 		}
 		if pkgDir != bed.dir {
 			if _, err := os.Stat(cwdLeak); err == nil {
@@ -3734,7 +3887,7 @@ func TestSeal_Wiring_MainForwardsProcessStreams(t *testing.T) {
 		}
 		assertForwardedV2Stdout(t, "clause-8/v2-json-out", stdout, liveStdout)
 		assertPersistNamedOnStderr(t, "clause-8/v2-json-out", stderr, outPath)
-		assertPersistedThisRunState(t, "clause-8/v2-json-out", outPath, liveRS, bed)
+		assertPersistedThisRunState(t, "clause-8/v2-json-out", outPath, liveRS, stdout, bed)
 		assertPersistedThisRunSidecar(t, "clause-8/v2-json-out", outPath, stdout)
 	})
 }
@@ -3971,8 +4124,14 @@ func looksJSONArray(data []byte) bool {
 }
 
 func jsonNormalizedValueProblems(path string, got, live []byte) []string {
-	if key := jsonPathLeaf(path); volatileWireKeys[key] {
-		return nil
+	return jsonValueProblems(path, got, live, true)
+}
+
+func jsonValueProblems(path string, got, live []byte, skipVolatile bool) []string {
+	if skipVolatile {
+		if key := jsonPathLeaf(path); volatileWireKeys[key] {
+			return nil
+		}
 	}
 	if looksJSONObject(got) && looksJSONObject(live) {
 		g, errG := rawObject(got)
@@ -3990,7 +4149,7 @@ func jsonNormalizedValueProblems(path string, got, live []byte) []string {
 			if path != "" {
 				next = path + "." + k
 			}
-			problems = append(problems, jsonNormalizedValueProblems(next, gv, lv)...)
+			problems = append(problems, jsonValueProblems(next, gv, lv, skipVolatile)...)
 		}
 		return problems
 	}
@@ -4008,7 +4167,7 @@ func jsonNormalizedValueProblems(path string, got, live []byte) []string {
 			n = len(lArr)
 		}
 		for i := 0; i < n; i++ {
-			problems = append(problems, jsonNormalizedValueProblems(fmt.Sprintf("%s[%d]", path, i), gArr[i], lArr[i])...)
+			problems = append(problems, jsonValueProblems(fmt.Sprintf("%s[%d]", path, i), gArr[i], lArr[i], skipVolatile)...)
 		}
 		return problems
 	}
@@ -4061,35 +4220,122 @@ func uniqueRelOut(t *testing.T) string {
 // assertPersistedThisRunState is the persist half of a GREEN clause-8 -out
 // row. Naming the path on stderr is a stream claim; this is the filesystem
 // claim: the file exists at the path passed to the child and decodes as
-// this run's RunState (schema, classification, status, repo), matching
-// a live run() persist on the same bed.
-func assertPersistedThisRunState(t *testing.T, label, path string, liveRunState []byte, bed classifyBed) {
+// this run's RunState. The classification is compared with that child's
+// stdout (same invocation, including classified_at / config_path /
+// reviewer_args). Fields that cannot equal a separate live oracle are
+// asserted from the invocation; recursive key sets are compared with the
+// live RunState.
+func assertPersistedThisRunState(t *testing.T, label, path string, liveRunState, childStdout []byte, bed classifyBed) {
 	t.Helper()
 	data, err := os.ReadFile(path) // #nosec G304 -- path this test passed to the child
 	if err != nil {
 		t.Errorf("%s: run-state was not written at %s: %v. A binary that prints the path and writes nothing still names it on stderr.", label, path, err)
 		return
 	}
-	gotRS, gotV, problems := decodeRunStateBytes(data, true)
-	for _, p := range problems {
+	for _, p := range persistedThisRunStateProblems(data, liveRunState, childStdout, bed) {
 		t.Errorf("%s persisted run-state: %s", label, p)
 	}
+}
+
+func persistedThisRunStateProblems(data, liveRunState, childStdout []byte, bed classifyBed) []string {
+	gotRS, gotV, problems := decodeRunStateBytes(data, true)
 	liveRS, liveV, liveProblems := decodeRunStateBytes(liveRunState, true)
 	if len(liveProblems) != 0 {
-		t.Fatalf("CONTROL: live run-state failed decode: %s", strings.Join(liveProblems, "; "))
+		return append(problems, "CONTROL: live run-state failed decode: "+strings.Join(liveProblems, "; "))
 	}
-	if len(problems) == 0 && !sameVerdict(gotV, liveV) {
-		t.Errorf("%s run-state verdict %+v does not match this run %+v. Arbitrary JSON at -out is not this run's RunState.", label, gotV, liveV)
+	if !sameVerdict(gotV, liveV) {
+		problems = append(problems, fmt.Sprintf("run-state verdict %+v does not match live run() %+v. Arbitrary JSON at -out is not this run's RunState", gotV, liveV))
 	}
 	if gotRS.Status != liveRS.Status {
-		t.Errorf("%s run-state status %q does not match live run() %q", label, gotRS.Status, liveRS.Status)
+		problems = append(problems, fmt.Sprintf("run-state status %q does not match live run() %q", gotRS.Status, liveRS.Status))
 	}
 	if gotRS.Repo.BaseRef != liveRS.Repo.BaseRef {
-		t.Errorf("%s run-state repo.base_ref %q does not match live run() %q", label, gotRS.Repo.BaseRef, liveRS.Repo.BaseRef)
+		problems = append(problems, fmt.Sprintf("run-state repo.base_ref %q does not match live run() %q", gotRS.Repo.BaseRef, liveRS.Repo.BaseRef))
 	}
 	if gotRS.Repo.Worktree != "" && !sameResolvedPath(gotRS.Repo.Worktree, bed.dir) {
-		t.Errorf("%s run-state repo.worktree %q is not the subject bed %q", label, gotRS.Repo.Worktree, bed.dir)
+		problems = append(problems, fmt.Sprintf("run-state repo.worktree %q is not the subject bed %q", gotRS.Repo.Worktree, bed.dir))
 	}
+
+	extra, missing := jsonKeySetDiff(data, liveRunState)
+	if len(missing) > 0 {
+		problems = append(problems, fmt.Sprintf("dropped live run-state key(s) %v — sameVerdict does not compare the complete live key set", missing))
+	}
+	if len(extra) > 0 {
+		problems = append(problems, fmt.Sprintf("extra run-state key(s) %v not on the live RunState", extra))
+	}
+
+	raw, err := rawObject(data)
+	if err != nil {
+		return problems
+	}
+	classBytes, hasClass := raw["classification"]
+	if !hasClass {
+		return problems
+	}
+	if gotRS.Classification != nil {
+		problems = append(problems, invocationDerivedClassificationProblems(*gotRS.Classification, bed)...)
+	}
+	if stdoutIsV1Classification(childStdout) {
+		cExtra, cMissing := jsonKeySetDiff(classBytes, childStdout)
+		if len(cMissing) > 0 {
+			problems = append(problems, fmt.Sprintf("persisted classification dropped this invocation's stdout key(s) %v", cMissing))
+		}
+		if len(cExtra) > 0 {
+			problems = append(problems, fmt.Sprintf("persisted classification extra key(s) %v not on this invocation's stdout", cExtra))
+		}
+		for _, p := range jsonValueProblems("", classBytes, childStdout, false) {
+			problems = append(problems, "persisted classification vs this invocation's stdout: "+p)
+		}
+	}
+	return problems
+}
+
+func stdoutIsV1Classification(stdout []byte) bool {
+	obj, err := rawObject(stdout)
+	if err != nil {
+		return false
+	}
+	if _, ok := obj["response_version"]; ok {
+		return false
+	}
+	_, hasRisk := obj["risk"]
+	_, hasAt := obj["classified_at"]
+	return hasRisk && hasAt
+}
+
+func invocationDerivedClassificationProblems(cls Classification, bed classifyBed) []string {
+	var problems []string
+	if cls.ConfigPath == "" || !sameResolvedPath(cls.ConfigPath, bed.cfgPath) {
+		problems = append(problems, fmt.Sprintf("classification.config_path %q is not this invocation's -config %q", cls.ConfigPath, bed.cfgPath))
+	}
+	if !classifiedAtIsThisRun(cls.ClassifiedAt) {
+		problems = append(problems, fmt.Sprintf("classification.classified_at %q is not a this-run RFC3339 stamp", cls.ClassifiedAt))
+	}
+	if !reviewerArgsNameWorktree(cls.ReviewerArgs, bed.dir) {
+		problems = append(problems, fmt.Sprintf("classification.reviewer_args %v do not name this invocation's worktree %q", cls.ReviewerArgs, bed.dir))
+	}
+	return problems
+}
+
+func classifiedAtIsThisRun(s string) bool {
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return false
+	}
+	now := time.Now().UTC()
+	if ts.Before(now.Add(-time.Hour)) || ts.After(now.Add(time.Minute)) {
+		return false
+	}
+	return true
+}
+
+func reviewerArgsNameWorktree(args []string, worktree string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-cwd" && sameResolvedPath(args[i+1], worktree) {
+			return true
+		}
+	}
+	return false
 }
 
 // assertPersistedThisRunSidecar requires V2SidecarPath(outPath) to exist
@@ -4163,6 +4409,88 @@ func problemsNamed(problems []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestSeal_Wiring_PersistedRunStateMatcherRejectsFabricatedMetadata is GREEN
+// today: it is the in-test control for assertPersistedThisRunState.
+// sameVerdict ignores classified_at, config_path, and reviewer_args, so a
+// child that persists a structurally valid classification with fabricated
+// per-run metadata, or that omits additional live run-state keys, used to
+// keep the GREEN clause-8 -out rows passing.
+func TestSeal_Wiring_PersistedRunStateMatcherRejectsFabricatedMetadata(t *testing.T) {
+	defer red(t)
+
+	bed := newClassifyBed(t)
+	out := filepath.Join(t.TempDir(), "run-state.json")
+	code, stdout, _ := liveRunStreams(t, bed.liveOpts("1", true, out))
+	if code != exitOK {
+		t.Fatalf("CONTROL: live v1/json/-out exited %d:\n%s", code, stdout)
+	}
+	data := mustRead(out)
+	if len(data) == 0 {
+		t.Fatal("CONTROL: live run() -out wrote no run-state")
+	}
+	if problems := persistedThisRunStateProblems(data, data, stdout, bed); len(problems) != 0 {
+		t.Fatalf("CONTROL: this invocation's persist vs its stdout must pass, got %v", problems)
+	}
+
+	fabricatedAt := withNestedJSONKey(data, "classification", "classified_at", "1999-01-01T00:00:00Z")
+	if problems := persistedThisRunStateProblems(fabricatedAt, data, stdout, bed); len(problems) == 0 {
+		t.Fatal("CONTROL: fabricated classified_at must redden — sameVerdict ignores the clock, and a separate live oracle cannot see this invocation's stamp")
+	}
+	fabricatedCfg := withNestedJSONKey(data, "classification", "config_path", "/not/this/invocation.json")
+	if problems := persistedThisRunStateProblems(fabricatedCfg, data, stdout, bed); len(problems) == 0 {
+		t.Fatal("CONTROL: fabricated config_path must redden — sameVerdict ignores provenance")
+	}
+	fabricatedArgs := withNestedJSONKey(data, "classification", "reviewer_args", []string{"-cwd", "/not/this/worktree"})
+	if problems := persistedThisRunStateProblems(fabricatedArgs, data, stdout, bed); len(problems) == 0 {
+		t.Fatal("CONTROL: fabricated reviewer_args must redden — sameVerdict ignores argv")
+	}
+
+	omittedCreated := omitJSONKey(data, "created_at")
+	if _, ok := mustRawObject(t, data)["created_at"]; ok {
+		if problems := persistedThisRunStateProblems(omittedCreated, data, stdout, bed); len(problems) == 0 {
+			t.Fatal("CONTROL: omitting a live run-state key must redden — recursive key-set comparison is the claim sameVerdict does not make")
+		}
+	} else {
+		t.Fatal("CONTROL: live run-state has no created_at; the omitted-key mutation distinguished nothing")
+	}
+
+	v2Out := filepath.Join(t.TempDir(), "v2-run-state.json")
+	v2Code, v2Stdout, _ := liveRunStreams(t, bed.liveOpts("2", true, v2Out))
+	if v2Code != exitOK {
+		t.Fatalf("CONTROL: live v2/json/-out exited %d:\n%s", v2Code, v2Stdout)
+	}
+	v2Data := mustRead(v2Out)
+	if problems := persistedThisRunStateProblems(v2Data, v2Data, v2Stdout, bed); len(problems) != 0 {
+		t.Fatalf("CONTROL: v2 persist vs this invocation's wrapper must pass invocation-derived fields, got %v", problems)
+	}
+	v2FakeAt := withNestedJSONKey(v2Data, "classification", "classified_at", "1999-01-01T00:00:00Z")
+	if problems := persistedThisRunStateProblems(v2FakeAt, v2Data, v2Stdout, bed); len(problems) == 0 {
+		t.Fatal("CONTROL: v2 persist with fabricated classified_at must redden — the wrapper has no clock to compare, so validity is asserted explicitly")
+	}
+}
+
+func omitJSONKey(data []byte, key string) []byte {
+	obj, err := rawObject(data)
+	if err != nil {
+		return data
+	}
+	delete(obj, key)
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return data
+	}
+	return out
+}
+
+func mustRawObject(t *testing.T, data []byte) map[string]json.RawMessage {
+	t.Helper()
+	obj, err := rawObject(data)
+	if err != nil {
+		t.Fatalf("CONTROL: bytes are not a JSON object: %v", err)
+	}
+	return obj
 }
 
 // TestSeal_Wiring_ForwardedV1StdoutMatcherRejectsFramingAndExtraKeys is GREEN
@@ -4799,14 +5127,15 @@ func TestSeal_Wiring_FlagParseErrorMatcherRejectsUnrelatedErrors(t *testing.T) {
 }
 
 // mainForwardsScanProblems is the cheap structural scan still applied to
-// main: RunWiring is called once, no os.Exit literals, no leftover
-// subcommand dispatch (switch, if-compare, legacy handler calls, or
-// os.Args[1] reads), and the RunWiring error arm writes the bound error to
-// os.Stderr and exits exitInternal while the nil-error arm exits with
-// Artifacts.ExitCode. Argv/stdin/Dir forwarding and clause 8 stream
-// forwarding are sealed by execing a scratch binary
-// (TestSeal_Wiring_MainForwardsProcessStreams), not by walking Invocation
-// construction.
+// main: RunWiring is called once, Invocation.Dir is populated from a
+// successful os.Getwd, no os.Exit literals, no leftover subcommand dispatch
+// (switch, if-compare, legacy handler calls, or os.Args[1] reads), and the
+// RunWiring error arm writes the bound error to os.Stderr and exits
+// exitInternal while the nil-error arm exits with Artifacts.ExitCode.
+// Argv/stdin forwarding and clause 8 stream forwarding are sealed by execing
+// a scratch binary (TestSeal_Wiring_MainForwardsProcessStreams). Dir cannot
+// be sealed that way: cmd.Dir = bed.dir makes an omitted Invocation.Dir
+// still resolve against the process working directory.
 func mainForwardsScanProblems(fn *ast.FuncDecl) []string {
 	var problems []string
 	if n := countCalls(fn, isIdentCall("RunWiring")); n != 1 {
@@ -4814,6 +5143,9 @@ func mainForwardsScanProblems(fn *ast.FuncDecl) []string {
 	} else {
 		for _, p := range runWiringExitMappingProblems(fn) {
 			problems = append(problems, "clause 8 exit: "+p)
+		}
+		for _, p := range invocationDirFromGetwdProblems(fn) {
+			problems = append(problems, "clause 8 Dir: "+p)
 		}
 	}
 	if n := countCalls(fn, osExitLiteral); n != 0 {
@@ -4823,6 +5155,164 @@ func mainForwardsScanProblems(fn *ast.FuncDecl) []string {
 		problems = append(problems, fmt.Sprintf("main() still dispatches subcommands %v. Clause 6 moves that branch inside RunWiring, because the pre-flag-parse arms are part of the mapping under test.", cases))
 	}
 	return problems
+}
+
+// invocationDirFromGetwdProblems requires RunWiring's Invocation.Dir to be
+// the string result of os.Getwd whose error was checked and mapped to
+// exitInternal. An Invocation that omits Dir, or a Getwd whose error is
+// discarded, leaves resolution to whatever cwd the process happens to hold
+// — which TestSeal_Wiring_MainForwardsProcessStreams cannot see, because
+// that test sets cmd.Dir to the bed.
+func invocationDirFromGetwdProblems(fn *ast.FuncDecl) []string {
+	if fn == nil || fn.Body == nil {
+		return []string{"main does not populate Invocation.Dir from a successful os.Getwd"}
+	}
+	getwdOK := getwdSuccessNames(fn)
+	var problems []string
+	foundCall := false
+	foundDir := false
+	inspectSkippingFuncLits(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isIdentCall("RunWiring")(call) {
+			return true
+		}
+		foundCall = true
+		if len(call.Args) != 1 {
+			problems = append(problems, "RunWiring is not called with one Invocation, so Dir population cannot be shown")
+			return true
+		}
+		dirExpr, hasDir, isLit := invocationDirField(fn, call.Args[0])
+		if !isLit && !hasDir {
+			problems = append(problems, "RunWiring argument is not an Invocation composite literal (or an ident bound to one), so Dir population cannot be shown")
+			return true
+		}
+		if !hasDir {
+			problems = append(problems, "RunWiring Invocation omits Dir. Clause 8: main populates Dir from the working directory; omitting it leaves resolution to whatever cwd the process happens to hold")
+			return true
+		}
+		foundDir = true
+		id, ok := unwrapParen(dirExpr).(*ast.Ident)
+		if !ok || !getwdOK[id.Name] {
+			problems = append(problems, "Invocation.Dir is not the successfully obtained working directory from os.Getwd (error checked, exitInternal). Discarding Getwd's error or hard-coding Dir is not forwarding the process directory")
+		}
+		return true
+	})
+	if foundCall && !foundDir && len(problems) == 0 {
+		problems = append(problems, "RunWiring Invocation omits Dir. Clause 8: main populates Dir from the working directory; omitting it leaves resolution to whatever cwd the process happens to hold")
+	}
+	return problems
+}
+
+func getwdSuccessNames(fn *ast.FuncDecl) map[string]bool {
+	names := map[string]bool{}
+	if fn == nil || fn.Body == nil {
+		return names
+	}
+	type getwdBind struct {
+		dir, err string
+		pos      token.Pos
+	}
+	var binds []getwdBind
+	inspectSkippingFuncLits(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		if len(as.Rhs) != 1 || !isSelectorCall("os", "Getwd")(unwrapParen(as.Rhs[0])) {
+			return true
+		}
+		if len(as.Lhs) < 2 {
+			return true
+		}
+		d, ok1 := as.Lhs[0].(*ast.Ident)
+		e, ok2 := as.Lhs[1].(*ast.Ident)
+		if !ok1 || !ok2 || d.Name == "" || d.Name == "_" || e.Name == "" || e.Name == "_" {
+			return true
+		}
+		binds = append(binds, getwdBind{dir: d.Name, err: e.Name, pos: as.Pos()})
+		return true
+	})
+	runPos := token.NoPos
+	inspectSkippingFuncLits(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isIdentCall("RunWiring")(call) {
+			return true
+		}
+		if runPos == token.NoPos || call.Pos() < runPos {
+			runPos = call.Pos()
+		}
+		return true
+	})
+	for _, b := range binds {
+		ifs := firstErrIfAfter(fn, b.err, b.pos)
+		if ifs == nil {
+			continue
+		}
+		if runPos != token.NoPos && ifs.Pos() >= runPos {
+			continue
+		}
+		neq, _ := condErrVsNil(ifs.Cond, b.err)
+		if !neq {
+			continue
+		}
+		for _, c := range osExitsIn(ifs.Body) {
+			if classifyExitArg(exitArgOf(c), "") == exitArgExitInternal {
+				names[b.dir] = true
+				break
+			}
+		}
+	}
+	return names
+}
+
+func invocationDirField(fn *ast.FuncDecl, arg ast.Expr) (dir ast.Expr, hasDir, isComposite bool) {
+	arg = unwrapParen(arg)
+	if lit, ok := arg.(*ast.CompositeLit); ok {
+		dir, hasDir = compositeLitDir(lit)
+		return dir, hasDir, true
+	}
+	id, ok := arg.(*ast.Ident)
+	if !ok || fn == nil || fn.Body == nil {
+		return nil, false, false
+	}
+	inspectSkippingFuncLits(fn.Body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		if len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+			return true
+		}
+		lhs, ok := as.Lhs[0].(*ast.Ident)
+		if !ok || lhs.Name != id.Name {
+			return true
+		}
+		lit, ok := unwrapParen(as.Rhs[0]).(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		dir, hasDir = compositeLitDir(lit)
+		isComposite = true
+		return false
+	})
+	return dir, hasDir, isComposite
+}
+
+func compositeLitDir(lit *ast.CompositeLit) (ast.Expr, bool) {
+	if lit == nil {
+		return nil, false
+	}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if ok && key.Name == "Dir" {
+			return kv.Value, true
+		}
+	}
+	return nil, false
 }
 
 const (
@@ -5010,43 +5500,57 @@ func stmtsAfter(block *ast.BlockStmt, stmt ast.Stmt) []ast.Stmt {
 	return nil
 }
 
-// osExitsIn collects os.Exit calls on the reachable path of n. Exits under
-// `if false` (and after a prior os.Exit/return in the same block) are not
-// termination: `if false { os.Exit(exitInternal) }` used to satisfy the
-// error-arm scan while a real non-nil RunWiring error fell through.
+// osExitsIn collects os.Exit calls that are guaranteed to execute on every
+// reachable continuation of n. Exits under `if false`, after a prior
+// os.Exit/return in the same block, or in only one arm of a non-constant
+// if are not termination: `if shouldExit { os.Exit(exitInternal) }` used
+// to satisfy the error-arm scan while a real non-nil RunWiring error fell
+// through whenever shouldExit was false. For a non-constant if, termination
+// is guaranteed only when both branches terminate with os.Exit, or
+// execution subsequently reaches an unconditional matching exit.
 func osExitsIn(n ast.Node) []*ast.CallExpr {
-	if n == nil {
+	exits, ok := osExitsGuaranteed(n)
+	if !ok {
 		return nil
+	}
+	return exits
+}
+
+func osExitsGuaranteed(n ast.Node) ([]*ast.CallExpr, bool) {
+	if n == nil {
+		return nil, false
 	}
 	switch x := n.(type) {
 	case *ast.BlockStmt:
-		return osExitsInStmts(x.List)
+		return osExitsGuaranteedStmts(x.List)
 	case *ast.IfStmt:
-		return osExitsInIf(x)
+		return osExitsGuaranteedIf(x)
 	case ast.Stmt:
-		return osExitsInStmts([]ast.Stmt{x})
+		return osExitsGuaranteedStmts([]ast.Stmt{x})
 	}
-	return nil
+	return nil, false
 }
 
-func osExitsInIf(ifs *ast.IfStmt) []*ast.CallExpr {
+func osExitsGuaranteedIf(ifs *ast.IfStmt) ([]*ast.CallExpr, bool) {
 	if ifs == nil {
-		return nil
+		return nil, false
 	}
 	switch {
 	case isConstFalse(ifs.Cond):
-		return osExitsIn(ifs.Else)
+		return osExitsGuaranteed(ifs.Else)
 	case isConstTrue(ifs.Cond):
-		return osExitsIn(ifs.Body)
+		return osExitsGuaranteed(ifs.Body)
 	default:
-		var out []*ast.CallExpr
-		out = append(out, osExitsIn(ifs.Body)...)
-		out = append(out, osExitsIn(ifs.Else)...)
-		return out
+		thenExits, thenOK := osExitsGuaranteed(ifs.Body)
+		elseExits, elseOK := osExitsGuaranteed(ifs.Else)
+		if thenOK && elseOK {
+			return append(thenExits, elseExits...), true
+		}
+		return nil, false
 	}
 }
 
-func osExitsInStmts(stmts []ast.Stmt) []*ast.CallExpr {
+func osExitsGuaranteedStmts(stmts []ast.Stmt) ([]*ast.CallExpr, bool) {
 	var out []*ast.CallExpr
 	for _, s := range stmts {
 		if s == nil {
@@ -5057,33 +5561,30 @@ func osExitsInStmts(stmts []ast.Stmt) []*ast.CallExpr {
 			if call, ok := unwrapParen(es.X).(*ast.CallExpr); ok {
 				out = append(out, call)
 			}
-			return out
+			return out, true
 		}
 		if stmtIsReturn(s) {
-			return out
+			return out, false
 		}
 		switch x := s.(type) {
 		case *ast.BlockStmt:
-			out = append(out, osExitsInStmts(x.List)...)
+			exits, ok := osExitsGuaranteedStmts(x.List)
+			out = append(out, exits...)
+			if ok {
+				return out, true
+			}
 			if blockAlwaysStops(x) {
-				return out
+				return out, false
 			}
 		case *ast.IfStmt:
-			out = append(out, osExitsInIf(x)...)
-			if isConstTrue(x.Cond) && blockAlwaysStops(x.Body) {
-				return out
-			}
-			if isConstFalse(x.Cond) && x.Else != nil {
-				if bl, ok := x.Else.(*ast.BlockStmt); ok && blockAlwaysStops(bl) {
-					return out
-				}
-				if stmtIsOsExit(x.Else) || stmtIsReturn(x.Else) {
-					return out
-				}
+			exits, ok := osExitsGuaranteedIf(x)
+			out = append(out, exits...)
+			if ok {
+				return out, true
 			}
 		}
 	}
-	return out
+	return out, false
 }
 
 func exitArgOf(call *ast.CallExpr) ast.Expr {
@@ -5096,14 +5597,16 @@ func exitArgOf(call *ast.CallExpr) ast.Expr {
 // runWiringExitMappingProblems is the non-vacuous check for clause 8's two
 // exit arms: a non-nil RunWiring error is written to os.Stderr with a
 // recognized write (fmt.Fprint*, io.WriteString, os.Stderr.Write*) whose
-// payload is err or err.Error(), before a reachable os.Exit(exitInternal);
-// the nil-error arm exits with Artifacts.ExitCode.
+// payload is err or err.Error(), before os.Exit(exitInternal) on every
+// reachable continuation of that arm; the nil-error arm exits with
+// Artifacts.ExitCode.
 // osExitLiteral only rejects integer literals, which is why the
 // exit-argument half exists. A silent `if err != nil { os.Exit(exitInternal) }`
 // is the other half: operational failures are nil-error artifacts, so no
 // subprocess row observes this arm. Sprintf, noop, if false, a write
-// after os.Exit, `Fprintln(os.Stderr, err != nil)`, and
-// `if false { os.Exit(exitInternal) }` are not a diagnostic.
+// after os.Exit, `Fprintln(os.Stderr, err != nil)`,
+// `if false { os.Exit(exitInternal) }`, and
+// `if shouldExit { os.Exit(exitInternal) }` are not a diagnostic.
 func runWiringExitMappingProblems(fn *ast.FuncDecl) []string {
 	bind, ok := findRunWiringBind(fn)
 	if !ok {
@@ -5492,10 +5995,13 @@ func snippetFunc(t *testing.T, src, name string) *ast.FuncDecl {
 // TestSeal_Wiring_MainScanJudgesInvocationAndPackageSweep is GREEN today: it
 // is the in-test control for the cheap structural claims still made by
 // TestSeal_Wiring_MainForwardsTheResult. Clause 8 stream forwarding and
-// argv/stdin/Dir are sealed by TestSeal_Wiring_MainForwardsProcessStreams;
-// these rows judge the RunWiring error-arm / nil-error-arm exit mapping
+// argv/stdin are sealed by TestSeal_Wiring_MainForwardsProcessStreams; Dir
+// is sealed here (Invocation.Dir from a successful os.Getwd) because a
+// process test that sets cmd.Dir cannot see an omitted Dir. These rows
+// also judge the RunWiring error-arm / nil-error-arm exit mapping
 // (including that the bound error reaches os.Stderr as err or err.Error(),
-// and that os.Exit(exitInternal) is reachable rather than under if false),
+// and that os.Exit(exitInternal) is guaranteed on every continuation of
+// the error arm, not merely present in one branch of a non-constant if),
 // os.Exit literals, leftover subcommand dispatch (switch and if), and the
 // package-wide os.Exit/log.Fatal*/stream-assignment sweep.
 func TestSeal_Wiring_MainScanJudgesInvocationAndPackageSweep(t *testing.T) {
@@ -5772,6 +6278,78 @@ func main() {
 		t.Fatal("CONTROL: combining err != nil write with if false os.Exit must redden — both bypasses together still drop a real non-nil error through to Artifacts.ExitCode")
 	}
 
+	guardedExit := parseMainSnippet(t, `package main
+func main() {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		var shouldExit bool
+		if shouldExit {
+			os.Exit(exitInternal)
+		}
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := runWiringExitMappingProblems(guardedExit); len(problems) == 0 {
+		t.Fatal("CONTROL: os.Exit(exitInternal) behind a runtime boolean must redden — an os.Exit in only one arm of a non-constant if is not termination of the error path")
+	}
+
+	bothArmsExit := parseMainSnippet(t, `package main
+func main() {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		var shouldExit bool
+		if shouldExit {
+			os.Exit(exitInternal)
+		} else {
+			os.Exit(exitInternal)
+		}
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := runWiringExitMappingProblems(bothArmsExit); len(problems) != 0 {
+		t.Fatalf("CONTROL: a non-constant if whose both branches os.Exit(exitInternal) is guaranteed termination, got %v", problems)
+	}
+
+	afterGuardExit := parseMainSnippet(t, `package main
+func main() {
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		var shouldExit bool
+		if shouldExit {
+			os.Exit(exitInternal)
+		}
+		os.Exit(exitInternal)
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := runWiringExitMappingProblems(afterGuardExit); len(problems) != 0 {
+		t.Fatalf("CONTROL: os.Exit(exitInternal) after a non-constant if is an unconditional continuation and must pass, got %v", problems)
+	}
+
 	errorMethod := parseMainSnippet(t, `package main
 func main() {
 	wd, _ := os.Getwd()
@@ -5963,6 +6541,25 @@ func main() {
 }`)
 	if assignsOsStream(honestMain, nil, nil, "Stdout") || assignsOsStream(honestMain, nil, nil, "Stderr") {
 		t.Fatal("CONTROL: an honest forwarding body must not be flagged as assigning os.Stdout/os.Stderr")
+	}
+	if problems := mainForwardsScanProblems(honestMain); len(problems) == 0 {
+		t.Fatal("CONTROL: Invocation omitting Dir must redden — cmd.Dir process tests still pass if main leaves Dir empty and RunWiring resolves against the process working directory")
+	}
+
+	discardGetwd := parseMainSnippet(t, `package main
+func main() {
+	wd, _ := os.Getwd()
+	art, err := RunWiring(Invocation{Args: os.Args[1:], Stdin: os.Stdin, Dir: wd})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitInternal)
+	}
+	os.Stdout.Write(art.Stdout)
+	os.Stderr.Write(art.Stderr)
+	os.Exit(int(art.ExitCode))
+}`)
+	if problems := mainForwardsScanProblems(discardGetwd); len(problems) == 0 {
+		t.Fatal("CONTROL: discarding os.Getwd's error must redden — Dir is not the successfully obtained working directory")
 	}
 
 	aliasStreamSrc := `package main
