@@ -13,8 +13,12 @@ package main
 // state and capture os.Stdout.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -404,38 +408,275 @@ func TestSeal_InstalledRegistrar_RegistersTheRealFlag(t *testing.T) {
 	}
 }
 
-// The installed digest source yields two lowercase-hex SHA-256 strings, or an
-// error. It must never return an empty string for a channel it did not consume.
+// The installed digest source yields two lowercase-hex SHA-256 strings after
+// the real input paths consumed both channels, or an error before that point.
+// It must never return an empty string for a channel it did not consume.
 func TestSeal_InstalledDigestSource_YieldsHexOrErrors(t *testing.T) {
 	defer red(t)
 
-	src := digestSource
-	if src == nil {
-		t.Fatal("digestSource is nil — B1's body must install it")
+	src, ok := digestSource.(*unframedDigestSource)
+	if !ok || src == nil {
+		t.Fatalf("digestSource = %T, want the installed *unframedDigestSource", digestSource)
 	}
+	if src != unframedDigests {
+		t.Fatalf("digestSource and unframedDigests differ: %p != %p; the installed source must be the recorder the input path writes", src, unframedDigests)
+	}
+
+	// This is package state. Start from the actual no-input state and restore
+	// the caller's state so this seal observes only its own production reads.
+	src.mu.Lock()
+	savedConfig := append([]byte(nil), src.config...)
+	savedDiff := append([]byte(nil), src.diff...)
+	savedSawConfig, savedSawDiff := src.sawConfig, src.sawDiff
+	src.config, src.diff = nil, nil
+	src.sawConfig, src.sawDiff = false, false
+	src.mu.Unlock()
+	t.Cleanup(func() {
+		src.mu.Lock()
+		src.config, src.diff = savedConfig, savedDiff
+		src.sawConfig, src.sawDiff = savedSawConfig, savedSawDiff
+		src.mu.Unlock()
+	})
+
 	cfgSHA, diffSHA, err := src.ConsumedDigests()
-	if err != nil {
-		// Legal: this process consumed no config and no diff. The contract is
-		// that it errors rather than returning empty strings.
-		if cfgSHA != "" || diffSHA != "" {
-			t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
-		}
-		return
+	if err == nil {
+		t.Fatal("ConsumedDigests succeeded before config and diff were consumed")
 	}
-	for name, sha := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
-		if len(sha) != 64 {
-			t.Errorf("%s digest %q is not 64 hex characters", name, sha)
+	if cfgSHA != "" || diffSHA != "" {
+		t.Errorf("ConsumedDigests returned an error AND values %q/%q — pick one", cfgSHA, diffSHA)
+	}
+
+	// Drive the same readers run() uses. Calling recordConfig/recordDiff
+	// directly would only prove the recorder can be called, not that production
+	// input is what makes a digest available.
+	dir := t.TempDir()
+	configBytes, err := os.ReadFile(exampleConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "risk-paths.json")
+	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(configPath); err != nil {
+		t.Fatalf("loadConfig(%q): %v", configPath, err)
+	}
+
+	diffBytes := []byte(diffFor(walletPath))
+	diffPath := filepath.Join(dir, "change.diff")
+	if err := os.WriteFile(diffPath, diffBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readDiff([]string{diffPath}); err != nil {
+		t.Fatalf("readDiff(%q): %v", diffPath, err)
+	} else if got != string(diffBytes) {
+		t.Fatalf("readDiff(%q) = %q, want the bytes it should have recorded", diffPath, got)
+	}
+
+	cfgSHA, diffSHA, err = src.ConsumedDigests()
+	if err != nil {
+		t.Fatalf("ConsumedDigests after loadConfig and readDiff: %v", err)
+	}
+	wantSHA256 := func(b []byte) string {
+		sum := sha256.Sum256(b)
+		return hex.EncodeToString(sum[:])
+	}
+	for name, got := range map[string]string{"config": cfgSHA, "diff": diffSHA} {
+		want := wantSHA256(configBytes)
+		if name == "diff" {
+			want = wantSHA256(diffBytes)
 		}
-		if sha != strings.ToLower(sha) {
-			t.Errorf("%s digest %q is not lowercase hex", name, sha)
+		if got != want {
+			t.Errorf("%s digest = %q, want SHA-256 of the consumed %s bytes %q", name, got, name, want)
 		}
-		for _, c := range sha {
+		if len(got) != 64 {
+			t.Errorf("%s digest %q is not 64 hex characters", name, got)
+		}
+		if got != strings.ToLower(got) {
+			t.Errorf("%s digest %q is not lowercase hex", name, got)
+		}
+		for _, c := range got {
 			if !strings.ContainsRune("0123456789abcdef", c) {
-				t.Errorf("%s digest %q is not hex", name, sha)
+				t.Errorf("%s digest %q is not hex", name, got)
 				break
 			}
 		}
 	}
+}
+
+// The live invocation owns the contract decision. This table covers the full
+// (contract x -out x -json) mapping, so choosing EmitV1 for ContractV2 cannot
+// hide behind the library-level EmitV2 seals: its JSON rows must put a response
+// wrapper on stdout while the ContractV1 control rows must not.
+func TestSeal_Run_ContractArtifactMatrix(t *testing.T) {
+	defer red(t)
+
+	bin := liveClassify(t)
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configBytes, err := os.ReadFile(exampleConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diffBytes := []byte(diffFor(walletPath))
+	diffPath := filepath.Join(t.TempDir(), "wallet.diff")
+	if err := os.WriteFile(diffPath, diffBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sha256Of := func(b []byte) string {
+		sum := sha256.Sum256(b)
+		return hex.EncodeToString(sum[:])
+	}
+	wantConfigSHA, wantDiffSHA := sha256Of(configBytes), sha256Of(diffBytes)
+
+	cases := []struct {
+		name     string
+		contract ContractVersion
+		out      bool
+		json     bool
+	}{
+		{"v1_human_no_out", ContractV1, false, false},
+		{"v1_json_no_out", ContractV1, false, true},
+		{"v1_human_with_out", ContractV1, true, false},
+		{"v1_json_with_out", ContractV1, true, true},
+		{"v2_human_no_out", ContractV2, false, false},
+		{"v2_json_no_out", ContractV2, false, true},
+		{"v2_human_with_out", ContractV2, true, false},
+		{"v2_json_with_out", ContractV2, true, true},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			defer red(t)
+
+			runState := filepath.Join(t.TempDir(), "run.json")
+			args := []string{
+				"-no-git",
+				"-contract-version", tt.contract.String(),
+				"-config", exampleConfigPath,
+			}
+			if tt.out {
+				args = append(args, "-out", runState)
+			}
+			if tt.json {
+				args = append(args, "-json")
+			}
+			args = append(args, diffPath)
+			r := runLive(t, bin, pkgDir, nil, args...)
+			if r.exit != 0 {
+				t.Fatalf("classify %s exited %d, want 0\n%s", tt.name, r.exit, r.all())
+			}
+
+			if !tt.json {
+				if !strings.Contains(r.stdout, "=== CLASSIFICATION ===") {
+					t.Errorf("human run wrote no classification report:\n%s", r.stdout)
+				}
+			} else {
+				var top map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(r.stdout), &top); err != nil {
+					t.Fatalf("JSON run did not write one JSON object: %v\n%s", err, r.stdout)
+				}
+				if tt.contract == ContractV1 {
+					if _, wrapped := top["response_version"]; wrapped {
+						t.Error("ContractV1 JSON output is a response wrapper; the v1 control must remain the legacy payload")
+					}
+					if _, present := top["classified_at"]; !present {
+						t.Error("ContractV1 JSON output lacks classified_at; it is not the legacy payload")
+					}
+				} else {
+					if _, wrapped := top["response_version"]; !wrapped {
+						t.Fatalf("ContractV2 JSON output lacks response_version and is not the required wrapper:\n%s", r.stdout)
+					}
+					var wrapper ResponseWrapper
+					if err := json.Unmarshal([]byte(r.stdout), &wrapper); err != nil {
+						t.Fatalf("ContractV2 JSON output does not decode as ResponseWrapper: %v", err)
+					}
+					if wrapper.ResponseVersion != responseVersion {
+						t.Errorf("response_version = %d, want %d", wrapper.ResponseVersion, responseVersion)
+					}
+					if wrapper.ComputedConfigSHA256 != wantConfigSHA || wrapper.ComputedDiffSHA256 != wantDiffSHA {
+						t.Errorf("wrapper digests = %q/%q, want SHA-256 of this run's consumed config/diff %q/%q", wrapper.ComputedConfigSHA256, wrapper.ComputedDiffSHA256, wantConfigSHA, wantDiffSHA)
+					}
+					var payload map[string]any
+					if err := json.Unmarshal(wrapper.Classification, &payload); err != nil {
+						t.Fatalf("wrapper classification is not JSON: %v", err)
+					}
+					if payload["contract_version"] != float64(ContractV2) {
+						t.Errorf("wrapper contract_version = %v, want %d", payload["contract_version"], ContractV2)
+					}
+					if _, legacy := payload["classified_at"]; legacy {
+						t.Error("wrapper contains the legacy classified_at field; ContractV2 must wrap the v2 envelope")
+					}
+				}
+			}
+
+			_, runStateErr := os.Stat(runState)
+			if tt.out && runStateErr != nil {
+				t.Errorf("-out run wrote no run-state at %s: %v", runState, runStateErr)
+			}
+			if !tt.out && !os.IsNotExist(runStateErr) {
+				t.Errorf("run without -out created a run-state at %s", runState)
+			}
+
+			sidecar := V2SidecarPath(runState)
+			_, sidecarErr := os.Stat(sidecar)
+			wantSidecar := tt.out && tt.contract == ContractV2
+			if wantSidecar && sidecarErr != nil {
+				t.Fatalf("ContractV2 -out run wrote no sidecar at %s: %v", sidecar, sidecarErr)
+			}
+			if !wantSidecar && !os.IsNotExist(sidecarErr) {
+				t.Errorf("contract %s with out=%v left a v2 sidecar at %s", tt.contract, tt.out, sidecar)
+			}
+			if wantSidecar {
+				data, err := os.ReadFile(sidecar)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var sc V2Sidecar
+				if err := json.Unmarshal(data, &sc); err != nil {
+					t.Fatalf("v2 sidecar is not JSON: %v", err)
+				}
+				if sc.Response.ResponseVersion != responseVersion || sc.Response.ComputedConfigSHA256 != wantConfigSHA || sc.Response.ComputedDiffSHA256 != wantDiffSHA {
+					t.Errorf("v2 sidecar response = version %d, digests %q/%q; want version %d and %q/%q", sc.Response.ResponseVersion, sc.Response.ComputedConfigSHA256, sc.Response.ComputedDiffSHA256, responseVersion, wantConfigSHA, wantDiffSHA)
+				}
+			}
+		})
+	}
+
+	// Invalid contracts are rejected before configuration or input reads. The
+	// valid V1/V2 rows above are the control; this one additionally proves that
+	// the rejected invocation leaves an existing artifact set untouched.
+	t.Run("invalid_contract_names_the_accepted_set_and_touches_nothing", func(t *testing.T) {
+		defer red(t)
+		dir := t.TempDir()
+		runState := filepath.Join(dir, "run.json")
+		sidecar := V2SidecarPath(runState)
+		beforeState, beforeSidecar := []byte("run-state sentinel\n"), []byte("sidecar sentinel\n")
+		if err := os.WriteFile(runState, beforeState, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sidecar, beforeSidecar, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r := runLive(t, bin, pkgDir, nil,
+			"-no-git", "-contract-version", "3",
+			"-config", filepath.Join(dir, "missing-config.json"),
+			"-out", runState, filepath.Join(dir, "missing.diff"))
+		if r.exit != exitInvalid {
+			t.Errorf("-contract-version 3 exited %d, want INVALID_INPUT %d\n%s", r.exit, exitInvalid, r.all())
+		}
+		if !strings.Contains(r.all(), "accepted values are 1 and 2") {
+			t.Errorf("-contract-version 3 did not name the accepted set {1,2}:\n%s", r.all())
+		}
+		if after, err := os.ReadFile(runState); err != nil || string(after) != string(beforeState) {
+			t.Errorf("invalid contract changed the existing run-state: %q, %v", after, err)
+		}
+		if after, err := os.ReadFile(sidecar); err != nil || string(after) != string(beforeSidecar) {
+			t.Errorf("invalid contract changed the existing v2 sidecar: %q, %v", after, err)
+		}
+	})
 }
 
 // ─── small helpers ───────────────────────────────────────────────────────────
