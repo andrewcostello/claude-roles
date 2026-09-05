@@ -1,0 +1,89 @@
+diff --git a/main.go b/main.go
+index a5d8e76..ad43974 100644
+--- a/main.go
++++ b/main.go
+@@ -205,7 +205,7 @@ func parseFlags() options {
+ 	flag.StringVar(&o.phase, "phase", "implementation", "implementation | iteration. iteration adds the domain_suite regression gate.")
+ 	flag.StringVar(&o.declare, "declare", "", "Comma-separated gates the Task Assignment declares applicable (bench_absolute, differential)")
+ 	flag.Var(&o.waivers, "waive", "<gate>=<reason> waiver for a gate that cannot run. Repeat the flag for several gates; the reason may contain commas. Recorded in the run state.")
+-	flag.StringVar(&o.only, "only", "", "Comma-separated gates to run; others are recorded as skipped with a reason")
++	flag.StringVar(&o.only, "only", "", "Comma-separated planned gates to run; omitted required gates fail unless explicitly waived")
+ 	flag.StringVar(&o.benchAbsCmd, "bench-absolute-command", "", "Command for the bench_absolute gate when declared")
+ 	flag.BoolVar(&o.dryRun, "dry-run", false, "Print the derived plan and exit without running anything")
+ 	flag.Parse()
+@@ -230,6 +230,11 @@ func run(opts options) int {
+ 	}
+ 
+ 	plans := derivePlan(cfg, state.Classification, modules, opts.phase, declared)
++	only, err := selectionForPlan(opts.only, plans)
++	if err != nil {
++		printInvalid([]string{err.Error()})
++		return exitInvalid
++	}
+ 	if opts.dryRun {
+ 		printPlan(state, modules, plans)
+ 		return 0
+@@ -237,13 +242,38 @@ func run(opts options) int {
+ 
+ 	ro := runOpts{
+ 		OutDir:      outDirFor(opts),
+-		Only:        splitSet(opts.only),
++		Only:        only,
+ 		Waivers:     waivers,
+ 		BenchAbsCmd: opts.benchAbsCmd,
+ 	}
+ 	return finish(opts, state, modules, execute(cfg, state, plans, ro))
+ }
+ 
++func selectionForPlan(raw string, plans []plan) (map[string]bool, error) {
++	if len(plans) == 0 {
++		return nil, fmt.Errorf("no applicable gates in the derived plan — an empty run cannot establish acceptance")
++	}
++	if raw == "" {
++		return nil, nil
++	}
++	planned := make(map[string]bool, len(plans))
++	for _, p := range plans {
++		planned[p.Gate] = true
++	}
++	selected := map[string]bool{}
++	for _, token := range strings.Split(raw, ",") {
++		name := strings.TrimSpace(token)
++		if name == "" {
++			return nil, fmt.Errorf("-only contains an empty gate name")
++		}
++		if !planned[name] {
++			return nil, fmt.Errorf("-only gate %q is not in the derived plan", name)
++		}
++		selected[name] = true
++	}
++	return selected, nil
++}
++
+ // prepare loads and validates everything the plan depends on. It returns the
+ // full problem list rather than exiting, so a caller reports all of them at once.
+ func prepare(opts options) (*Config, *RunState, []Module, []string) {
+@@ -663,7 +693,7 @@ func gateKey(p plan) gateID {
+ // status a human can act on; none of them is a silent pass.
+ func executeOne(cfg *Config, state *RunState, p plan, ro runOpts, id gateID, testOutputs map[string]string) Gate {
+ 	if len(ro.Only) > 0 && !ro.Only[p.Gate] {
+-		return Gate{Status: "skipped", SkipReason: "not selected by -only — this is NOT a pass"}
++		return waiveOrFail(ro.Waivers, p.Gate, "not selected by -only — this is NOT a pass")
+ 	}
+ 	// Derived gates evaluate another gate's captured output.
+ 	if p.Spec.DerivedFrom != "" {
+diff --git a/main_test.go b/main_test.go
+index b0482cc..c8d1933 100644
+--- a/main_test.go
++++ b/main_test.go
+@@ -820,8 +820,8 @@ func TestExecuteOne_OnlyFilterIsNotAPass(t *testing.T) {
+ 	ro := runOpts{Only: map[string]bool{"build": true}, OutDir: t.TempDir()}
+ 
+ 	g := executeOne(cfg, state, p, ro, gateID{Key: "gosec"}, map[string]string{})
+-	if g.Status != "skipped" {
+-		t.Errorf("status = %q, want skipped", g.Status)
++	if g.Status != "fail" {
++		t.Errorf("status = %q, want fail", g.Status)
+ 	}
+ 	if !strings.Contains(g.SkipReason, "NOT a pass") {
+ 		t.Errorf("skip reason must say it is not a pass: %q", g.SkipReason)

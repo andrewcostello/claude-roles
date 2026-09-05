@@ -1,0 +1,33 @@
+schema_version = "1.4"
+artifacts = ["/app/gates"]
+
+[task]
+name = "workflow-quality/gate-selection"
+version = "0.1.0"
+description = "Repair false acceptance caused by gate selection"
+keywords = ["go", "regression", "fail-closed"]
+
+[metadata]
+source_finding = "WF-02"
+scope = "single-component diagnostic; not a financial safety score"
+
+[agent]
+timeout_sec = 900.0
+
+[environment]
+network_mode = "no-network"
+cpus = 2
+memory_mb = 2048
+storage_mb = 4096
+build_timeout_sec = 180.0
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 180.0
+
+[verifier.environment]
+network_mode = "no-network"
+cpus = 2
+memory_mb = 2048
+storage_mb = 4096
+build_timeout_sec = 180.0
