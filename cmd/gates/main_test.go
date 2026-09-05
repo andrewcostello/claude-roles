@@ -820,8 +820,8 @@ func TestExecuteOne_OnlyFilterIsNotAPass(t *testing.T) {
 	ro := runOpts{Only: map[string]bool{"build": true}, OutDir: t.TempDir()}
 
 	g := executeOne(cfg, state, p, ro, gateID{Key: "gosec"}, map[string]string{})
-	if g.Status != "skipped" {
-		t.Errorf("status = %q, want skipped", g.Status)
+	if g.Status != "fail" {
+		t.Errorf("status = %q, want fail", g.Status)
 	}
 	if !strings.Contains(g.SkipReason, "NOT a pass") {
 		t.Errorf("skip reason must say it is not a pass: %q", g.SkipReason)
@@ -907,8 +907,10 @@ func TestFinish_ExitCodeReflectsFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := options{runState: p}
-	state := &RunState{Classification: &Classification{Risk: "high"}}
-	_ = state
+	state, err := readRunState(p)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if code := finish(opts, state, nil, []result{{Key: "build", Gate: "build", Outcome: Gate{Status: "pass"}}}); code != 0 {
 		t.Errorf("all-pass exit = %d, want 0", code)

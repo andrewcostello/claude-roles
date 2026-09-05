@@ -1,7 +1,7 @@
 # These tools decide what gets reviewed in every consuming project, and nothing
 # was checking them. This is that check.
 #
-# Each cmd/ tool is its own module — there is no root go.mod — so every step
+# Tools and shared libraries have separate modules — there is no root go.mod — so every step
 # runs with the module as its working directory. That is the same constraint
 # cmd/gates enforces for consuming projects.
 name: gates
@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [classify, gates, iterate, recheck, repro, deepseek, reviewer]
+        module: [cmd/classify, cmd/gates, cmd/iterate, cmd/recheck, cmd/repro, cmd/deepseek, cmd/reviewer, shared/statefile]
     steps:
       - uses: actions/checkout@v4
       # No cache-dependency-path: these modules are stdlib-only and have no
@@ -31,7 +31,7 @@ jobs:
           cache: false
 
       - name: gofmt
-        working-directory: cmd/${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -41,11 +41,11 @@ jobs:
           fi
 
       - name: vet
-        working-directory: cmd/${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: go vet ./...
 
       - name: test
-        working-directory: cmd/${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
         run: go test -race -cover ./...
 
   configs:

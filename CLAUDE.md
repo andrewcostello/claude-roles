@@ -2,10 +2,10 @@
 
 Guidance for Claude and for dispatched agents working in this repository.
 
-This repo is seven independent Go modules under `cmd/`, each with its own
-`go.mod`: `classify`, `deepseek`, `gates`, `iterate`, `recheck`, `repro`,
-`reviewer`. There is no module at the root, so `go test ./...` from here covers
-nothing — `.dispatcher.yaml`'s gate loops over the modules, and so should you.
+CLI tools under `cmd/` and libraries under `shared/` have separate Go modules.
+Keep the sibling directories together when building: state writers use a local
+module replacement for the shared updater. There is no root module, so run
+the module loop in `.dispatcher.yaml`, not `go test ./...` at the root.
 
 ---
 
@@ -106,7 +106,7 @@ stale.
 
 ## The gate
 
-`.dispatcher.yaml` runs `go test ./...` in each `cmd/*/` module. Two
+`.dispatcher.yaml` runs `go test ./...` in each `cmd/*/` and `shared/*/` module. Two
 deliberate omissions, both measured:
 
 * **Not `go build`** — the compiled binaries are tracked in this repo, so
@@ -225,7 +225,7 @@ for this repo's surface:
 
 ## Before claiming work complete
 
-* The gate is green — `.dispatcher.yaml`'s loop over `cmd/*/`, on the
+* The gate is green — `.dispatcher.yaml`'s module loop, on the
   **committed** tree. Evidence from a dirty worktree is not evidence.
 * Every claim in your summary is one you measured. If you did not run
   something, say you did not run it; a placeholder where a result belongs is

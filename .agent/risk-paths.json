@@ -25,7 +25,7 @@
     {
       "id": "orchestrator-tools",
       "note": "The binaries that decide risk tiers, run the gates and drive the iteration loop. A defect here is not a local bug — it changes what gets reviewed in every consuming project.",
-      "paths": ["cmd/**"],
+      "paths": ["cmd/**", "shared/**"],
       "risk": "high"
     },
     {

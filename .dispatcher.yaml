@@ -1,6 +1,6 @@
 # Per-repo dispatcher config. `test:` is the mechanical gate: exit 0 = green.
 #
-# Seven INDEPENDENT Go modules under cmd/, each with its own go.mod, so there
+# Tools under cmd/ and libraries under shared/ have their own go.mod, so there
 # is no single `go test ./...` covering the repo — a gate that ran only the
 # root would pass while any module was broken.
 #
@@ -16,7 +16,7 @@
 # side effect of configuring the gate.
 test: |
   set -e
-  for m in cmd/*/; do
+  for m in cmd/*/ shared/*/; do
     if [ -f "${m}go.mod" ]; then
       ( cd "$m" && go test ./... )
     fi

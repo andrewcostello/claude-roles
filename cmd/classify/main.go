@@ -35,6 +35,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/yourorg/claude-workflow/statefile"
 )
 
 const (
@@ -1260,35 +1262,36 @@ func short(sha string) string {
 // writeRunState merges into an existing run state, preserving the slices other
 // nodes own. classify owns repo and classification and nothing else.
 func writeRunState(p, taskKey string, repo Repo, cls *Classification) error {
-	state := RunState{SchemaVersion: schemaVersion}
-	// #nosec G304 -- p is the -out run-state path chosen by the caller.
-	if data, err := os.ReadFile(p); err == nil {
-		if err := json.Unmarshal(data, &state); err != nil {
-			return fmt.Errorf("existing run state is not valid JSON: %w", err)
+	initial := statefile.Document{"schema_version": json.RawMessage("1")}
+	return statefile.Update(p, initial, func(doc statefile.Document) error {
+		var version int
+		if err := doc.Decode("schema_version", &version); err != nil {
+			return err
 		}
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	if state.CreatedAt == "" {
-		state.CreatedAt = now
-	}
-	state.SchemaVersion = schemaVersion
-	state.UpdatedAt = now
-	if taskKey != "" {
-		state.TaskKey = taskKey
-	}
-	state.Repo = repo
-	state.Classification = cls
-	if state.Status == "" {
-		state.Status = "in_progress"
-	}
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	// #nosec G306 -- the run state is a shared build artifact other nodes and the
-	// human read; it holds paths and verdicts, never credentials. 0644 is intended.
-	return os.WriteFile(p, append(data, '\n'), 0644)
+		if version != schemaVersion {
+			return fmt.Errorf("unsupported run-state schema_version %d (want %d)", version, schemaVersion)
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		updates := map[string]any{"repo": repo, "classification": cls, "updated_at": now}
+		for key, fallback := range map[string]string{"created_at": now, "status": "in_progress"} {
+			var value string
+			if err := doc.Decode(key, &value); err != nil {
+				return err
+			}
+			if value == "" {
+				updates[key] = fallback
+			}
+		}
+		if taskKey != "" {
+			updates["task_key"] = taskKey
+		}
+		for key, value := range updates {
+			if err := doc.Set(key, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func printInvalidInput(repo Repo, problems []string) {

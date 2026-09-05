@@ -27,6 +27,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -34,6 +35,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/yourorg/claude-workflow/statefile"
 )
 
 const (
@@ -58,6 +61,7 @@ const (
 // ─── run state (see config/run-state.schema.json) ────────────────────────────
 
 type RunState struct {
+	snapshot         statefile.Document
 	SchemaVersion    int             `json:"schema_version"`
 	TaskKey          string          `json:"task_key,omitempty"`
 	CreatedAt        string          `json:"created_at,omitempty"`
@@ -121,8 +125,7 @@ type Reviewer struct {
 
 // ─── tool payloads ───────────────────────────────────────────────────────────
 
-// FindingsExport mirrors cmd/reviewer's -findings-out. Duplicated rather than
-// shared because each cmd/ tool is its own stdlib-only module.
+// FindingsExport mirrors cmd/reviewer's -findings-out wire format.
 type FindingsExport struct {
 	ReviewedSHA string          `json:"reviewed_sha"`
 	BaseRef     string          `json:"base_ref"`
@@ -164,15 +167,21 @@ var severityRank = map[string]int{"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 
 // decision is what the controller concluded before running anything. A decision
 // with Stop set means the loop is over and no tool should run.
 type decision struct {
-	Round     int
-	Kind      string // full | recheck
-	Stop      bool
-	Verdict   string // set when Stop
-	ExitCode  int
-	Reasons   []string
-	MaxNew    int // computed for recheck rounds; 0 means "any new finding escalates"
-	Floor     string
-	PriorPath string // prior round's findings JSON, input to recheck
+	Round      int
+	Kind       string // full | recheck
+	Stop       bool
+	Verdict    string // set when Stop
+	ExitCode   int
+	Reasons    []string
+	MaxNew     int // computed for recheck rounds; 0 means "any new finding escalates"
+	Floor      string
+	PriorPath  string // prior round's findings JSON, input to recheck
+	HeadSHA    string // exact classified revision expected from this invocation
+	BaseSHA    string
+	Risk       string
+	PriorSHA   string
+	PriorCount int
+	PriorData  []byte
 }
 
 // decide applies iteration-protocol.md's convergence rules to the rounds already
@@ -181,7 +190,10 @@ type decision struct {
 func decide(state *RunState, ceiling int, findingsDir, taskKey string) decision {
 	rounds := state.Rounds
 	n := len(rounds)
-	d := decision{Round: n + 1, Floor: floorFor(state)}
+	d := decision{Round: n + 1, Floor: floorFor(state), HeadSHA: state.Repo.HeadSHA, BaseSHA: state.Repo.BaseSHA}
+	if state.Classification != nil {
+		d.Risk = state.Classification.Risk
+	}
 
 	// Escalate immediately on a finding that survived its dedicated fix round.
 	// A finding that outlives a clean, focused fix attempt is a design problem;
@@ -196,6 +208,11 @@ func decide(state *RunState, ceiling int, findingsDir, taskKey string) decision 
 			return d
 		}
 		if last.Verdict == "APPROVE" {
+			if err := approvalEvidence(state, last); err != nil {
+				d.Stop, d.Verdict, d.ExitCode = true, "ESCALATE", exitEscalate
+				d.Reasons = append(d.Reasons, err.Error())
+				return d
+			}
 			d.Stop, d.Verdict, d.ExitCode = true, "APPROVE", exitApprove
 			d.Reasons = append(d.Reasons, fmt.Sprintf("round %d verdict was APPROVE — loop complete", last.Round))
 			return d
@@ -275,22 +292,19 @@ func floorFor(state *RunState) string {
 }
 
 func findingsPath(dir, taskKey string, round int) string {
-	key := taskKey
-	if key == "" {
-		key = "task"
-	}
-	return filepath.Join(dir, fmt.Sprintf("findings-%s-r%d.json", key, round))
+	return filepath.Join(dir, fmt.Sprintf("findings-%s-r%d.json", artifactKey(taskKey), round))
 }
 
 // ─── argv construction ───────────────────────────────────────────────────────
 
 // buildArgv assembles the tool invocation. Reviewer args come from the
-// classification verbatim so -risk and -component cannot be forgotten or
-// mistyped by this caller either.
+// classification so -risk and -component cannot be forgotten. The controller
+// pins the worktree and base to the classified subject.
 func buildArgv(state *RunState, d decision, bins binaries, findingsDir, taskKey string) (string, []string) {
 	if d.Kind == "full" {
 		args := append([]string{}, state.Classification.ReviewerArgs...)
-		args = append(args, "-findings-out", findingsPath(findingsDir, taskKey, d.Round))
+		args = append(args, "-cwd", state.Repo.Worktree, "-base", state.Repo.BaseSHA,
+			"-findings-out", findingsPath(findingsDir, taskKey, d.Round))
 		return bins.Reviewer, args
 	}
 
@@ -306,11 +320,19 @@ func buildArgv(state *RunState, d decision, bins binaries, findingsDir, taskKey 
 }
 
 func roundResultPath(dir, taskKey string, round int) string {
-	key := taskKey
+	return filepath.Join(dir, fmt.Sprintf("round-%s-r%d.json", artifactKey(taskKey), round))
+}
+
+func artifactKey(key string) string {
 	if key == "" {
 		key = "task"
 	}
-	return filepath.Join(dir, fmt.Sprintf("round-%s-r%d.json", key, round))
+	return strings.Map(func(c rune) rune {
+		if c == '/' || c == '\\' || c < ' ' || c == 127 {
+			return '_'
+		}
+		return c
+	}, key)
 }
 
 type binaries struct {
@@ -344,20 +366,28 @@ func recordFull(d decision, path string, exitCode int) (Round, error) {
 	r := Round{
 		Round: d.Round, Kind: "full", FindingsPath: path,
 		CompletedAt: time.Now().UTC().Format(time.RFC3339),
+		Status:      "invalid_input", Verdict: "ESCALATE",
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- path built by this process
-	if err != nil {
-		// The reviewer produced no findings file: that is an incomplete round,
-		// not a clean one. Say so rather than recording a silent zero.
+	if exitCode != 0 {
 		r.Status = "review_unavailable"
 		r.Verdict = "ESCALATE"
-		return r, fmt.Errorf("reviewer wrote no findings file at %s (exit %d): %w", path, exitCode, err)
+		return r, fmt.Errorf("reviewer failed (exit %d); findings cannot certify a completed review", exitCode)
+	}
+	data, err := readToolResult(path, "reviewed_sha", "base_ref", "risk", "verdict", "findings")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			r.Status = "review_unavailable"
+		}
+		return r, fmt.Errorf("reviewer findings at %s are missing or invalid (exit %d): %w", path, exitCode, err)
 	}
 	var export FindingsExport
 	if err := json.Unmarshal(data, &export); err != nil {
 		r.Status = "invalid_input"
 		r.Verdict = "ESCALATE"
 		return r, fmt.Errorf("findings file %s is not valid JSON: %w", path, err)
+	}
+	if err := validateFullExport(d, export); err != nil {
+		return r, err
 	}
 
 	r.Status = "review_complete"
@@ -374,18 +404,28 @@ func recordRecheck(d decision, path string, exitCode int) (Round, error) {
 		Round: d.Round, Kind: "recheck",
 		MaxNewAllowed: maxNewFor(d.MaxNew),
 		CompletedAt:   time.Now().UTC().Format(time.RFC3339),
+		Status:        "invalid_input", Verdict: "ESCALATE",
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- path built by this process
-	if err != nil {
+	if exitCode < exitApprove || exitCode > exitEscalate {
 		r.Status = "review_unavailable"
-		r.Verdict = "ESCALATE"
-		return r, fmt.Errorf("recheck wrote no round result at %s (exit %d): %w", path, exitCode, err)
+		return r, fmt.Errorf("recheck failed (exit %d); result cannot certify a completed review", exitCode)
+	}
+	data, err := readToolResult(path, "tool", "verdict", "exit_code", "floor", "reviewed_sha", "head_sha",
+		"prior_checked", "resolved", "still_open", "regressed", "new_at_floor", "max_new_given", "changed_files")
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			r.Status = "review_unavailable"
+		}
+		return r, fmt.Errorf("recheck result at %s is missing or invalid (exit %d): %w", path, exitCode, err)
 	}
 	var rr RoundResult
 	if err := json.Unmarshal(data, &rr); err != nil {
 		r.Status = "invalid_input"
 		r.Verdict = "ESCALATE"
 		return r, fmt.Errorf("round result %s is not valid JSON: %w", path, err)
+	}
+	if err := validateRecheckResult(d, rr, exitCode); err != nil {
+		return r, err
 	}
 
 	r.Status = "review_complete"
@@ -429,41 +469,68 @@ func readRunState(p string) (*RunState, error) {
 	if err != nil {
 		return nil, err
 	}
+	doc, err := statefile.Parse(data)
+	if err != nil {
+		return nil, err
+	}
 	var s RunState
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
 	}
+	if s.SchemaVersion != schemaVersion {
+		return nil, fmt.Errorf("unsupported run-state schema_version %d (want %d)", s.SchemaVersion, schemaVersion)
+	}
+	s.snapshot = doc
 	return &s, nil
 }
 
 // appendRound merges one round into the run state, preserving every field other
 // nodes own. iterate owns rounds[], round, verdict, status and nothing else.
-func appendRound(p string, r Round, verdict string, escalation string) error {
-	state, err := readRunState(p)
-	if err != nil {
-		return err
-	}
-	state.Rounds = append(state.Rounds, r)
-	state.Round = len(state.Rounds)
-	state.Verdict = strings.ToLower(verdict)
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	switch strings.ToUpper(verdict) {
-	case "APPROVE":
-		state.Status = "in_progress" // the driver flips this to done once the PR is raised
-	case "ITERATE":
-		state.Status = "in_progress"
-	default:
-		state.Status = "escalated"
-		if escalation != "" {
-			state.EscalationReason = escalation
+func appendRound(p string, r Round, verdict string, escalation string, expected ...statefile.Document) error {
+	return statefile.Update(p, nil, func(doc statefile.Document) error {
+		for _, snapshot := range expected {
+			if err := doc.CheckUnchanged(snapshot, "schema_version", "task_key", "repo", "classification", "gates", "rounds", "round", "verdict", "status"); err != nil {
+				return err
+			}
 		}
-	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	// #nosec G306 -- the run state is a shared build artifact other nodes read.
-	return os.WriteFile(p, append(data, '\n'), 0644)
+		var version int
+		if err := doc.Decode("schema_version", &version); err != nil {
+			return err
+		}
+		if version != schemaVersion {
+			return fmt.Errorf("unsupported run-state schema_version %d (want %d)", version, schemaVersion)
+		}
+		var rounds []json.RawMessage
+		if err := doc.Decode("rounds", &rounds); err != nil {
+			return err
+		}
+		if r.Round != len(rounds)+1 {
+			return fmt.Errorf("%w: round %d is not next after %d recorded rounds", statefile.ErrConflict, r.Round, len(rounds))
+		}
+		data, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		rounds = append(rounds, data)
+		status := "in_progress"
+		if strings.ToUpper(verdict) != "APPROVE" && strings.ToUpper(verdict) != "ITERATE" {
+			status = "escalated"
+		}
+		updates := map[string]any{
+			"rounds": rounds, "round": len(rounds), "verdict": strings.ToLower(verdict),
+			"status": status, "updated_at": time.Now().UTC().Format(time.RFC3339),
+		}
+		delete(doc, "escalation_reason")
+		if status == "escalated" && escalation != "" {
+			updates["escalation_reason"] = escalation
+		}
+		for key, value := range updates {
+			if err := doc.Set(key, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // ─── main ────────────────────────────────────────────────────────────────────
@@ -529,6 +596,10 @@ func load(o *opts) (*RunState, decision, string, binaries, int) {
 		fmt.Fprintln(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ run state has no classification — run cmd/classify first")
 		return nil, zero, "", binaries{}, exitInvalid
 	}
+	if !validRisk(state.Classification.Risk) || o.ceiling < 1 {
+		fmt.Fprintln(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ valid classification risk and positive iteration ceiling are required")
+		return nil, zero, "", binaries{}, exitInvalid
+	}
 
 	dir := o.findingsDir
 	if dir == "" {
@@ -541,8 +612,23 @@ func load(o *opts) (*RunState, decision, string, binaries, int) {
 	if o.recheckBin != "" {
 		bins.Recheck = o.recheckBin
 	}
+	for _, path := range []*string{&bins.Reviewer, &bins.Recheck} {
+		absolute, err := filepath.Abs(*path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ resolve tool path: %v\n", err)
+			return nil, zero, "", binaries{}, exitInvalid
+		}
+		*path = absolute
+	}
 
-	return state, decide(state, o.ceiling, dir, state.TaskKey), dir, bins, 0
+	d := decide(state, o.ceiling, dir, state.TaskKey)
+	if d.Stop && d.Verdict == "APPROVE" {
+		if err := checkReviewSubject(state); err != nil {
+			d.Verdict, d.ExitCode = "ESCALATE", exitEscalate
+			d.Reasons = []string{err.Error()}
+		}
+	}
+	return state, d, dir, bins, 0
 }
 
 func cmdNext(args []string) int {
@@ -581,11 +667,11 @@ func cmdRun(args []string) int {
 	printDecision(state, d)
 
 	if d.Stop {
-		if err := appendRound(o.runState, Round{
-			Round: d.Round, Kind: "controller", Verdict: d.Verdict,
-			CompletedAt: time.Now().UTC().Format(time.RFC3339),
-		}, d.Verdict, strings.Join(d.Reasons, "; ")); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: failed to record the stop decision: %v\n", err)
+		if !*dryRun && d.Verdict != "APPROVE" {
+			if err := recordStop(o.runState, state, d); err != nil {
+				fmt.Fprintf(os.Stderr, "=== ITERATE: EVIDENCE NOT RECORDED ===\n  ✗ %v\n", err)
+				return exitEscalate
+			}
 		}
 		return d.ExitCode
 	}
@@ -597,6 +683,32 @@ func cmdRun(args []string) int {
 	}
 	if _, err := os.Stat(bin); err != nil {
 		fmt.Fprintf(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ %s not found — build it or pass -reviewer-bin/-recheck-bin\n", bin)
+		return exitInvalid
+	}
+	if err := checkReviewSubject(state); err != nil {
+		fmt.Fprintf(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ %v\n", err)
+		return exitInvalid
+	}
+	// A fresh private directory prevents a successful no-output invocation from
+	// consuming an earlier attempt's result. Retain it as diagnostic evidence.
+	dir, err := filepath.Abs(dir)
+	if err == nil {
+		dir, err = os.MkdirTemp(dir, "iterate-attempt-*")
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ create attempt directory: %v\n", err)
+		return exitInvalid
+	}
+	bin, argv = buildArgv(state, d, bins, dir, state.TaskKey)
+	if d.Kind == "recheck" {
+		if err := bindRecheckInput(&d, state); err != nil {
+			fmt.Fprintf(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ prior findings: %v\n", err)
+			return exitInvalid
+		}
+		bin, argv = buildArgv(state, d, bins, dir, state.TaskKey)
+	}
+	if err := checkReviewSubject(state); err != nil {
+		fmt.Fprintf(os.Stderr, "=== ITERATE: INVALID_INPUT ===\n  ✗ keep review artifacts outside the tracked worktree: %v\n", err)
 		return exitInvalid
 	}
 
@@ -632,11 +744,34 @@ func execTool(state *RunState, d decision, bin string, argv []string) (int, erro
 // and returns the verdict exit code.
 func recordAndReport(runStatePath string, state *RunState, d decision, dir string, toolExit int) int {
 	round, err := recordRound(d, dir, state.TaskKey, toolExit)
+	if err == nil {
+		err = checkPriorInput(d)
+		if err != nil {
+			round.Status, round.Verdict = "invalid_input", "ESCALATE"
+		}
+	}
+	if err == nil {
+		err = checkReviewSubject(state)
+		if err != nil {
+			round.Status, round.Verdict = "invalid_input", "ESCALATE"
+		}
+	}
+	if err == nil && round.Verdict == "APPROVE" {
+		err = approvalEvidence(state, round)
+		if err != nil {
+			round.Status, round.Verdict = "invalid_input", "ESCALATE"
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n=== ITERATE: ROUND INCOMPLETE ===\n  ✗ %v\n", err)
 	}
-	if err := appendRound(runStatePath, round, round.Verdict, roundEscalation(round)); err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: failed to record round %d: %v\n", round.Round, err)
+	escalation := roundEscalation(round)
+	if err != nil {
+		escalation = err.Error()
+	}
+	if err := appendRound(runStatePath, round, round.Verdict, escalation, state.snapshot); err != nil {
+		fmt.Fprintf(os.Stderr, "=== ITERATE: EVIDENCE NOT RECORDED ===\n  ✗ round %d: %v\n", round.Round, err)
+		return exitEscalate
 	}
 	printRound(round)
 	return verdictExit(round.Verdict)
@@ -669,7 +804,7 @@ func gitDiff(state *RunState) (string, error) {
 		return "", fmt.Errorf("run state has no base to diff against")
 	}
 	// #nosec G204 -- base comes from cmd/classify, which resolved it via rev-parse.
-	cmd := exec.Command("git", "diff", base+"...HEAD")
+	cmd := exec.Command("git", "diff", "--no-ext-diff", "--no-textconv", base+"..."+state.Repo.HeadSHA, "--")
 	cmd.Dir = state.Repo.Worktree
 	out, err := cmd.Output()
 	if err != nil {

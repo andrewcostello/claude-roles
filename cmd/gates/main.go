@@ -41,6 +41,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yourorg/claude-workflow/statefile"
 )
 
 const (
@@ -93,6 +95,7 @@ type CoverageFloor struct {
 // ─── run state (see config/run-state.schema.json) ────────────────────────────
 
 type RunState struct {
+	snapshot         statefile.Document
 	SchemaVersion    int             `json:"schema_version"`
 	TaskKey          string          `json:"task_key,omitempty"`
 	CreatedAt        string          `json:"created_at,omitempty"`
@@ -205,7 +208,7 @@ func parseFlags() options {
 	flag.StringVar(&o.phase, "phase", "implementation", "implementation | iteration. iteration adds the domain_suite regression gate.")
 	flag.StringVar(&o.declare, "declare", "", "Comma-separated gates the Task Assignment declares applicable (bench_absolute, differential)")
 	flag.Var(&o.waivers, "waive", "<gate>=<reason> waiver for a gate that cannot run. Repeat the flag for several gates; the reason may contain commas. Recorded in the run state.")
-	flag.StringVar(&o.only, "only", "", "Comma-separated gates to run; others are recorded as skipped with a reason")
+	flag.StringVar(&o.only, "only", "", "Comma-separated planned gates to run; omitted required gates fail unless explicitly waived")
 	flag.StringVar(&o.benchAbsCmd, "bench-absolute-command", "", "Command for the bench_absolute gate when declared")
 	flag.BoolVar(&o.dryRun, "dry-run", false, "Print the derived plan and exit without running anything")
 	flag.Parse()
@@ -230,6 +233,11 @@ func run(opts options) int {
 	}
 
 	plans := derivePlan(cfg, state.Classification, modules, opts.phase, declared)
+	only, err := selectionForPlan(opts.only, plans)
+	if err != nil {
+		printInvalid([]string{err.Error()})
+		return exitInvalid
+	}
 	if opts.dryRun {
 		printPlan(state, modules, plans)
 		return 0
@@ -237,11 +245,36 @@ func run(opts options) int {
 
 	ro := runOpts{
 		OutDir:      outDirFor(opts),
-		Only:        splitSet(opts.only),
+		Only:        only,
 		Waivers:     waivers,
 		BenchAbsCmd: opts.benchAbsCmd,
 	}
 	return finish(opts, state, modules, execute(cfg, state, plans, ro))
+}
+
+func selectionForPlan(raw string, plans []plan) (map[string]bool, error) {
+	if len(plans) == 0 {
+		return nil, fmt.Errorf("no applicable gates in the derived plan — an empty run cannot establish acceptance")
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	planned := make(map[string]bool, len(plans))
+	for _, p := range plans {
+		planned[p.Gate] = true
+	}
+	selected := map[string]bool{}
+	for _, token := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(token)
+		if name == "" {
+			return nil, fmt.Errorf("-only contains an empty gate name")
+		}
+		if !planned[name] {
+			return nil, fmt.Errorf("-only gate %q is not in the derived plan", name)
+		}
+		selected[name] = true
+	}
+	return selected, nil
 }
 
 // prepare loads and validates everything the plan depends on. It returns the
@@ -298,13 +331,13 @@ func finish(opts options, state *RunState, modules []Module, results []result) i
 			failed++
 		}
 	}
-	printReport(state, modules, results, failed)
-
-	if err := mergeGates(opts.runState, results); err != nil {
-		log.Printf("WARNING: failed to write gates into run state: %v", err)
-	} else {
-		log.Printf("gate results written to %s", opts.runState)
+	if err := mergeGates(opts.runState, results, state.snapshot); err != nil {
+		log.Printf("failed to write gates into run state: %v", err)
+		fmt.Println("=== GATES: FAIL (evidence was not saved) ===")
+		return exitFail
 	}
+	log.Printf("gate results written to %s", opts.runState)
+	printReport(state, modules, results, failed)
 	if failed > 0 {
 		return exitFail
 	}
@@ -663,7 +696,7 @@ func gateKey(p plan) gateID {
 // status a human can act on; none of them is a silent pass.
 func executeOne(cfg *Config, state *RunState, p plan, ro runOpts, id gateID, testOutputs map[string]string) Gate {
 	if len(ro.Only) > 0 && !ro.Only[p.Gate] {
-		return Gate{Status: "skipped", SkipReason: "not selected by -only — this is NOT a pass"}
+		return waiveOrFail(ro.Waivers, p.Gate, "not selected by -only — this is NOT a pass")
 	}
 	// Derived gates evaluate another gate's captured output.
 	if p.Spec.DerivedFrom != "" {
@@ -1251,6 +1284,14 @@ func readRunState(p string) (*RunState, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeRunState(data)
+}
+
+func decodeRunState(data []byte) (*RunState, error) {
+	doc, err := statefile.Parse(data)
+	if err != nil {
+		return nil, err
+	}
 	var s RunState
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, err
@@ -1258,6 +1299,7 @@ func readRunState(p string) (*RunState, error) {
 	if problems := validateRunState(&s); len(problems) > 0 {
 		return nil, fmt.Errorf("run state is not valid: %s", strings.Join(problems, "; "))
 	}
+	s.snapshot = doc
 	return &s, nil
 }
 
@@ -1313,26 +1355,37 @@ var (
 	}
 )
 
-func mergeGates(p string, results []result) error {
-	state, err := readRunState(p)
-	if err != nil {
-		return err
-	}
-	if state.Gates == nil {
-		state.Gates = map[string]Gate{}
-	}
-	for _, r := range results {
-		state.Gates[r.Key] = r.Outcome
-	}
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	// #nosec G306 -- the run state is a shared build artifact other nodes and the
-	// human read; it holds paths and verdicts, never credentials.
-	return os.WriteFile(p, append(data, '\n'), 0644)
+func mergeGates(p string, results []result, expected ...statefile.Document) error {
+	return statefile.Update(p, nil, func(doc statefile.Document) error {
+		for _, snapshot := range expected {
+			if err := doc.CheckUnchanged(snapshot, "schema_version", "task_key", "repo", "classification"); err != nil {
+				return err
+			}
+		}
+		data, err := json.Marshal(doc)
+		if err != nil {
+			return err
+		}
+		if _, err := decodeRunState(data); err != nil {
+			return err
+		}
+		var gates statefile.Document
+		if err := doc.Decode("gates", &gates); err != nil {
+			return err
+		}
+		if gates == nil {
+			gates = statefile.Document{}
+		}
+		for _, r := range results {
+			if err := gates.Set(r.Key, r.Outcome); err != nil {
+				return err
+			}
+		}
+		if err := doc.Set("gates", gates); err != nil {
+			return err
+		}
+		return doc.Set("updated_at", time.Now().UTC().Format(time.RFC3339))
+	})
 }
 
 // ─── output ──────────────────────────────────────────────────────────────────

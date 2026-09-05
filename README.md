@@ -7,15 +7,37 @@ claude-workflow/
 ├── roles/    # Agent role definitions — read by Claude as "be this role"
 ├── skills/   # Composable workflow skills the Tasker loads on demand
 ├── cmd/      # Go orchestrators — deterministic control flow and verdicts
+├── shared/   # Common state persistence used by the Go tools
 ├── config/   # Shared configuration, including the risk-path rule table
+├── evals/    # Portable, independently graded workflow regression cases
 └── docs/     # Supporting documentation
 ```
+
+Quality improvement work: [acceptance-evidence increment](docs/2026-09-04-assurance-evidence-increment.md),
+[first increment](docs/2026-09-04-assurance-first-increment.md)
+and [the offline evaluation pilot](evals/README.md).
 
 **The division of labour:** `cmd/` owns control flow and truth — what runs, in what order, whether it passed, what runs next. `roles/` and `skills/` own discovery and judgment — reading code, finding defects, weighing designs. A decision that is a glob lookup, a regex scan, an exit code, or arithmetic belongs in `cmd/`; a decision that requires reading the code belongs in a role. When a role file recites a number or a path list that `cmd/` also knows, the two drift and the role loses.
 
 ## Orchestrators (`cmd/`)
 
-Each is a standalone stdlib-only Go module. Build with `go build -o <name> .` in its directory.
+Each CLI has its own Go module. The state writers depend on `shared/statefile`
+through a local module replacement; keep the repository layout intact when
+building. There are no third-party Go dependencies. Build into a separate output
+directory, for example `go build -o /var/tmp/workflow-build/gates .` from
+`cmd/gates` after creating that output directory, so tracked binaries stay untouched.
+
+Run-state writers use a fail-fast sidecar lock and atomic replacement. Do not run
+old binaries or scripts that rewrite the same state concurrently with these
+writers. A leftover `<run-state>.lock` requires operator inspection: confirm no
+writer is active before removing it; age alone is not proof. An I/O error is a
+failed operation even when replacement happened before a later sync failed.
+
+`iterate run` retains each attempt's output in a fresh private subdirectory of
+`-findings-dir` (by default, beside the run state). Store these artifacts outside
+the tracked worktree. Reviews require a clean, committed, freshly classified
+revision; changed or incomplete evidence must not be reused. Terminal decisions
+do not append synthetic review rounds, and `-dry-run` never writes state.
 
 | Binary | Owns | Exit codes |
 |---|---|---|

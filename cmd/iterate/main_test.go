@@ -162,7 +162,10 @@ func TestDecide_ZeroNewTwiceIsNotAStall(t *testing.T) {
 
 func TestDecide_ApproveStopsTheLoop(t *testing.T) {
 	t.Parallel()
-	d := decide(stateWith(Round{Round: 1, Kind: "full", Verdict: "APPROVE"}), defaultCeiling, "/tmp", "SMG-1")
+	state := stateWith(Round{Round: 1, Kind: "full", Status: "review_complete", Verdict: "APPROVE", ReviewedSHA: testHeadSHA})
+	state.Repo.HeadSHA = testHeadSHA
+	state.Gates = map[string]Gate{"test": {Status: "pass"}}
+	d := decide(state, defaultCeiling, "/tmp", "SMG-1")
 	if !d.Stop || d.Verdict != "APPROVE" || d.ExitCode != exitApprove {
 		t.Errorf("d = %+v, want APPROVE stop with exit 0", d)
 	}
@@ -266,7 +269,7 @@ func TestRecordFull_CountsAtOrAboveFloor(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "f.json")
 	writeJSON(t, p, FindingsExport{
-		ReviewedSHA: "deadbeef", Risk: "critical", Verdict: "ITERATE",
+		ReviewedSHA: testHeadSHA, BaseRef: testBaseSHA, Risk: "critical", Verdict: "ITERATE",
 		Findings: []ExportFinding{
 			{Severity: "CRITICAL"}, {Severity: "HIGH"}, {Severity: "MEDIUM"}, {Severity: "LOW"},
 		},
@@ -296,7 +299,7 @@ func TestRecordFull_BlockingCountsRegardlessOfSeverity(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "f.json")
-	writeJSON(t, p, FindingsExport{Verdict: "ITERATE", Findings: []ExportFinding{{Severity: "LOW", Blocking: true}}})
+	writeJSON(t, p, FindingsExport{ReviewedSHA: testHeadSHA, BaseRef: testBaseSHA, Risk: "high", Verdict: "ITERATE", Findings: []ExportFinding{{Severity: "LOW", Blocking: true}}})
 
 	r, err := recordFull(decision{Round: 1, Floor: "high"}, p, 0)
 	if err != nil {
@@ -338,7 +341,7 @@ func TestRecordRecheck_MapsCounts(t *testing.T) {
 	t.Parallel()
 	p := filepath.Join(t.TempDir(), "round.json")
 	writeJSON(t, p, RoundResult{
-		Tool: "recheck", Verdict: "ITERATE", Floor: "medium", HeadSHA: "cafe1234",
+		Tool: "recheck", Verdict: "ITERATE", ExitCode: 1, Floor: "medium", HeadSHA: testHeadSHA, ReviewedSHA: testBaseSHA,
 		PriorChecked: 4, Resolved: 4, StillOpen: 0, Regressed: 0, NewAtFloor: 1, MaxNewGiven: 2,
 	})
 
@@ -352,7 +355,7 @@ func TestRecordRecheck_MapsCounts(t *testing.T) {
 	if r.PriorFindingsResolved != 4 || r.NewFindingCount != 1 || r.MaxNewAllowed != 2 {
 		t.Errorf("counts = %+v", r)
 	}
-	if r.ReviewedSHA != "cafe1234" {
+	if r.ReviewedSHA != testHeadSHA {
 		t.Errorf("ReviewedSHA = %q", r.ReviewedSHA)
 	}
 }
@@ -420,7 +423,7 @@ func TestAppendRound_EscalationReasonRecorded(t *testing.T) {
 	if err := os.WriteFile(p, []byte(seed), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := appendRound(p, Round{Round: 3, Kind: "recheck", Verdict: "ESCALATE", PriorStillOpen: 1},
+	if err := appendRound(p, Round{Round: 1, Kind: "recheck", Verdict: "ESCALATE", PriorStillOpen: 1},
 		"ESCALATE", "round 3: 1 STILL_OPEN"); err != nil {
 		t.Fatal(err)
 	}
