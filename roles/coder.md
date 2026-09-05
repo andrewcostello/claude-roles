@@ -270,8 +270,9 @@ comments or doc comments. The contract in one line:
 
 > A comment states only what the code cannot: purpose, contract, invariant,
 > concurrency, or a surprising why — in plain short-sentence English, with no
-> change history and no ticket/spec references. Directive comments
-> (`//go:build`, `# noqa`, `// @ts-ignore`, …) are code: never touch them.
+> change history. Preserve useful, resolvable specification traceability.
+> Directive comments (`//go:build`, `# noqa`, `// @ts-ignore`, …) are code:
+> leave them unchanged in cleanup tasks; review and test intentional changes.
 
 #### No Implicit States at a Decision Boundary
 

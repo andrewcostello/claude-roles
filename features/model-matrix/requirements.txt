@@ -1,0 +1,3 @@
+# YAML parsing only. The scorer does not import or require the dispatcher.
+ruamel.yaml==0.18.17
+ruamel.yaml.clib==0.2.15

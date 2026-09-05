@@ -2,10 +2,9 @@
 
 ## Why this task
 
-Every study so far used one shape — writing tests against a tight contract —
-and it saturated: all arms that delivered scored 11/13 mutations, and a 7x price
-range made no measurable difference to detection. That task cannot rank models
-because the contract did the hard work.
+The original study used one task shape and reported saturated mutation scores.
+Its measurement defects and limited scope do not establish model equivalence.
+This proposal adds a representative money-path task; it is not release approval.
 
 Wallet §8.1 (reserve → settle) is different in the ways that matter:
 
@@ -27,27 +26,20 @@ Wallet §8.1 (reserve → settle) is different in the ways that matter:
 
 ## The change in method: a HIDDEN test suite
 
-Andrew's proposal, and it is better than the mutation approach it replaces.
+Write an independent suite and run it against each delivered implementation.
+Give every arm the same public requirements, interfaces, and acceptance rules;
+withhold test cases, not requirements. A hidden suite is an additional oracle,
+not a replacement for mutation controls or domain-expert review.
 
-Mutation testing breaks production code and asks whether an arm's own tests
-notice. It can only probe what the production code expresses — which is why all
-13 mutations landed inside one of twelve contract clauses and the metric
-saturated at 11/13 for everyone.
+Freeze source, brief, oracle, harness, runtime, and execution policy for each
+comparison. If new cases are added, version the oracle and rescore every arm
+against that version. Keep some cases held out from workflow tuning.
 
-Instead: **we write the test suite ourselves, withhold it from every arm, and
-run it against each delivery.** That is a genuine oracle rather than a proxy —
-it measures "did this arm build something that satisfies requirements it never
-saw", which is the actual question.
-
-Three properties the mutation approach lacks:
-
-1. **It grows.** When an arm handles a case the suite missed, the case is added.
-   The oracle improves with each delivery instead of staying frozen at whatever
-   we imagined first.
-2. **It cannot be gamed.** An arm cannot write a test that passes vacuously,
-   because it is not writing the tests.
-3. **It discriminates by construction.** Pass rate against N independent
-   assertions has as many rungs as we write, so no ceiling like 11/13.
+Validate the suite against a known-good implementation, known defects,
+always-pass and always-fail controls, infrastructure failures, retries, and
+concurrent operations. Isolation must prevent a candidate from reading or
+editing the verifier. Hidden tests can still miss behavior, leak, or saturate;
+neither immunity to gaming nor discrimination is guaranteed.
 
 One limit, stated plainly: a hidden suite tests an IMPLEMENTATION, so the task
 must deliver working code rather than tests. That rules it out for a seals task
@@ -97,9 +89,12 @@ Written from the PRD's own properties, one assertion per rung:
 
 ## Scoring
 
-Pass rate against the hidden suite is the headline, replacing mutation kill
-rate. Alongside it, unchanged: rounds, dev vs review time, tokens, cost, and
-whether the mechanical gate is green.
+Report each critical invariant separately. A critical failure is not averaged
+away by unrelated passes. Missing execution, timeouts, infrastructure errors,
+and abandoned attempts remain explicit outcomes, not passing negative controls.
+Report ordinary pass rates, mutation controls, rounds, development and review
+time, tokens, and cost separately, with repeated trials and exact evidence
+bindings. A passing score alone does not authorize a release.
 
 Plus one new column this task makes possible: **assertions the arm satisfied
 that no other arm did**, which is where genuine design difference shows.

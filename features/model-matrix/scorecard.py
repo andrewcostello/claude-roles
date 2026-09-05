@@ -1,173 +1,147 @@
 #!/usr/bin/env python3
-"""Objective scorecard for a seals arm. No taste, no panel verdict.
-
-Seals are unusually measurable, so measure them rather than judging them:
-
-  MUTATION KILL RATE is the headline. Apply each plausible defect from
-  mutations.json to production code and ask whether this arm's suite reddens.
-  This is the only number that answers "do these tests detect anything", which
-  a panel verdict does not — an arm can be panel-approved and kill nothing, or
-  panel-blocked and kill everything.
-
-  Seals passing with no body are RECORDED, NOT SCORED. An arm may log-and-pass
-  deliberately while the body is absent, which this cannot distinguish from a
-  test that asserts nothing. Kill rate already answers it: a vacuous seal kills
-  no mutation.
-
-  Complexity, staticcheck, verbosity and normalised findings are secondary and
-  reported for completeness; a test file wants LOW complexity, so gocyclo is
-  read here as a smell rather than an achievement.
-
-A mutation no arm kills is a hole in the brief, not in the arm. A mutation
-every arm kills carries no signal. Both are reported so the suite can be
-judged alongside the arms.
-"""
+"""Measure trusted local Go suites in disposable clones; never infer acceptance."""
 from __future__ import annotations
 
 import argparse
-import json
-import re
-import statistics
-import subprocess
-import time
+import importlib.metadata
+import platform
+import sys
+import tempfile
 from pathlib import Path
 
+from study_common import (StudyError, digest, file_digest, load_document, mutations_from,
+                          rows_from, write_new_json)
+from study_execution import check_source, execution_env, git, observe, run_command, test_command
 
-def _results(mod: Path) -> tuple[set[str], set[str]]:
-    """(failing, passing) test names, from `go test -json`.
-
-    STRUCTURED, not scraped. The regex this replaces matched `--- FAIL: ` at a
-    line start, which loses subtests, misses panics that never print the
-    marker, and is the same brittleness that twice today produced a false
-    negative from an exact string match (`"OK."` vs `"OK"`). go test emits one
-    JSON object per event; Action is authoritative.
-    """
-    p = subprocess.run(["go", "test", "-json", "./..."], cwd=mod,
-                       capture_output=True, text=True, timeout=900)
-    failing: set[str] = set()
-    passing: set[str] = set()
-    for line in p.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            ev = json.loads(line)
-        except ValueError:
-            continue
-        name, action = ev.get("Test"), ev.get("Action")
-        if not name:
-            continue
-        if action == "fail":
-            failing.add(name)
-        elif action == "pass":
-            passing.add(name)
-    # A build failure produces no test events at all; surface it as a distinct
-    # marker rather than as "nothing failed", which would read as a green gate.
-    if not failing and not passing and p.returncode != 0:
-        failing.add("<BUILD OR SETUP FAILED>")
-    return failing, passing
+HERE = Path(__file__).resolve().parent
 
 
-def _failing(mod: Path) -> set[str]:
-    return _results(mod)[0]
+def measurement_protocol(mutations: dict, seconds: int, private: Path, env: dict) -> dict:
+    """Describe the exact oracle, measurement code, command, and runtime."""
+    inventory = mutations_from(mutations)
+    command = test_command(seconds)
+    version = run_command(["go", "version"], private, env, 10)
+    if version.returncode or version.stderr or not version.stdout.startswith("go version "):
+        raise StudyError("Go toolchain identity is unavailable")
+    try:
+        yaml_runtime = importlib.metadata.version("ruamel.yaml")
+    except importlib.metadata.PackageNotFoundError:
+        yaml_runtime = "unavailable"
+    return {"oracle_sha256": digest(mutations), "module": mutations["module"],
+            "mutation_ids": [m["id"] for m in inventory],
+            "harness_sha256": digest({name: file_digest(HERE / name) for name in
+                                      ("scorecard.py", "study_execution.py", "study_common.py", "requirements.txt")}),
+            "command": command, "go_version": version.stdout.strip(),
+            "platform": f"{sys.platform}/{platform.machine()};python={platform.python_version()};yaml={yaml_runtime}"}
 
 
-def _passing(mod: Path) -> set[str]:
-    return _results(mod)[1]
-
-
-def score_arm(worktree: Path, module: str, muts: dict) -> dict:
-    mod = worktree / module
-    out: dict = {"arm": worktree.name}
-    if not mod.exists():
-        return {**out, "error": "no module"}
-
-    t0 = time.time()
-    base_fail = _failing(mod)
-    out["baseline_failing"] = len(base_fail)
-    out["gate_green"] = not base_fail
-
-    # Vacuity: with GO-1-3's body absent, a seal that passes is not watching the
-    # wiring. Only rows this arm added are counted.
-    seal_file = mod / "wiring_seal_test.go"
-    added = set()
-    if seal_file.exists():
-        added = set(re.findall(r"^func (Test\w+)", seal_file.read_text(), re.M))
-    out["seals_added"] = len(added)
-    # NOT a vacuity measure. An arm may deliberately log-and-pass while the body
-    # is absent (BK-CLAUDE's sealRow does exactly that, and correctly), which is
-    # indistinguishable here from a test asserting nothing. Kill rate already
-    # captures vacuity — a vacuous seal kills no mutation — so this is recorded
-    # for context and must not be scored.
-    out["seals_passing_with_no_body"] = len(_passing(mod) & added)
-
-    killed, survived = [], []
-    for m in muts["mutations"]:
-        target = mod / m["file"]
-        text = target.read_text()
-        if m["before"] not in text:
-            survived.append({"id": m["id"], "note": "site absent"})
-            continue
-        target.write_text(text.replace(m["before"], m["after"], 1))
-        try:
-            now = _failing(mod)
-        finally:
-            target.write_text(text)
-        (killed if (now - base_fail) else survived).append({"id": m["id"]})
-    out["mutations_total"] = len(muts["mutations"])
-    out["mutations_killed"] = len(killed)
-    out["kill_rate"] = round(len(killed) / max(1, len(muts["mutations"])), 3)
-    out["killed_ids"] = [k["id"] for k in killed]
-    out["survived_ids"] = [s["id"] for s in survived]
-
-    if seal_file.exists():
-        src = seal_file.read_text().split("\n")
-        out["seal_lines"] = len(src)
-        out["lines_per_seal"] = round(len(src) / max(1, len(added)), 1)
-        cyc = subprocess.run(["gocyclo", "-avg", str(seal_file)],
-                             capture_output=True, text=True)
-        mm = re.search(r"Average: ([\d.]+)", cyc.stdout)
-        out["avg_cyclomatic"] = float(mm.group(1)) if mm else None
-        sc = subprocess.run(["staticcheck", "./..."], cwd=mod,
-                            capture_output=True, text=True)
-        out["staticcheck_issues"] = len([l for l in sc.stdout.splitlines() if l.strip()])
-    out["seconds"] = round(time.time() - t0, 1)
+def score_arm(worktree: Path, module: str, mutations: dict, *, revision: str,
+              context: dict | None = None, seconds: int = 30,
+              scratch_parent: Path | None = None, trusted_local_code: bool = False) -> dict:
+    """Record invalid observations separately; only complete valid trials get a rate."""
+    out = {"schema_version": 2, "arm": (context or {}).get("key", worktree.name),
+           "context": context, "gate_green": False, "complete": False,
+           "mutations": [], "kill_rate": None, "errors": []}
+    try:
+        if not trusted_local_code:
+            raise StudyError("local tests require explicit trusted-local-code authorization")
+        worktree = worktree.resolve()
+        inventory = mutations_from(mutations)
+        if module != mutations["module"]:
+            raise StudyError("module differs from the oracle")
+        with tempfile.TemporaryDirectory(prefix="workflow-study-", dir=scratch_parent) as name:
+            private = Path(name)
+            env = execution_env(private)
+            check_source(worktree, revision, env)
+            if context is not None:
+                if context.get("subject_revision") != revision:
+                    raise StudyError("context is bound to a different subject revision")
+                git(worktree, env, "merge-base", "--is-ancestor", context["base_revision"], revision)
+            out["measurement"] = measurement_protocol(mutations, seconds, private, env)
+            baselines = [observe(worktree, revision, module, private, env, seconds) for _ in range(2)]
+            out["baseline_runs"] = [b.raw for b in baselines]
+            if not all(b.green for b in baselines) or baselines[0].passing != baselines[1].passing:
+                raise StudyError("baseline is red, empty, skipped, invalid, or unstable: " +
+                                 "; ".join(e for b in baselines for e in b.errors))
+            out["gate_green"] = True
+            out["baseline_tests"] = sorted([list(t) for t in baselines[0].passing])
+            for mutation in inventory:
+                record = {"id": mutation["id"], "status": "invalid"}
+                try:
+                    observed = observe(worktree, revision, module, private, env, seconds, mutation)
+                    record["execution"] = observed.raw
+                    if not observed.valid:
+                        record["reason"] = "; ".join(observed.errors)
+                    elif observed.failing & baselines[0].passing:
+                        record["status"] = "killed"
+                    elif observed.green and observed.passing == baselines[0].passing:
+                        record["status"] = "survived"
+                    else:
+                        record["reason"] = "test inventory changed without a baseline test detecting the defect"
+                except (StudyError, OSError) as exc:
+                    record["reason"] = str(exc)
+                out["mutations"].append(record)
+            check_source(worktree, revision, env)
+            if out["measurement"] != measurement_protocol(mutations, seconds, private, env):
+                raise StudyError("measurement harness or runtime changed during execution")
+            out["complete"] = all(m["status"] in ("killed", "survived") for m in out["mutations"])
+            if out["complete"]:
+                out["kill_rate"] = sum(m["status"] == "killed" for m in out["mutations"]) / len(inventory)
+    except (StudyError, OSError) as exc:
+        out["errors"].append(str(exc))
+        out["complete"] = False
+        out["kill_rate"] = None
     return out
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--mutations", default="features/model-matrix/mutations.json")
-    ap.add_argument("--worktree-base", default="/home/andrew/Project")
-    ap.add_argument("--arms", required=True, help="comma-separated worktree suffixes")
-    ap.add_argument("--json-out")
-    args = ap.parse_args()
-
-    muts = json.loads(Path(args.mutations).read_text())
-    rows = [score_arm(Path(args.worktree_base) / f"worktree-{a.strip()}",
-                      muts["module"], muts)
-            for a in args.arms.split(",") if a.strip()]
-
-    print(f"{'arm':<22} {'kill':>6} {'seals':>6} {'vacuous':>8} {'gate':>6} "
-          f"{'cyc':>5} {'l/seal':>7}")
-    for r in rows:
-        if r.get("error"):
-            print(f"{r['arm']:<22} {r['error']}")
-            continue
-        print(f"{r['arm']:<22} {r['mutations_killed']}/{r['mutations_total']:<4} "
-              f"{r['seals_added']:>6} {r['seals_passing_with_no_body']:>8} "
-              f"{'green' if r['gate_green'] else 'red':>6} "
-              f"{str(r.get('avg_cyclomatic','-')):>5} {str(r.get('lines_per_seal','-')):>7}")
-
-    scored = [r for r in rows if not r.get("error")]
-    if scored:
-        every = set.intersection(*[set(r["killed_ids"]) for r in scored]) if scored else set()
-        none_ = set.intersection(*[set(r["survived_ids"]) for r in scored]) if scored else set()
-        print(f"\nkilled by EVERY arm (no signal): {sorted(every) or '-'}")
-        print(f"killed by NO arm (hole in the brief, not the arms): {sorted(none_) or '-'}")
-    if args.json_out:
-        Path(args.json_out).write_text(json.dumps(rows, indent=2))
-    return 0
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mutations", type=Path, default=HERE / "mutations.json")
+    parser.add_argument("--spec", type=Path)
+    parser.add_argument("--run", type=Path)
+    parser.add_argument("--worktree-base", type=Path)
+    parser.add_argument("--json-out", type=Path)
+    parser.add_argument("--timeout-seconds", type=int, default=30)
+    parser.add_argument("--scratch-parent", type=Path)
+    parser.add_argument("--trusted-local-code", action="store_true")
+    parser.add_argument("--print-protocol", action="store_true", help="print settings to freeze in the authored spec")
+    args = parser.parse_args()
+    try:
+        mutations = load_document(args.mutations)
+        with tempfile.TemporaryDirectory(prefix="study-protocol-", dir=args.scratch_parent) as name:
+            private = Path(name)
+            protocol = measurement_protocol(mutations, args.timeout_seconds, private, execution_env(private))
+        if args.print_protocol:
+            import json
+            print(json.dumps(protocol, indent=2))
+            return 0
+        if not args.run or not args.worktree_base or not args.json_out or not args.trusted_local_code:
+            raise StudyError("--spec, --run, --worktree-base, --json-out, and --trusted-local-code are required")
+        if args.json_out.exists():
+            raise StudyError("output already exists")
+        rows = rows_from(args.run, args.spec)
+        results = []
+        for row in rows:
+            if not row["provenance_ok"] or row["status"] != "Done" or row["measurement"] != protocol:
+                results.append({"schema_version": 2, "arm": row["key"], "complete": False,
+                                "errors": row["errors"] + ["incomplete arm or mismatched measurement protocol"]})
+                continue
+            results.append(score_arm(args.worktree_base / f"worktree-{row['key']}", mutations["module"],
+                                     mutations, revision=row["context"]["subject_revision"],
+                                     context=row["context"], seconds=args.timeout_seconds,
+                                     scratch_parent=args.scratch_parent, trusted_local_code=True))
+            if results[-1].get("measurement") != protocol:
+                results[-1].update(complete=False, kill_rate=None)
+                results[-1]["errors"].append("measurement differs from the frozen invocation protocol")
+        if rows_from(args.run, args.spec) != rows:
+            raise StudyError("specification or run changed during measurement")
+        write_new_json(args.json_out, results)
+        for result in results:
+            print(f"{result['arm']}: {'complete' if result['complete'] else 'INVALID'}")
+        return 0 if all(r["complete"] for r in results) else 1
+    except (StudyError, OSError, ValueError) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

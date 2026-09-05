@@ -1,3 +1,5 @@
 
 # Throwaway provider self-diagnostic dumps (grok-selfdiag.*, etc.)
 scratch/
+__pycache__/
+*.py[cod]

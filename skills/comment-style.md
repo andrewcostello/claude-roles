@@ -35,23 +35,24 @@ A comment earns its place only by stating something the code cannot:
 
 ## 2. What a comment must never say
 
-Delete on sight:
+Remove historical clutter without deleting required traceability:
 
 - **Change history.** "X was added with the TimerService landing",
   "firing moved to the singleton", "mirrors the pre-refactor shape".
   Version control is the history. Comments describe the code as it is
   today.
-- **Ticket, plan, and spec references.** `(T22-T26)`, `§8.6.1`,
-  `plan 2026-05-14-…`, PR numbers. A decision that needs a durable record
-  goes in the repo's `docs/`, not inline.
+- **Unexplained ticket or plan references.** A reference cannot replace the
+  local explanation of a rule. Keep a stable, resolvable specification or
+  decision reference when it provides required traceability or explains a
+  non-obvious constraint. State the relevant invariant beside the reference.
 - **Restating the code.** `// increment the counter` above `counter++`.
 - **Narrating other modules.** Describe this side of the contract; name
   the other module and stop.
 - **Speculation and alternatives considered.** "We could instead have…"
   is not documentation.
 
-The mechanical check — must return nothing for files you own (works for
-`//` and `#` comments alike):
+Use text search to find candidates for review, not as an automatic deletion
+or acceptance rule. Matches can include valid references and string literals:
 
 ```sh
 grep -rlnE '§[0-9]|plan 20[0-9]{2}-|\(T[0-9]+(-T[0-9]+)?\)|was added|pre-refactor' <paths>
@@ -90,7 +91,7 @@ sentences, use a list — or the logic deserves a better function name.
 Going over budget is allowed only for a real contract: a concurrency
 protocol, a state machine, a wire format. Never for history or narrative.
 
-## 5. Directive comments are code. Never touch them.
+## 5. Directive comments are code, not cleanup targets
 
 Compilers and tools read these; editing one silently changes what
 compiles, lints, or ships:
@@ -103,7 +104,9 @@ compiles, lints, or ships:
 - **Python**: `# type: ignore`, `# noqa`, `# pragma: no cover`,
   `# fmt: off/on`, `# pylint: disable=…`, encoding declarations, shebangs.
 
-A cleanup task leaves every directive byte-identical.
+A cleanup task leaves every directive byte-identical. A separately scoped
+implementation may change a directive deliberately, with the resulting build,
+lint, or runtime behavior reviewed and tested.
 
 ## 5a. Comments inside string literals
 
@@ -139,8 +142,9 @@ A comment rewritten on one twin only still compiles and still vets clean.
 The parity test is the only thing that catches it, and it is a test, not a
 build error. This shipped as a real breakage in live-gaming-platform on 2026-09-01.
 
-So: if your scope touches one twin, apply the identical edit to the other,
-even when the other side is nominally another task's scope. Take the file
+So: plan a coordinated edit to both twins. If the other side belongs to another
+task, resolve ownership with the operator before editing it; do not widen scope
+or overwrite another task's work automatically. Take the file
 list and the permitted substitutions from that package's
 `twinparity_static_test.go` (`twinFileNames` and `twinIdentityPairs`) —
 they are the contract. The repo gate runs these parity tests, so a

@@ -1,5 +1,5 @@
 {
-  "_comment": "The contract's 12 numbered clauses, with a probe for each: does this suite make an assertion that could FAIL if the clause were violated? Extracted from wiring.go's own numbered list, not invented. A suite that seals 2 of 12 and one that seals 10 of 12 scored identically on mutation kill rate, because all 13 mutations lived inside clause 4 — so clause coverage is the axis that separates them.",
+  "_comment": "Lexical hints for reviewing the historical wiring contract. These patterns match comments and incidental text as well as code. They measure clause mentions, not assertions, behavioral coverage, or acceptance. Do not use them to rank models.",
   "source": "cmd/classify/wiring.go",
   "clauses": [
     {"id": "RW1", "text": "IT IS THE CODE main() RUNS — no parallel spine",

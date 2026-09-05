@@ -49,6 +49,10 @@ So, when you write a contract, an interface docstring, or a scaffold:
   saying it can. Narrowing a promise to what the code honours is a legitimate
   answer to a review finding — say so explicitly when you do it.
 
+This does not authorize weakening a required safety invariant or an agreed
+public contract to make tests pass. Record a shared-contract deviation and
+obtain its disposition; fix the implementation when the requirement stands.
+
 The test: *if someone fixed the defect this contract describes, would any
 sentence here become false?* If yes, that sentence is a measurement. Move it.
 
@@ -106,16 +110,14 @@ stale.
 
 ## The gate
 
-`.dispatcher.yaml` runs `go test ./...` in each `cmd/*/` and `shared/*/` module. Two
-deliberate omissions, both measured:
+`.dispatcher.yaml` checks formatting, runs `go vet`, and runs uncached,
+race-enabled tests in every `cmd/*/` and `shared/*/` module. It also runs the
+study-tool and evaluation-harness Python tests. Install the study requirements
+from `features/model-matrix/requirements.txt`; JSON inputs need no YAML parser,
+but the full test suite exercises both formats.
 
-* **Not `go build`** — the compiled binaries are tracked in this repo, so
-  building rewrites them and leaves the worktree dirty. The dispatcher refuses
-  test evidence from a dirty tree, so a building gate blocks every task.
-* **Not `go vet`** — a gate runs only checks that are GREEN ON A CLEAN
-  BASELINE, or it cannot tell the change under test from the dirt it inherited.
-  Whether vet meets that bar here, and what it would take, is in
-  `docs/DECISIONS.md`; adding it is correct as soon as it does.
+Do not replace test compilation with `go build` at the tracked binary paths.
+Those executable fixtures must not be overwritten by routine verification.
 
 `go test` compiles every package in the pattern regardless: a type error in a
 non-test file exits 1.

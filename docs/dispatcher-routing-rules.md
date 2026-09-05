@@ -1,11 +1,18 @@
-# Dispatcher routing rules
+# Historical dispatcher routing observations
+
+Status: provisional, not production routing policy. The 2026-09-05 review
+reproduced false-green and provenance defects in the original measurement
+tools. Clause counts below are keyword mentions, not verified behavioral
+coverage. The original trials have not been rescored with the repaired tools.
+Treat the recorded numbers as historical observations, not established model
+superiority. Existing task pins remain explicit choices, not proven winners.
 
 Written 2026-09-02 from the model studies in `features/model-matrix/`. Each rule
 is marked **MEASURED** (from data in this repo), **INFERRED** (a defensible
 reading, not directly tested), or **OPEN** (would change the rule if measured).
 
-The studies used one task shape: writing seals against a tight contract. Rules
-about *that* shape are strong; rules about design work are inferred.
+The studies used one task shape: writing seals against a tight contract. They
+do not establish reliable rules for design work or production money paths.
 
 ---
 
@@ -23,14 +30,13 @@ reviewer seats, and paid whichever model implements:
 | CODEX | 175m | 65m | 8 |
 | HAIKU | 251m | **163m** | 20 |
 
-No model choice reduces review time. Only fewer rounds does. **So a model that
-covers more of the contract on its first pass is worth more than a faster one**,
-and the fastest implementer can be the most expensive overall.
+These observations motivate measuring review time and retries separately.
+They do not prove that model choice cannot affect time per review round.
 
-**Actionable:** budget wall clock as `dev x 1.4`, and treat any arm needing more
-than ~4 rounds as a routing mistake rather than a slow success.
+Do not use a fixed review-time multiplier or retry threshold as a quality gate.
+Re-measure representative work before adopting a routing threshold.
 
-## 2. Never pin Haiku to a task above `size:S`.
+## 2. A historical failure on a large seals task
 
 **MEASURED, and this is the strongest negative result in the data.** On a
 315-line contract Haiku ran 20 iterate rounds, 251m dev, 163m of reviewer time,
@@ -40,8 +46,9 @@ the most output tokens of any arm (458k) and 76M cache reads — and produced
 Haiku remains right for bounded mechanical work: `spawn.py` uses it to summarise
 a log tail, which is the shape it suits.
 
-**Actionable:** `model: claude-haiku-*` only on rows labelled `size:XS`/`size:S`
-with a single mechanical deliverable. Never on scaffold, seals, or bodies.
+This is a reason to evaluate task fit, not enough evidence for a universal
+model/size prohibition. Keep critical acceptance requirements independent of
+the selected implementer.
 
 ## 3. Pin the model AND the effort explicitly. Never leave either default.
 
@@ -68,40 +75,37 @@ agent's name. Two earlier arms cascaded on a bad model id the same way.
 compare, or attribute to a model. Leave it off for production runs where you
 want the work finished by whoever can finish it.
 
-## 5. Judge a test suite by clause coverage, not by kill rate or size.
+## 5. Clause mentions are review hints, not coverage
 
 **MEASURED.** All 13 mutations lived inside one of the contract's 12 clauses, so
-every arm that delivered scored 11/13 — the metric saturated. Clause coverage
-separated them cleanly:
+every arm that delivered was reported as 11/13. Text searches produced the
+following mention counts, which have not been validated as assertions:
 
-| arm | clauses | seals | verdict |
+| arm | clause mentions | seals | historical interpretation (not verified) |
 |---|---|---|---|
-| CODEX `gpt-5.6-sol@high` | **12/12** | 17 | complete |
-| FABLE `claude-fable-5-1` | **12/12** | 15 | complete, $38.71 |
-| GROK `grok-4.6@high` | **12/12** | ~13 | complete, **$4.56** |
-| OPUS `claude-opus-5` | 6/12 | 5 | fast partial |
-| SONNET `claude-sonnet-5` | 4/12 | 2 | looks cheap, 8 clauses unguarded |
-| DEEPSEEK `deepseek-v4-pro` | 3/12 | — | thin |
+| CODEX `gpt-5.6-sol@high` | 12/12 | 17 | assertion coverage unknown |
+| FABLE `claude-fable-5-1` | 12/12 | 15 | $38.71; assertion coverage unknown |
+| GROK `grok-4.6@high` | 12/12 | ~13 | $4.56; assertion coverage unknown |
+| OPUS `claude-opus-5` | 6/12 | 5 | assertion coverage unknown |
+| SONNET `claude-sonnet-5` | 4/12 | 2 | assertion coverage unknown |
+| DEEPSEEK `deepseek-v4-pro` | 3/12 | — | assertion coverage unknown |
 
-A suite that is green, fast and cheap while guarding 4 of 12 clauses is not a
-bargain — it is an unguarded contract that looks like one.
+Number the clauses and check actual assertions against them. Per-clause
+negative controls can test whether violations are detected. The text search in
+`features/model-matrix/report.py` does not perform that verification.
 
-**Actionable:** number the clauses in your contract, and check the delivered
-suite against that list before accepting it. `features/model-matrix/report.py`
-does this mechanically.
-
-## 6. Current picks, for contract-first Go work
+## 6. Historical picks, not a validated routing recommendation
 
 **MEASURED at n=1 per model — see the caveat below.**
 
 | use | pick | why |
 |---|---|---|
-| default, seals/scaffold | `codex` / `gpt-5.6-sol` @ `high`+ | 12/12 clauses, 0 staticcheck issues, kept iterating |
-| cost-sensitive, same coverage | `grok` / `grok-4.6` @ `high` | 12/12 at $4.56 — cheapest complete arm |
-| fast first pass you will review | `claude` / `claude-opus-5` | 6/12 in 17m, 0 rounds |
-| adjudication, review seats | `claude` / `claude-fable-5-1` | judgement no gate can grade; 12/12 when implementing |
+| default, seals/scaffold | `codex` / `gpt-5.6-sol` @ `high`+ | historical choice based partly on unverified mention counts |
+| cost-sensitive candidate | `grok` / `grok-4.6` @ `high` | historical cost observation; equivalent coverage not established |
+| first-pass candidate | `claude` / `claude-opus-5` | historical time observation; coverage not established |
+| adjudication, review seats | `claude` / `claude-fable-5-1` | historical choice; reviewer effectiveness not measured here |
 | bounded mechanical work | `claude-haiku-*` | log summaries, single-file edits |
-| never | Haiku on `size:L`; Sonnet where the suite is the safety net | |
+| further evaluation needed | all candidates on representative critical paths | no universal exclusion or safety claim follows from this study |
 
 ## 7. What would change these rules
 
@@ -118,7 +122,7 @@ does this mechanically.
   that the assertion is correct. Per-clause mutations would verify it.
 * **Kill rate saturated at 11/13.** On a well-specified contract, model choice
   made no measurable difference to defect detection across a 7x price range.
-  That is a finding, but it also means this task cannot rank models on quality.
+  The original instrument and results need validation before comparison.
 
 ## 8. The rule that outranks model choice
 
@@ -126,9 +130,9 @@ does this mechanically.
 `empty-digest-allowed` and `invalid-input-exits-ok`. Nobody was asked to seal
 them, so nobody did.
 
-Across every study, the largest quality differences traced to the brief and the
-contract — not to the model. A precise contract made a 7x price range
-irrelevant to detection; an imprecise brief left holes every model shared.
+Specification quality and shared blind spots deserve their own controls.
+The limited, instrument-affected observations do not establish that model
+choice is irrelevant to defect detection.
 
 **Spend the effort on the specification first.** Model routing is a
 second-order optimisation on top of it.
