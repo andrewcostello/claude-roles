@@ -92,16 +92,16 @@ type stackProcess struct {
 }
 
 type preflightResult struct {
-	WorktreeRoot string
-	WorktreeSHA  string
+	WorktreeRoot  string
+	WorktreeSHA   string
 	WorktreeDirty bool
-	Tilt         *stackProcess
-	ResourcesOK  bool
-	NotOK        []string
-	Clients      map[string]*stackProcess
-	Failures     []string
-	Warnings     []string
-	Infos        []string
+	Tilt          *stackProcess
+	ResourcesOK   bool
+	NotOK         []string
+	Clients       map[string]*stackProcess
+	Failures      []string
+	Warnings      []string
+	Infos         []string
 }
 
 func cmdPreflight(args []string) int {
@@ -239,18 +239,18 @@ func printPreflight(res preflightResult) {
 // --- run --------------------------------------------------------------------
 
 type runConfig struct {
-	worktree  string
-	spec      string
-	runs      int
-	expect    string
-	timeout   time.Duration
-	suite     string
-	dir       string
-	argv      []string
-	specAbs   string
-	jiraKey   string
-	post      bool
-	forecast  string
+	worktree string
+	spec     string
+	runs     int
+	expect   string
+	timeout  time.Duration
+	suite    string
+	dir      string
+	argv     []string
+	specAbs  string
+	jiraKey  string
+	post     bool
+	forecast string
 }
 
 func cmdRun(args []string) int {

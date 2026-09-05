@@ -66,15 +66,15 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role       string      `json:"role"`
-	Content    string      `json:"content,omitempty"`
-	ToolCalls  []toolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 type toolDef struct {
-	Type     string       `json:"type"`
-	Function functionDef  `json:"function"`
+	Type     string      `json:"type"`
+	Function functionDef `json:"function"`
 }
 
 type functionDef struct {

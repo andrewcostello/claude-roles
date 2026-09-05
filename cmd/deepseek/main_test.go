@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -293,7 +294,9 @@ func TestCallDeepSeekAPI(t *testing.T) {
 		},
 	}
 
-	resp, err := callDeepSeekAPI(t.Context(), "test-key", req)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	resp, err := callDeepSeekAPI(ctx, "test-key", req)
 	if err != nil {
 		t.Fatalf("callDeepSeekAPI: %v", err)
 	}
@@ -313,7 +316,9 @@ func TestCallDeepSeekAPI_authError(t *testing.T) {
 	deepseekAPIURL = server.URL
 	defer func() { deepseekAPIURL = origURL }()
 
-	_, err := callDeepSeekAPI(t.Context(), "bad-key", chatRequest{Model: "deepseek-chat"})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	_, err := callDeepSeekAPI(ctx, "bad-key", chatRequest{Model: "deepseek-chat"})
 	if err == nil {
 		t.Fatal("expected error for 401, got nil")
 	}
